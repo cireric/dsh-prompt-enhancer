@@ -85,11 +85,11 @@
 | ID | 类型 | 内容 | 期望 / 实际 | 定位线索 |
 | -- | ---- | ---- | ----------- | -------- |
 | **D-1** | 缺陷（低；文案错配） | **探测超时（15s）套用了"120s 超时"的文案** | 期望：15s 探测中止应给出与探测相关的提示（或至少不声称 >120s）。实际：面板原文 `AI call timed out (>120s), please retry later`，而该次中止由 `AI_PROBE_TIMEOUT_MS = 15_000` 触发（实测恢复于 15702ms）。 | `src/client/utils/ai-flow.ts:59-62`（`aiErrorKey` 对任意 `name === "TimeoutError"` 一律返回 `"ai.timeout"`）+ `src/client/utils/api.ts:12-14,83`（探测也有自己的 signal）+ `src/client/components/AIPolishButton.tsx:213-225`（探测失败走同一个 `setErrorKey(aiErrorKey(err))`）。最小复现：本记录表 A 第 9 行「实测 A」。 |
-> **D-1 已修（d8ca9b05475600e129908b7713f56366692acc5c）**：`ai.timeout` 文案去掉具体时长——探测 15s 与调用 120s 共用该键，写死数字对二者之一必然错；时长信息由 `ai.polishing` 承担。
 | O-1 | 观察（既定语义，非缺陷） | **AI 会新增 `{{变量}}`** | 一键完善两次都新增了变量：`{{待翻译内容}}`、以及 `{{朋友称呼/关系}}`/`{{具体情境}}`/`{{语气风格}}`/`{{字数/形式}}`。属 §6.3 既定语义（保留并可按需新增）与 R-P5-5，落库前面板可编辑且用户可见（`AIPolishButton.tsx:538-544`），不计缺陷。润色（polish）6 次均未新增变量。 | `src/host/ai.ts`（refine 提示词）/ `src/host/refine.ts` |
 | O-2 | 观察（测试自身造成） | 淘汰测试必然产生 1 条 404 与「提示词不存在」写回失败 | 被淘汰记录是**物理删除**（不进回收站），面板随后的写回 PUT 必然 404；这正是这个分支要展示的真实场景。 | 表 A 第 10 行 |
 | O-3 | 观察（遗留，与 P4 一致） | **AI 结果面板几何上覆盖 composer** | 真实 Playwright 点击 composer 中心时被面板内「One-click refine」拦截（actionability 失败 `… intercepts pointer events`）；面板 rect `[702,404,398,221]` 与 composer 区域相交。P4 验收第 14 行对词库面板记过同一形态的「预期布局（非裁剪）」。本项已通过「面板可 `Close`、且点面板外任意 pointerdown 即关闭」缓解（表 A 第 12 行实测）。用户真实点击的最终落点未在本轮验证。 | `AIPolishButton.tsx:653-660`（`ANCHOR` 贴按钮上沿、zIndex 31） |
 | O-4 | 观察（数据卫生） | **被淘汰提示词留下的标签仍在标签字典里** | 建记录时标签已写入字典（`ensureTagsWith`），随后记录被物理淘汰，标签成为 `count=0` 的孤儿（本轮产生 `文本改写`）。不属本任务判定范围（标签清理是管理面板事项），已由本验收手动删除。 | `src/host/store.ts`（`createPrompt` → `ensureTagsWith`；`enforceMaxCount` 只删 prompts 行） |
+> **D-1 已修（d8ca9b05475600e129908b7713f56366692acc5c）**：`ai.timeout` 文案去掉具体时长——探测 15s 与调用 120s 共用该键，写死数字对二者之一必然错；时长信息由 `ai.polishing` 承担。
 
 ## 临时数据与副作用
 
