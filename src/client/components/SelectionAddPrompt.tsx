@@ -141,6 +141,14 @@ export function SelectionAddPrompt({
       draggingRef.current = true;
       liveRef.current = null;
       setAnchor(null);
+      /**
+       * 修复轮 1：**抑制只存活一次选择动作**。`dismissedRef` 的键是「文本 + 起止偏移」，
+       * 在同一文本节点里重新拖选同一段文字得到的就是同一个键（跨节点的同文本同偏移也会碰撞）；
+       * 若不复位，上一次「存为提示词」的记账会跨这次选择存活 → 浮出按钮**静默不再出现**
+       * （R29 的措辞是「直到**选区再次变化**」，重新拖选本身就是一次变化）。
+       * 这一行是「新一次选择动作」的唯一入口（按在本按钮上的那次在上面已经 return）。
+       */
+      dismissedRef.current = null;
     };
     const onPointerUp = (): void => {
       // 只有「这一按从 pointerdown 起就落在按钮上」才跳过评估：隐藏与落库交给它自己的 click

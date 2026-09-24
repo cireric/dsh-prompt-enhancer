@@ -57,7 +57,7 @@ import {
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { promptSummary } from "../utils/insert.ts";
 import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
-import { closeManager, openManager, takeCapture } from "../utils/ui-state.ts";
+import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
 
 /** 面板文案取值器：即 `PropsLocale<'prompt-enhancer'>` 的 `t`。 */
 export type ManagerTranslate = TranslateNS<"prompt-enhancer">;
@@ -143,6 +143,8 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
   /** 尺寸走设置（规格 §4.2）；读失败留 console 痕迹并沿用默认值，不挡面板打开。 */
   const [settings, setSettings] = React.useState<PluginSettings>(DEFAULT_SETTINGS);
   const [target, setTarget] = React.useState<EditTarget | null>(null);
+  /** 沉淀载荷快照（ui-state 的 store）：非 null 说明入口 B/C 刚推进来一段正文。 */
+  const capture = useCapture();
 
   React.useEffect(() => {
     let alive = true;
@@ -159,6 +161,44 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
     };
   }, []);
 
+  /**
+   * 「详情页是否正持着未保存输入」（即 `target !== null`）：消费载荷的 effect 要读它，
+   * 但不该把它放进依赖（否则用户每次进出详情页都会重跑消费逻辑）——故用 ref 镜像。
+   */
+  const editingRef = React.useRef(false);
+  React.useEffect(() => {
+    editingRef.current = target !== null;
+  }, [target]);
+
+  /**
+   * **R34（控制者裁决，修复轮 1）：沉淀载荷「打开即消费」——一步落进带预填的新建详情表单**，
+   * 不再停在列表页等用户点一次「新建」，也不再让载荷无限期留在 store 里
+   * （后者会让用户弃用本次沉淀后，陈旧正文静默预填进下一条新建）。
+   *
+   * 三条不变量：
+   *   · 消费在 effect、**不在渲染期**（T2 的注释：渲染期取会在重复渲染 / StrictMode 下被吃掉）；
+   *   · `takeCapture()` 取出即清 → 消费一次后载荷即消失，陈旧预填不可能再发生；
+   *   · 恰好消费一次（`consumedRef`）：消费后 `capture` 变 null 会再次触发本 effect，必须能提前返回。
+   */
+  const consumedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (capture === null || consumedRef.current) return;
+    consumedRef.current = true;
+    const pending = takeCapture();
+    if (pending === null) return;
+    /**
+     * 防御分支：详情页正在编辑（有未保存输入）或面板不在列表页。面板遮罩会吞掉整屏点击，
+     * 故这两个状态下入口 B/C 实际不可达（枚举见报告「修复轮 1」）；这里只保证两件事——
+     * **不覆盖用户没保存的输入**，也**不留悬空载荷**（已在上面消费掉）：本次预填按放弃处理，
+     * 并留下可见痕迹（不静默吞掉）。
+     */
+    if (editingRef.current || panel !== "list") {
+      console.warn("[prompt-enhancer] 沉淀载荷到达时详情页正在编辑或面板不在列表页，本次预填已放弃（不覆盖当前输入）");
+      return;
+    }
+    setTarget({ kind: "create", prefill: pending });
+  }, [capture, panel]);
+
   /** 换页签：离开详情页，再让 store 换页签（幂等由 store 负责）。 */
   const openPanel = (next: ManagerPanel): void => {
     setTarget(null);
@@ -166,8 +206,11 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
   };
 
   /**
-   * 「新建」在**点击那一刻**消费沉淀载荷（R4：`takeCapture()` 取出即清，只消费一次）。
-   * 刻意不放在渲染期或 effect 里：渲染期取会在重复渲染 / StrictMode 下把预填吃掉。
+   * 「新建」按钮：**空表单**路径（R34 要求 2）。
+   *
+   * 载荷的正常消费点已迁到上面的 effect（打开即消费，R34 要求 1），走到这里时 `takeCapture()`
+   * 通常已经拿不到东西（返回 null → 空表单）。保留这次调用只是极端时序的兜底（effect 尚未跑完而
+   * 用户已点到「新建」）：谁先取到谁消费，`takeCapture()` 保证只消费一次，不会双重预填。
    */
   const startCreate = (): void => setTarget({ kind: "create", prefill: takeCapture() });
 
