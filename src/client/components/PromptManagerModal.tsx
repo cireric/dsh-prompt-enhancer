@@ -58,6 +58,7 @@ import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { promptSummary } from "../utils/insert.ts";
 import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
 import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
+import { ImportExportModal } from "./ImportExportModal.tsx";
 import { RecycleManagePanel } from "./RecycleManagePanel.tsx";
 import { TagManagePanel } from "./TagManagePanel.tsx";
 
@@ -83,10 +84,10 @@ const PANEL_LABEL: Record<ManagerPanel, PromptEnhancerKey> = {
 };
 
 /**
- * 尚未填充的页签占位文案：T4 已填 `tags` / `trash`（见下方分派），只剩 T5 的 `transfer`。
- * 字典里的 `manager.tags.pending` / `manager.trash.pending` 两个键**保持不动**（本任务不动别人的键集）。
+ * 四个页签在本任务后全部有真实内容（T5 收口）：字典里遗留的 `manager.tags.pending` /
+ * `manager.trash.pending` / `manager.transfer.pending` 三个占位键按 T4 的同一处置**保持不动**
+ * （不顺手删别人的键集，也不新增未被引用的键）。
  */
-const TRANSFER_PENDING: PromptEnhancerKey = "manager.transfer.pending";
 
 /** 排序下拉项：值与宿主 `GET /prompts?sort` 的枚举逐字一致（routes.ts 的白名单）。 */
 const SORTS: ReadonlyArray<{ value: PromptSort; label: PromptEnhancerKey }> = [
@@ -259,10 +260,10 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
             onBack={() => setTarget(null)}
           />
         )}
-        {/* T4：标签页与回收站页（T2 的外壳在这里被填上），transfer 仍留占位给 T5。 */}
+        {/* T4 填标签页 / 回收站页，T5 填导入导出页——T2 的四页外壳到此全满。 */}
         {panel === "tags" && <TagManagePanel t={t} />}
         {panel === "trash" && <RecycleManagePanel t={t} />}
-        {panel === "transfer" && <span style={muted}>{t(TRANSFER_PENDING)}</span>}
+        {panel === "transfer" && <ImportExportModal t={t} />}
       </div>
     </div>
   );
