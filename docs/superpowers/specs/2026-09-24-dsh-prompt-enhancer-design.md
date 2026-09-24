@@ -704,3 +704,27 @@ frontmatter：name（必填）/ description（必填）/ whenToUse（可选）
 - 测试：`tests/store-migration.test.mjs`（v1 库自动补列 + 老数据无损 + 二次启动幂等）与 `tests/store.test.mjs` 的「回收站保留技能导出记录」用例
 
 **未改动**：`prompts` 表的两列（§4.1 原本就有）、导出格式（§4.3，与参考项目同构不变）。
+
+### 13.6 设置持久化改走宿主 `settings` 服务（2026-09-24，调研后确定）
+
+**问题**：§4.2 要求设置落在 `$DSH_HOME/settings.yaml` 的 `prompt-enhancer` 命名空间，§6.5 又禁用 `js-yaml`——两条约束无法用手写 YAML 同时满足。
+
+**调研（用户要求：先看上游怎么做的）**：
+
+| 对象 | 机制 | 证据 |
+| --- | --- | --- |
+| 上游 `dsh-prompt-library` v0.16.0 | **手写 YAML**：自己读整份 `settings.yaml`、替换自己那段、再整份写回 | `src/host/store.ts:20` `import { load, dump } from "js-yaml"`；`package.json.dependencies = { "js-yaml": "^5.3.0" }`；全仓 `ctx.settings` **零命中** |
+| DSH 官方设置服务 | `ctx.settings.register(ns, schema)` → `get / watch / update / replace`，宿主负责文件读写、校验与并发 | 自 2026-07-28 存在（`packages/settings/settings/src/index.ts`）；官方插件 `ui-theme` / `locale` / `ui-chat` 等均走此路 |
+| 本机已装第三方插件 | 3 个在用官方服务 | `@liustack/modsearch`、`dsh-better-sidebar`、`dshmarket/lib/settings.js` 的发布产物中均有 `settings.register(` |
+
+**决定**：改用宿主 `settings` 服务。它是生态惯例，上游是没跟上的例外（代价是多一个 YAML 运行时依赖，且「读全文件再写回」会丢注释、可能损坏其它插件的命名空间）。
+
+**落地**：
+
+- 新增 `src/host/settings.ts`：`PromptEnhancerSettingsSchema`（`@deepseek-ai/schemastery`，字段与默认值取 §4.2 与 `types.ts` 的 `DEFAULT_SETTINGS`）+ `registerSettings(scope)` / `getSettings()` / `updateSettings(patch)`
+- `src/index.ts` 增加一段条件注入 `ctx.inject(["settings"], …)`（**§3.2 的装配草图由三段变四段**）
+- `package.json` 增加 peerDependencies：`@deepseek-ai/cordis` / `@deepseek-ai/dsh-llm` / `@deepseek-ai/schemastery`（宿主提供，不打包）
+- **不需要** `js-yaml`；§4.2 的存储位置（`settings.yaml` 的 `prompt-enhancer` 命名空间）与键名**完全不变**，故用户可见行为不变
+- 设置服务缺失时（headless 等）回落 `DEFAULT_SETTINGS`；`PUT /settings` 返回 503 并给出可读原因
+
+**影响范围**：§3.2 的 `apply()` 草图、§4.2 的实现路径、P3 的文件清单（新增 `src/host/settings.ts` 与 `tests/settings.test.mjs`）。

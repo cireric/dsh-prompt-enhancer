@@ -38,6 +38,9 @@ const external = [
   "@deepseek-ai/dsh-client-ui-slots",
   "@deepseek-ai/dsh-client-ui-conversation",
   "@deepseek-ai/dsh-client-ui-primitives",
+  // P3 起 host 侧用到（宿主提供，见 package.json 的 optional peer）
+  "@deepseek-ai/dsh-settings",
+  "@deepseek-ai/schemastery",
 ];
 
 const define = {
