@@ -1,4 +1,4 @@
-import type { PluginSettings, Prompt, PromptSort } from "../../types.ts";
+import type { PluginSettings, Prompt, PromptPatch, PromptSort } from "../../types.ts";
 
 const PREFIX = "/api/prompt-enhancer";
 
@@ -63,7 +63,13 @@ export const api = {
 
   createPrompt: (input: { title: string; body: string; tags?: string[]; summary?: string }) =>
     call<{ prompt: Prompt; evicted: string[] }>("POST", "/prompts", input),
-  updatePrompt: (id: string, patch: Record<string, unknown>) =>
+  /**
+   * 宿主 PUT 只认白名单字段：拼错字段名会被静默丢弃且仍回 200，故补丁类型必须是
+   * `PromptPatch`（types.ts 已导出）而不是 `Record<string, unknown>`。
+   * `aiWriteBack` 不在 `PromptPatch` 里（它是 store.updatePrompt 的选项目志，不是记录字段），
+   * 用交叉类型补上。
+   */
+  updatePrompt: (id: string, patch: PromptPatch & { aiWriteBack?: boolean }) =>
     call<Prompt>("PUT", "/prompts/" + encodeURIComponent(id), patch),
   rollbackPrompt: (id: string) => call<Prompt>("POST", "/prompts/" + encodeURIComponent(id) + "/rollback"),
   listAiProviders: () => call<AiSelectable[]>("GET", "/ai/providers"),
