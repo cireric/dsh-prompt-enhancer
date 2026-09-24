@@ -17,6 +17,7 @@
     "build": "node scripts/build.mjs",
     "build:dev": "node scripts/build.mjs --dev",
     "typecheck": "tsc --noEmit",
+    "test": "node --test",
     "smoke": "node scripts/smoke.mjs"
   },
   "dsh": {
