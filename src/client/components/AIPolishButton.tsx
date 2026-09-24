@@ -8,7 +8,9 @@
  * `PropsLocale` 组成。
  *
  * 副作用只走官方动作面：读草稿 `useInput`，写草稿 `inputActions.setDraft`（规格 §7.2）；
- * 落库/写回只调 `api.createPrompt` / `api.updatePrompt`（`aiWriteBack` 是 §4.4 的唯一写回缝），
+ * 落库走 `capture.ts#createFromCapture`（R31：与其它沉淀入口同一入口，故 §4.4 的淘汰二次确认
+ * 同样覆盖这里，不再有「AI 面板静默物理删除」的口子），写回只调 `api.updatePrompt`
+ * （`aiWriteBack` 是 §4.4 的唯一写回缝），
  * `api.rollbackPrompt` 已随切换入口一并迁往管理面板详情页（§13.8 决定二）；
  * 不改宿主路由、不直接写 `sourceBody`。落库入参、是否需要写回、能否切换一律交给任务 1 的纯函数
  * （`ai-flow.ts#libraryCreateInput` / `#needsWriteBack` / `#canToggle`），组件不重复判定；
@@ -20,6 +22,7 @@ import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots
 import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
 import { aiErrorKey, canToggle, keepVariablesFor, libraryCreateInput, needsWriteBack } from "../utils/ai-flow.ts";
 import { api, type AiRefineResult, type AiSelectable } from "../utils/api.ts";
+import { createFromCapture, type CaptureOutcome } from "../utils/capture.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 
@@ -283,9 +286,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setStatus("saving");
     void (async () => {
       try {
-        let created: { prompt: Prompt; evicted: string[] } | null = null;
+        let outcome: CaptureOutcome;
         try {
-          created = await api.createPrompt(libraryCreateInput(refined, original));
+          outcome = await createFromCapture(libraryCreateInput(refined, original));
         } catch (err) {
           console.warn("[prompt-enhancer] 存入词库失败", err);
           if (!aliveRef.current) return;
@@ -293,15 +296,21 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
           setStatus("saveFailed");
           return;
         }
-        if (created === null || !aliveRef.current) return;
-        setSaved(created.prompt);
-        setEvicted(created.evicted.length > 0);
+        if (!aliveRef.current) return;
+        // 淘汰二次确认里被取消（R31 + §4.4）：**第 2 步不进入**（没有 id 可写回），
+        // 静静退回完善态——取消不是失败，不得走 saveFailed。
+        if (!outcome.ok) {
+          setStatus("refined");
+          return;
+        }
+        setSaved(outcome.prompt);
+        setEvicted(outcome.evicted.length > 0);
         if (!needsWriteBack(refined.body, original)) {
           setStatus("saved");
           return;
         }
         try {
-          const updated = await api.updatePrompt(created.prompt.id, { body: refined.body, aiWriteBack: true });
+          const updated = await api.updatePrompt(outcome.prompt.id, { body: refined.body, aiWriteBack: true });
           if (!aliveRef.current) return;
           setSaved(updated);
           setStatus("saved");

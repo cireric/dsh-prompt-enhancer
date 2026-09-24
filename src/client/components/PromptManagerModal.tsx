@@ -58,6 +58,8 @@ import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { promptSummary } from "../utils/insert.ts";
 import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
 import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
+import { RecycleManagePanel } from "./RecycleManagePanel.tsx";
+import { TagManagePanel } from "./TagManagePanel.tsx";
 
 /** 面板文案取值器：即 `PropsLocale<'prompt-enhancer'>` 的 `t`。 */
 export type ManagerTranslate = TranslateNS<"prompt-enhancer">;
@@ -80,13 +82,11 @@ const PANEL_LABEL: Record<ManagerPanel, PromptEnhancerKey> = {
   transfer: "manager.tab.transfer",
 };
 
-/** 后三页的占位文案键（T4 填标签 / 回收站，T5 填导入导出）。 */
-const PANEL_PENDING: Record<ManagerPanel, PromptEnhancerKey> = {
-  list: "manager.tab.list",
-  tags: "manager.tags.pending",
-  trash: "manager.trash.pending",
-  transfer: "manager.transfer.pending",
-};
+/**
+ * 尚未填充的页签占位文案：T4 已填 `tags` / `trash`（见下方分派），只剩 T5 的 `transfer`。
+ * 字典里的 `manager.tags.pending` / `manager.trash.pending` 两个键**保持不动**（本任务不动别人的键集）。
+ */
+const TRANSFER_PENDING: PromptEnhancerKey = "manager.transfer.pending";
 
 /** 排序下拉项：值与宿主 `GET /prompts?sort` 的枚举逐字一致（routes.ts 的白名单）。 */
 const SORTS: ReadonlyArray<{ value: PromptSort; label: PromptEnhancerKey }> = [
@@ -171,26 +171,28 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
   }, [target]);
 
   /**
-   * **R34（控制者裁决，修复轮 1）：沉淀载荷「打开即消费」——一步落进带预填的新建详情表单**，
-   * 不再停在列表页等用户点一次「新建」，也不再让载荷无限期留在 store 里
-   * （后者会让用户弃用本次沉淀后，陈旧正文静默预填进下一条新建）。
+   * **R34 + R35（控制者裁决）：沉淀载荷「打开即消费」，且必须成为结构性保证**——
+   * 一份载荷到达后**要么**落进带预填的新建详情表单（跳），**要么**被守卫分支消费并丢弃（清），
+   * 不可能停在「既不跳也不清」的悬空态里。
    *
-   * 三条不变量：
-   *   · 消费在 effect、**不在渲染期**（T2 的注释：渲染期取会在重复渲染 / StrictMode 下被吃掉）；
-   *   · `takeCapture()` 取出即清 → 消费一次后载荷即消失，陈旧预填不可能再发生；
-   *   · 恰好消费一次（`consumedRef`）：消费后 `capture` 变 null 会再次触发本 effect，必须能提前返回。
+   * 结构在哪里（R35 的落地方式）：本 effect 是**全仓唯一**消费点，且不再用 `consumedRef` 阻断——
+   * 只要 `capture` 从 null 变成非 null 就一定会走到 `takeCapture()`（取出即清）。
+   * 旧实现的 `consumedRef` 会把**面板打开期间到达的第二份载荷**留在 store 里既不清也不跳，
+   * 再把它推迟到下次重开时才消费（那是陈旧预填）——正是 R34 要消灭的悬空态；而其成立前提
+   * 「宿主遮罩恰好挡住浮出按钮」是别人的 CSS，不能当保证。
+   *
+   * 「恰好消费一次」改由 `takeCapture()` 的取出即清保证：消费后 `capture` 变 null，本 effect
+   * 因 `capture === null` 提前返回（StrictMode 的双跑同款：第二次 `takeCapture()` 为 null）。
+   * 消费在 effect、**不在渲染期**（渲染期取会在重复渲染 / StrictMode 下被吃掉）这一条不变。
    */
-  const consumedRef = React.useRef(false);
   React.useEffect(() => {
-    if (capture === null || consumedRef.current) return;
-    consumedRef.current = true;
+    if (capture === null) return;
     const pending = takeCapture();
     if (pending === null) return;
     /**
      * 防御分支：详情页正在编辑（有未保存输入）或面板不在列表页。面板遮罩会吞掉整屏点击，
-     * 故这两个状态下入口 B/C 实际不可达（枚举见报告「修复轮 1」）；这里只保证两件事——
-     * **不覆盖用户没保存的输入**，也**不留悬空载荷**（已在上面消费掉）：本次预填按放弃处理，
-     * 并留下可见痕迹（不静默吞掉）。
+     * 故这两个状态下入口 B/C 实际不可达；这里只保证两件事——**不覆盖用户没保存的输入**，
+     * 也**不留悬空载荷**（已在上面消费掉）：本次预填按放弃处理，并留下可见痕迹（不静默吞掉）。
      */
     if (editingRef.current || panel !== "list") {
       console.warn("[prompt-enhancer] 沉淀载荷到达时详情页正在编辑或面板不在列表页，本次预填已放弃（不覆盖当前输入）");
@@ -253,7 +255,10 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
             onBack={() => setTarget(null)}
           />
         )}
-        {panel !== "list" && <span style={muted}>{t(PANEL_PENDING[panel])}</span>}
+        {/* T4：标签页与回收站页（T2 的外壳在这里被填上），transfer 仍留占位给 T5。 */}
+        {panel === "tags" && <TagManagePanel t={t} />}
+        {panel === "trash" && <RecycleManagePanel t={t} />}
+        {panel === "transfer" && <span style={muted}>{t(TRANSFER_PENDING)}</span>}
       </div>
     </div>
   );
@@ -537,8 +542,9 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
   const blankBody = body.trim() === "";
 
   /**
-   * 保存：新建走 `createFromCapture`（R28 的唯一落库入口，内部已广播数据变更），
-   * 编辑走 `updatePrompt`（直连 PUT，故由本组件广播）；两者成功后其它组件都会重拉。
+   * 保存：新建走 `createFromCapture`（R28 的唯一落库入口，内部已广播数据变更，并承载 §4.4 的
+   * 淘汰二次确认），编辑走 `updatePrompt`（直连 PUT，故由本组件广播）；两者成功后其它组件都会重拉。
+   * 淘汰确认里被取消（`ok: false`）时**静默回到原状态**：不创建、不留半成品、不渲染成错误。
    */
   const save = (): void => {
     if (busy !== "idle" || blankBody) return;
@@ -556,12 +562,14 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     void (async () => {
       try {
         if (editing === null) {
-          // 入口 A 的创建路径（R28）：与入口 B/C 同一落库入口，T4 的淘汰预检插在那里。
-          const created = await createFromCapture(input);
+          // 入口 A 的创建路径（R28）：与入口 B/C、AI 面板同一落库入口，§4.4 的淘汰预检在那里。
+          const outcome = await createFromCapture(input);
           if (!aliveRef.current) return;
-          setCurrent(created.prompt);
-          setTitle(created.prompt.title);
-          setNotice(created.evicted.length > 0 ? t("manager.list.evicted") : t("manager.edit.saved"));
+          // 用户在淘汰二次确认里取消：未创建任何记录 → 静默回到原状态（不是错误）。
+          if (!outcome.ok) return;
+          setCurrent(outcome.prompt);
+          setTitle(outcome.prompt.title);
+          setNotice(outcome.evicted.length > 0 ? t("manager.list.evicted") : t("manager.edit.saved"));
         } else {
           const updated = await api.updatePrompt(editing.id, input);
           if (!aliveRef.current) return;

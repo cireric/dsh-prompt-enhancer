@@ -258,6 +258,18 @@ test("回收站保留技能导出记录：软删除 → 恢复后 skillName/skil
     edited.updatedAt > edited.skillExportedAt,
     "改动后必须满足「技能已过期」的判定条件（updatedAt > skillExportedAt）",
   );
+
+  // T4 补断言（同一用例内补，不重复造用例）：回收站 INSERT 路径可反复走——第二轮软删除/恢复
+  // 仍完整搬运技能两列（回收站条目被删掉过一次，之后不能再依赖任何残留）。
+  store.deletePrompt(p.id);
+  const inTrashAgain = store.listTrash().find((t) => t.id === p.id);
+  assert.ok(inTrashAgain, "第二次软删除后必须再次出现在回收站");
+  assert.equal(inTrashAgain.skillName, "weekly-report", "第二轮软删除仍必须保留 skillName（§13.5）");
+  assert.equal(inTrashAgain.skillExportedAt, exportedAt, "第二轮软删除仍必须保留 skillExportedAt（§13.5）");
+  assert.equal(store.restorePrompts([p.id]), 1);
+  const restoredAgain = store.getPrompt(p.id);
+  assert.equal(restoredAgain.skillName, "weekly-report", "第二轮恢复后仍知道自己导出过技能");
+  assert.equal(restoredAgain.skillExportedAt, exportedAt);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -331,4 +343,47 @@ test("淘汰：N5 未超限不删；N6 aiRefined=0 优先于更旧的 aiRefined=
   );
   assert.ok(store.getPrompt(A.id), "aiRefined=1 的行不得被提前淘汰");
   assert.equal(store.getPrompt(B.id), undefined);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 淘汰的孤儿标签清理（D-P6-6 / R37）：与 enforceMaxCount 同事务，且不越界到软删除路径
+// ─────────────────────────────────────────────────────────────────────────────
+test("淘汰同事务清理孤儿标签：count===0 的被清掉，仍被引用的不被误删", () => {
+  // 自持数据集（不依赖上一条用例的残留）
+  for (const p of store.listPrompts()) store.deletePrompt(p.id);
+  store.emptyTrash();
+  assert.equal(store.listPrompts().length, 0);
+
+  const doomed = store.createPrompt({ title: "注定淘汰", body: "d", tags: ["孤儿候选"] });
+  const keeper = store.createPrompt({ title: "必须保留", body: "k", tags: ["在用候选"] });
+  // keeper 已 AI 优化 → 排序在后，不会被淘汰（only 1 victim）。
+  store.updatePrompt(keeper.id, { body: "k2" }, { aiWriteBack: true });
+
+  const before = store.listTags().find((t) => t.name === "孤儿候选");
+  assert.ok(before, "构造前提：孤儿候选标签必须已在字典表");
+  assert.equal(before.count, 1);
+
+  const evicted = store.enforceMaxCount(1);
+  assert.deepEqual(evicted, [doomed.id], "aiRefined=0 的 doomed 必须先被淘汰");
+
+  assert.ok(
+    !store.listTags().some((t) => t.name === "孤儿候选"),
+    "D-P6-6：淘汰后 count===0 的标签必须在同一事务内被清理",
+  );
+  assert.deepEqual(
+    store.listTags().find((t) => t.name === "在用候选"),
+    { name: "在用候选", count: 1 },
+    "仍被引用的标签不得被误删（计数也不得漂移）",
+  );
+});
+
+test("孤儿标签清理不越界：软删除（进回收站）不清标签，恢复后标签仍在", () => {
+  const p = store.createPrompt({ title: "软删除不动标签", body: "s", tags: ["软删标签"] });
+  store.deletePrompt(p.id);
+  assert.ok(
+    store.listTags().some((t) => t.name === "软删标签"),
+    "R37：软删除不是淘汰——标签必须留在字典表（否则恢复后引用就没了）",
+  );
+  assert.equal(store.restorePrompts([p.id]), 1);
+  assert.ok(store.getPrompt(p.id).tags.includes("软删标签"), "恢复后引用完整");
 });

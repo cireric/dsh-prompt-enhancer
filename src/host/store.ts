@@ -775,9 +775,31 @@ export function importPrompts(input: unknown, options: { confirm?: boolean } = {
 // ── 超限淘汰（规格 §4.4）───────────────────────────────────────────────────
 
 /**
+ * 清理孤儿标签：`tags` 字典里没有任何 `prompts` 行引用的行（D-P6-6）。
+ *
+ * **只被 `enforceMaxCount` 在淘汰事务内调用**——软删除（进回收站）刻意**不**清标签：那条路要能
+ * 「恢复后标签仍在」，而空标签的清理是 UI 上「清理无用标签」按钮的职责（R37，逐个走既有
+ * `DELETE /tags/:name`）。用传入的连接（与淘汰同一事务），不经 `getDb()` 重入。
+ */
+function pruneOrphanTags(cur: DatabaseSync): void {
+  const used = new Set<string>();
+  const rows = cur.prepare("SELECT tags FROM prompts").all() as unknown as Array<{ tags: string | null }>;
+  for (const row of rows) for (const tag of parseTags(row.tags)) used.add(tag);
+
+  const names = cur.prepare("SELECT name FROM tags").all() as unknown as Array<{ name: string }>;
+  for (const row of names) {
+    if (!used.has(row.name)) cur.prepare("DELETE FROM tags WHERE name = ?").run(row.name);
+  }
+}
+
+/**
  * 超过上限时物理删除（不进回收站），返回被淘汰的 id。
  * 顺序：**`aiRefined = 0` 优先**（未经人工确认价值），其次 `lastUsedAt` 最旧——规格 §4.4，
  * 与上游的 `usageCount` 升序**不同**，不得照抄上游（P2-D3）。
+ *
+ * ⇄ **同源排序键**：`src/client/utils/eviction.ts#previewEvictions` 逐键复现这里的受害者
+ * （宿主没有 dry-run 路由，§4.4 的二次确认靠客户端预演）。改这里的排序键**必须**同时改那一端，
+ * 一致性由 `tests/eviction.test.mjs` 的「双跑对照」逐 id 锁死。
  */
 export function enforceMaxCount(maxCount: number): string[] {
   const cur = getDb();
@@ -785,11 +807,14 @@ export function enforceMaxCount(maxCount: number): string[] {
   if (all.length <= maxCount) return [];
 
   const victims = [...all]
+    // ⇄ 同源排序键：与 src/client/utils/eviction.ts#previewEvictions 逐键对应（改一处必改另一处）
     .sort((a, b) => Number(a.aiRefined) - Number(b.aiRefined) || a.lastUsedAt - b.lastUsedAt)
     .slice(0, all.length - maxCount);
 
   inTransaction(cur, () => {
     for (const victim of victims) cur.prepare("DELETE FROM prompts WHERE id = ?").run(victim.id);
+    // D-P6-6：淘汰后可能留下零引用的标签行 → 在**同一事务**内清理（回滚时一起回滚）。
+    pruneOrphanTags(cur);
   });
   return victims.map((v) => v.id);
 }
