@@ -728,3 +728,15 @@ frontmatter：name（必填）/ description（必填）/ whenToUse（可选）
 - 设置服务缺失时（headless 等）回落 `DEFAULT_SETTINGS`；`PUT /settings` 返回 503 并给出可读原因
 
 **影响范围**：§3.2 的 `apply()` 草图、§4.2 的实现路径、P3 的文件清单（新增 `src/host/settings.ts` 与 `tests/settings.test.mjs`）。
+
+### 13.7 座位表增补 `conversation.input.overlay`，并更正 §7 关于 `#` 触发的前提（2026-09-24，用户批准）
+
+**问题一：§7 的 `#` 触发前提被实证推翻。** §7 的风险栏写「`#` 触发浮层依赖宿主 composer 的 trigger 管线」。实测宿主 `ui-input-trigger` 的 `TriggerChar` 是**封闭联合** `'/' | '@'`（`packages/client/ui-input-trigger/src/types.ts:34`），第三方**无法注册 `#`**——该管线从未支持自定义触发字符，不存在「宿主版本变化导致失效」的情况。同时 `InputState` 只有 `draft`、**没有 caret/选区**，故基于光标位置的设计在客户端拿不到数据。
+
+**问题二：自建浮层需要官方落点。** §7.1 原表 6 处座位不含 `conversation.input.overlay`。该座位的真实契约（实测）：`kind: list` / `scope: session` / **无 owner props** / `replaceRisk: none`，语义为「composer 卡内的浮动条目」（宿主自己的斜杠菜单、引用菜单、消息反馈提示都注册在此）。它是承载体侧的 `#` 候选浮层的正确位置；若不用它，只能 DOM 注入，直接违反 §7.3。
+
+**决定（用户）**：① 把 `conversation.input.overlay` 增补进 §7.1 的座位表（P4 使用，`id: prompt-enhancer-hash`、`order: 20`）；② `#` 触发降级为 **D2**——识别**草稿末尾**的 `#查询词` 令牌，候选用**鼠标点击**选取，**不接管键盘**（不接受需要 document 级 keydown 捕获的 D2-b）。
+
+**代价声明**：§9.3 验收 2 中的「`#` 触发浮层可筛选、**↑↓ 选择、回车插入**」调整为「可筛选、**点击选择**」；`#` 仅在草稿**末尾**成令牌时触发（句中输入 `#` 不触发）。这两条均属宿主能力边界所致，不是实现取舍。
+
+**影响范围**：§7.1 座位表（6 处 → 7 处）、§9.3 验收 2、P4 计划的任务 1/6/7。

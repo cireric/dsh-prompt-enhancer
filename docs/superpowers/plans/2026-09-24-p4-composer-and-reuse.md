@@ -625,11 +625,13 @@ git commit -m "feat(client): add insert semantics and HTTP api client"
 
 ## 任务 5：快速列表组件（按钮 + 三动作 + 用量上报）
 
-**文件：** 修改 `src/client/components/PromptLibraryButton.tsx`（骨架见任务 1 步骤 3）
+**文件：** 修改 `src/client/components/PromptLibraryButton.tsx`（骨架见任务 1 步骤 3）、**新建** `src/client/components/TemplateVariablesDialog.tsx`
 
 **接口：**
-- 依赖输入：任务 1 的 i18n / 主题、任务 3 的 `filterPrompts`、任务 4 的 `composeDraft` / `api`
-- 对外产出：组件 `PromptLibraryButton`，props 为 `PropsRuntime<"conversation.input.left"> & PropsLocale<"prompt-enhancer">`（session 标准 props 已内含，**不再手写** `SessionStandardProps`）
+- 依赖输入：任务 1 的 i18n / 主题、任务 4 的 `composeDraft` / `promptSummary` / `api`、任务 2 的 `parseVariables` / `fillTemplate` / `pickRemembered` / `memoryKey`
+- 对外产出：
+  - 组件 `PromptLibraryButton`，props 为 `PropsRuntime<"conversation.input.left"> & PropsLocale<"prompt-enhancer">`（session 标准 props 已内含，**不再手写** `SessionStandardProps`）
+  - 组件 `TemplateVariablesDialog`，props 为 `{ body: string; onCancel: () => void; onFilled: (filledBody: string) => void }`（**本任务创建，任务 6 的 `#` 浮层复用**——它是第一个消费者，先建在这里才能保证任务 5 结束时构建是绿的）
 
 - [ ] **步骤 1：写组件**。要求逐条落到代码：
 
@@ -645,21 +647,7 @@ git commit -m "feat(client): add insert semantics and HTTP api client"
 | 样式 | 一律用 `TOKEN`/内联样式；列表容器 `maxHeight: 320, overflowY: "auto"` |
 | 无障碍 | 按钮 `title={t("button.tip")}`、列表项 `aria-label` |
 
-- [ ] **步骤 2：类型检查**：`npm run typecheck` → 退出码 0
-- [ ] **步骤 3：构建 + 产物断言**：`npm run build && npm run smoke` → PASSED（插槽名在产物里）
-- [ ] **步骤 4：提交**：`feat(client): composer library button with quick list and three insert modes`
-
----
-
-## 任务 6：变量弹窗 + `#` 浮层
-
-**文件：** 新建 `src/client/components/TemplateVariablesDialog.tsx`、修改 `src/client/components/HashSuggestOverlay.tsx`（骨架见任务 1 步骤 3）
-
-**接口：**
-- 依赖输入：任务 2 的 `parseVariables` / `fillTemplate` / `pickRemembered` / `memoryKey`、任务 3 的 `readHashToken` / `replaceHashToken` / `filterPrompts`、任务 4 的 `api`
-- 对外产出：两个组件
-
-- [ ] **步骤 1：写 `TemplateVariablesDialog.tsx`**
+- [ ] **步骤 2：写 `TemplateVariablesDialog.tsx`**（本任务创建，任务 6 复用）
 
 | 要求 | 实现要点 |
 | --- | --- |
@@ -668,6 +656,23 @@ git commit -m "feat(client): add insert semantics and HTTP api client"
 | 保存记忆 | 确认时把本次非空值合并进 memory → `api.setMeta(memoryKey, JSON.stringify(merged))`（失败不阻塞插入，但 `console.warn` 可见） |
 | 取消 | 关窗且不改草稿 |
 | 不修改变量占位语义 | 未填写的变量由 `fillTemplate` 原样保留（不得填空串） |
+| 对外接口（任务 6 依赖） | `{ body: string; onCancel: () => void; onFilled: (filledBody: string) => void }`；由调用方挂载与卸载，组件自身不管开合 |
+
+- [ ] **步骤 3：类型检查**：`npm run typecheck` → 退出码 0
+- [ ] **步骤 4：构建 + 产物断言**：`npm run build && npm run smoke` → PASSED（插槽名在产物里）
+- [ ] **步骤 5：提交**：`feat(client): composer library button, variable dialog and three insert modes`
+
+---
+
+## 任务 6：`#` 候选浮层（复用任务 5 的变量弹窗）
+
+**文件：** 修改 `src/client/components/HashSuggestOverlay.tsx`（骨架见任务 1 步骤 3；变量弹窗复用任务 5 创建的 `TemplateVariablesDialog`）
+
+**接口：**
+- 依赖输入：上表的 D1/D2 决策、任务 3 的 `readHashToken` / `replaceHashToken` / `filterPrompts`、任务 4 的 `api`、任务 5 的 `TemplateVariablesDialog`
+- 对外产出：`HashSuggestOverlay` 完整实现（props 同骨架：`PropsRuntime<"conversation.input.overlay"> & PropsLocale<"prompt-enhancer">`）
+
+- [ ] **步骤 1：复用验证**：`TemplateVariablesDialog` 已于任务 5 完成（它是第一个消费者）。本任务只做「复用 + 验证」：`#` 选中含变量的提示词时必须弹出该弹窗，填完后替换草稿。若发现接口不敷使用（例如需要 `onCancel` 之外的返回值），**回改任务 5 的实现并在报告里说明**，不要在本任务另建一个弹窗。
 
 - [ ] **步骤 2：写 `HashSuggestOverlay.tsx`（按 D1/D2 落点与交互）**
 
@@ -678,9 +683,9 @@ git commit -m "feat(client): add insert semantics and HTTP api client"
 | 候选 | `api.listPrompts()` 缓存一次（打开期间复用）+ `filterPrompts(list, token.query)` |
 | 选择（D2 默认） | 鼠标点击行 → `inputActions.setDraft(replaceHashToken(draft, body))`；若 `needsValues(body)` 先开变量弹窗 |
 | 用量上报（规格 §4.4 明确「`#` 选中」也算一次使用） | 选中后同样 `void api.recordUsage(p.id).catch(e => console.warn("[prompt-enhancer] " + t("error.use"), e))` |
-| 键盘（仅当用户选 D2-b） | 打开期间 `useEffect` 挂 `document.addEventListener("keydown", onKey, true)`，只消费 `ArrowUp/ArrowDown/Enter/Escape`，其余一律放行；卸载时移除 |
+| 键盘 | **不实现**（用户 2026-09-24 裁定 D2：点击选择，零 DOM 介入）。**不得**加 `document.addEventListener`；D2-b 未获批准 |
 | 无命中 | `t("hash.empty")` 一行 |
-| 点外部关闭 | 不实现「点击外部关闭」（需要 document 监听，超范围）；改为 `Esc` 或令牌消失即关闭 |
+| 关闭路径 | 令牌消失即关闭（用户删掉 `#` 或以空格结束令牌）。D2 下没有 Esc——**不要**为了「能按 Esc 关」去加全局键盘监听 |
 
 - [ ] **步骤 3：类型检查 + 构建 + 提交**
 
@@ -720,7 +725,7 @@ git commit -m "feat(client): template variable dialog and hash suggest overlay"
 ## 完成标准
 
 - 输入框旁出现词库按钮；四种能力（插入 / 覆盖 / 插入并发送 / `{{变量}}` 填充）在真实 GUI 上逐项可验
-- `#` 浮层能按批准方案（D2 或 D2-b）工作
+- `#` 浮层能按 **D2（尾令牌 + 点击选择）** 工作；**不得**出现 document 级键盘监听（D2-b 未获批准）
 - `npm run typecheck` / `test` / `build` / `smoke` 四项全绿；`tests/` 新增三个纯逻辑测试文件
 - 产物断言包含两个插槽名与 i18n 命名空间
 - **零 DOM 注入**：`src/client/**` 里不得出现 `document.querySelector`、`MutationObserver`、`appendChild`；除 D2-b 获批的 keydown 监听外不得有 `document.addEventListener`
@@ -737,8 +742,8 @@ git commit -m "feat(client): template variable dialog and hash suggest overlay"
 | R-P4-5 | `PropsLocale` 需要 `LocaleNamespaceMap` 的类型增强，漏了会编译失败 | 任务 1 步骤 3 已给可复制的 `declare module` 片段 |
 | R-P4-6 | 快速列表在会话切换时可能拿到旧 session 的草稿 | `conversation.input.left` 是 session 作用域，随会话重建；组件不缓存 draft，全部经 `useInput` 读取 |
 
-## 需用户拍板（执行前）
+## 用户裁定（已定，执行时不得再问）
 
-1. **D2 vs D2-b**：`#` 浮层是「点击选择」（零 DOM 介入，但不支持 ↑↓/回车）还是「点击 + ↑↓/回车」（需一处 document 级 keydown 捕获，与 §7.3 精神有张力）？
-2. **D1 的规格追加**：把 `conversation.input.overlay` 纳入 §7.1 的座位表（规格 §13.7）——同意则本计划按此执行。
-3. 若两条都不接受，则按规格既有降级条款执行：**不做 `#` 触发**，只保留「按钮内搜索选择」（改动：删任务 6 的后半、删任务 7 的 `#` 验收项）。
+1. **D2 已选**：`#` 浮层采用「尾令牌 + 点击选择」，**不**接管键盘（不接受 D2-b）。因此规格 §9.3 验收 2 里的「↑↓ 选择、回车插入」**改为**「点击选择」；这一偏离已在执行记录中声明。
+2. **规格追加已批**：把 `conversation.input.overlay` 纳入 §7.1 的座位表（规格 §13.7），计划按此执行。
+3. ③ 降级路径未采纳（`#` 触发保留）。
