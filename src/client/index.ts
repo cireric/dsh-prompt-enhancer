@@ -5,10 +5,12 @@
  *   window.__ModuleLoader__.load({ id, factory: (require) => {...} })
  * 模块 id 由 scripts/build.mjs 从 package.json.name 派生，不得硬编码。
  *
- * P4 起在此注册插槽（规格 §7.1）；本任务落下两个座位——
+ * P4 起在此注册插槽（规格 §7.1）；至今落下三个座位——
  *   conversation.input.left（词库按钮，order 10）
  *   conversation.input.overlay（`#` 候选浮层，order 20）
+ *   conversation.input.left（AI 优化按钮，order 11）
  * 其余座位按路线图属 P5/P7/P8。i18n 字典随本 fiber 注册，卸载即撤。
+ * 注册顺序即产物内注册顺序，也是 scripts/smoke.mjs 行为断言的账本顺序。
  */
 
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
@@ -17,6 +19,7 @@ import type {} from "@deepseek-ai/dsh-client-locale/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 // ctx.slots 的 Context 增强由 ui-renderer 的 client 半声明（官方 ui-commands 同样引它）
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
+import { AIPolishButton } from "./components/AIPolishButton.tsx";
 import { HashSuggestOverlay } from "./components/HashSuggestOverlay.tsx";
 import { PromptLibraryButton } from "./components/PromptLibraryButton.tsx";
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
@@ -43,6 +46,12 @@ export function apply(ctx: ClientContext): void {
       scope.slots.register(
         { name: "conversation.input.overlay", id: "prompt-enhancer-hash", order: 20, locale: NS },
         HashSuggestOverlay,
+      ),
+    );
+    scope.slots.inject("conversation.input.left", () =>
+      scope.slots.register(
+        { name: "conversation.input.left", id: "prompt-enhancer-ai-polish", order: 11, locale: NS },
+        AIPolishButton,
       ),
     );
   });

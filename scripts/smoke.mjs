@@ -1,6 +1,10 @@
 // 构建产物校验。刻意不依赖 dsh 宿主：在受控沙箱中真实执行 client bundle，
 // 验证它注册的模块 id 与 factory 返回形状——这是加载器唯一的契约面。
 //
+// 插槽部分为**行为断言**：把 apply() 交给一个记录调用的假 ctx 真跑一遍，
+// 断言它注册了哪些座位、组件是否为函数、是否接线成对、字典键集是否对齐。
+// 不再扫描源码文本形状（旧正则会被注入面里的同一字面量误判为通过）。
+//
 // 用法：npm run build && npm run smoke
 import { readFile, stat } from "node:fs/promises";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -9,9 +13,20 @@ import { dirname, join } from "node:path";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 
+/** 客户端 i18n 命名空间（规格 §7.4；与 src/client/utils/i18n.ts 的 NS 同值）。 */
+const NS = "prompt-enhancer";
+
+/** 期望的注册账本：按注册顺序的 [name, id, order]（规格 §7.1）。 */
+const EXPECTED_SLOTS = [
+  ["conversation.input.left", "prompt-enhancer", 10],
+  ["conversation.input.overlay", "prompt-enhancer-hash", 20],
+  ["conversation.input.left", "prompt-enhancer-ai-polish", 11],
+];
+
 let failures = 0;
 const ok = (m) => console.log("smoke: ok   " + m);
 const fail = (m) => { failures++; console.error("smoke: FAIL " + m); };
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // ---------- 1) host 产物：lib/index.js ----------
 const hostPath = join(root, "lib", "index.js");
@@ -36,30 +51,6 @@ if (clientSrc === null) {
   if (!clientSrc.includes("module.exports = { apply, inject };")) {
     fail("lib/client.js 缺少纯净的 { apply, inject } 导出重写（检查 build.mjs 的 footer）");
   } else ok("lib/client.js 含 { apply, inject } 导出重写");
-
-  // 客户端产物必须真的注册了本轮的两个座位（防止「构建成功但插槽没进去」）。
-  // 每条断言必须**同时**看到 `slots.inject("<slot>")` 与 `register({ … name: "<slot>" })`：
-  // 裸子串检查会被注入面里的字符串单独满足（同一字面量在 inject 参数与 register 选项里各出现
-  // 一次），因此「删掉 register 调用、只留 inject」依旧全绿——见变异验证（临时删掉某处
-  // `name: "conversation.input.left"` 后本条必须 FAIL）。
-  const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  for (const slot of ["conversation.input.left", "conversation.input.overlay"]) {
-    const esc = reEscape(slot);
-    const injected = new RegExp('slots\\.inject\\(\\s*"' + esc + '"').test(clientSrc);
-    const registered = new RegExp('register\\(\\s*\\{[^{}]*name:\\s*"' + esc + '"').test(clientSrc);
-    if (!injected) fail("lib/client.js 未注入插槽 " + slot + '（slots.inject("' + slot + '") 缺失）');
-    else if (!registered) fail("lib/client.js 未注册插槽 " + slot + '（register({ … name: "' + slot + '" }) 缺失）');
-    else ok("lib/client.js 注册插槽 " + slot + "（inject + register 同时存在）");
-  }
-  // i18n 断言必须同时看到「命名空间常量」与「把该常量交给 register」：裸子串检查会被
-  // 插槽选项里的 locale: NS 误判为通过（NS 的字符串值在那里也出现）。
-  // 常量名不写死：直接从 bundle 里 shape 出保存 NS 值的那个标识符。
-  // 声明关键字放宽为 var|const|let：esbuild 改写或压缩后可能是 const/let，写死 var 会误报 RED。
-  const nsConst = clientSrc.match(/\b(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*"prompt-enhancer"/);
-  if (nsConst === null) fail("lib/client.js 未见值为 prompt-enhancer 的命名空间常量");
-  else if (!new RegExp("\\.register\\(\\s*" + nsConst[1] + "\\b").test(clientSrc)) {
-    fail("lib/client.js 定义了命名空间常量 " + nsConst[1] + " 却未用它注册字典（register 调用缺失）");
-  } else ok("lib/client.js 注册 i18n 命名空间 prompt-enhancer");
 
   // 在受控沙箱中真实执行 bundle，捕获 __ModuleLoader__.load 的入参
   let captured = null;
@@ -99,6 +90,89 @@ if (clientSrc === null) {
         else ok("factory 返回 { apply } 且为函数");
         if (!Array.isArray(exported.inject)) fail("factory 返回的对象缺少 inject 数组");
         else ok("factory 返回 { inject } 且为数组（" + exported.inject.length + " 项）");
+
+        // 硬约束 6「systemPrompt section 恒为 0 / 不新增 inject 项」的可执行证据。
+        if (!same(exported.inject, ["slots", "locale"])) {
+          fail('exported.inject 应 deep-equal ["slots","locale"]，实为 ' + JSON.stringify(exported.inject));
+        } else ok('exported.inject deep-equal ["slots","locale"]');
+
+        // ---------- 2.1) 行为断言：真跑 apply()，记录它调了什么 ----------
+        if (typeof exported.apply !== "function") {
+          fail("无法执行 apply()：导出缺少 apply 函数（上述插槽断言不可达）");
+        } else {
+          function runApply() {
+            const records = [];
+            // ctx 与 scope 上的 locale.register 都记同一笔：apply() 在根 ctx 的 effect 里
+            // 注册字典（inject = ["slots","locale"] 保证它存在），scope 上也留一份以防改写。
+            const locale = { register: (ns, dicts) => { records.push(["locale", ns, dicts]); } };
+            const makeScope = () => ({
+              slots: {
+                inject: (name, cb) => { records.push(["inject", name]); cb(); },
+                register: (opts, comp) => { records.push(["register", opts, comp]); },
+              },
+              locale,
+            });
+            const fakeCtx = {
+              effect: (fn) => {
+                const dispose = fn();
+                return typeof dispose === "function" ? dispose : () => {};
+              },
+              inject: (deps, cb) => { records.push(["injectDeps", deps]); cb(makeScope()); },
+              locale,
+            };
+            return { records, fakeCtx };
+          }
+
+          const { records, fakeCtx } = runApply();
+          try {
+            exported.apply(fakeCtx);
+          } catch (e) {
+            fail("apply(fakeCtx) 抛错：" + (e instanceof Error ? e.message : String(e)));
+          }
+
+          // 1) 注册账本：条数、顺序、[name, id, order] 三元组
+          const register = records.filter((rec) => rec[0] === "register");
+          const ledger = register.map((rec) => [rec[1].name, rec[1].id, rec[1].order]);
+          if (!same(ledger, EXPECTED_SLOTS)) {
+            fail(
+              "register 账本不符（应为按注册顺序的 [name,id,order]）\n" +
+                "      期望 " + JSON.stringify(EXPECTED_SLOTS) + "\n" +
+                "      实为 " + JSON.stringify(ledger),
+            );
+          } else ok("register " + ledger.length + " 条账本逐条相符 " + JSON.stringify(ledger));
+
+          // 2) 每条都是 function 组件且带 locale；3) 每条都接线在某个 slots.inject 里
+          const before = failures;
+          for (const [, opts, comp] of register) {
+            const label = String(opts.id) + "（" + String(opts.name) + "）";
+            if (typeof comp !== "function") fail("座位 " + label + " 的组件不是 function，实为 " + typeof comp);
+            if (opts.locale !== NS) fail("座位 " + label + " 的 locale 应为 " + NS + "，实为 " + String(opts.locale));
+            if (!records.some((rec) => rec[0] === "inject" && rec[1] === opts.name)) {
+              fail('座位 ' + label + " 未接线：没有对应的 slots.inject(\"" + String(opts.name) + '\")');
+            }
+          }
+          if (failures === before && register.length > 0) {
+            ok("每条 register 的组件均为 function、locale = " + NS + "、且 name 都出现在某条 inject 里");
+          }
+
+          // 4) 字典注册恰好 1 次，且 zh / en 键集相等且非空
+          const locale = records.filter((rec) => rec[0] === "locale");
+          if (locale.length !== 1) {
+            fail("locale.register 应恰好 1 条，实为 " + locale.length);
+          } else {
+            const [, ns, dicts] = locale[0];
+            const zhKeys = Object.keys(dicts && dicts.zh ? dicts.zh : {}).sort();
+            const enKeys = Object.keys(dicts && dicts.en ? dicts.en : {}).sort();
+            const onlyZh = zhKeys.filter((k) => !enKeys.includes(k));
+            const onlyEn = enKeys.filter((k) => !zhKeys.includes(k));
+            if (ns !== NS) fail("locale.register 的命名空间应为 " + NS + "，实为 " + String(ns));
+            else if (zhKeys.length === 0 || enKeys.length === 0) {
+              fail("locale 字典为空（zh " + zhKeys.length + " 键 / en " + enKeys.length + " 键）");
+            } else if (onlyZh.length > 0 || onlyEn.length > 0) {
+              fail("zh/en 字典键集不等：仅 zh 有 " + JSON.stringify(onlyZh) + "，仅 en 有 " + JSON.stringify(onlyEn));
+            } else ok("locale.register(" + NS + ") 恰好 1 次，zh/en 键集相等且非空（" + zhKeys.length + " 键）");
+          }
+        }
       }
     }
   }

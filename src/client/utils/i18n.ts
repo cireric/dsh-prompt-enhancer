@@ -20,6 +20,20 @@ export const zh = {
   "error.load": "加载提示词失败",
   "error.use": "记录使用失败",
   "error.noPrompt": "该提示词已不存在",
+  "ai.button": "AI 优化",
+  "ai.tip": "用 AI 优化当前输入框内容",
+  "ai.empty": "输入框为空，先写点内容",
+  "ai.unavailable": "AI 不可用：未配置可用模型",
+  "ai.polishing": "正在调用 AI…（最长约 2 分钟）",
+  "ai.result": "AI 优化结果",
+  "ai.original": "原文",
+  "ai.polished": "优化稿",
+  "ai.apply": "应用到输入框",
+  "ai.copy": "复制",
+  "ai.copied": "已复制",
+  "ai.close": "关闭",
+  "ai.fail": "AI 调用失败",
+  "ai.timeout": "AI 调用超时（>120s），请稍后重试",
 } as const;
 
 /** en 必须与 zh 键集完全一致——类型注解让 tsc 直接报出漏译/漏删。 */
@@ -42,6 +56,20 @@ export const en: Record<keyof typeof zh, string> = {
   "error.load": "Failed to load prompts",
   "error.use": "Failed to record usage",
   "error.noPrompt": "That prompt no longer exists",
+  "ai.button": "AI polish",
+  "ai.tip": "Polish the composer draft with AI",
+  "ai.empty": "Composer is empty — write something first",
+  "ai.unavailable": "AI unavailable: no usable model configured",
+  "ai.polishing": "Calling AI… (up to ~2 minutes)",
+  "ai.result": "AI polish result",
+  "ai.original": "Original",
+  "ai.polished": "Polished",
+  "ai.apply": "Apply to composer",
+  "ai.copy": "Copy",
+  "ai.copied": "Copied",
+  "ai.close": "Close",
+  "ai.fail": "AI call failed",
+  "ai.timeout": "AI call timed out (>120s), please retry later",
 };
 
 /** 供宿主 LocaleNamespaceMap 挂载的键联合（P4 只用到上表里的键）。 */
