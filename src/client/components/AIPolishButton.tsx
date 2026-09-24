@@ -8,7 +8,8 @@
  * `PropsLocale` 组成。
  *
  * 副作用只走官方动作面：读草稿 `useInput`，写草稿 `inputActions.setDraft`（规格 §7.2）；
- * 落库/写回/回滚只调 `api.createPrompt` / `api.updatePrompt` / `api.rollbackPrompt`，
+ * 落库/写回只调 `api.createPrompt` / `api.updatePrompt`（`aiWriteBack` 是 §4.4 的唯一写回缝），
+ * `api.rollbackPrompt` 已随切换入口一并迁往管理面板详情页（§13.8 决定二）；
  * 不改宿主路由、不直接写 `sourceBody`。落库入参、是否需要写回、能否切换一律交给任务 1 的纯函数
  * （`ai-flow.ts#libraryCreateInput` / `#needsWriteBack` / `#canToggle`），组件不重复判定；
  * 「AI 是否可用」「是否保留 {{变量}}」同理（`ai-flow.ts#aiErrorKey` / `#keepVariablesFor`）。
@@ -18,7 +19,7 @@ import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
 import { aiErrorKey, canToggle, keepVariablesFor, libraryCreateInput, needsWriteBack } from "../utils/ai-flow.ts";
-import { api, ApiError, type AiRefineResult, type AiSelectable } from "../utils/api.ts";
+import { api, type AiRefineResult, type AiSelectable } from "../utils/api.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 
@@ -32,8 +33,9 @@ export type AIPolishButtonProps =
  *   - 润色：polishing → done / error
  *   - 完善：refining → refined（面内是 AI 标题/标签/摘要 + 可编辑完善稿）
  *   - 存库：saving → saved / saveFailed / writeBackFailed
- * 注意两种「原文 ↔ 优化稿」不是一回事：`done` 态是**面板内**的 pill 对比（同一份结果的两种样子），
- * `saved` 态是**词库侧**的 `rollbackPrompt` swap（真把库里的 body / sourceBody 对调）。
+ * 注意面板里的 pill 对比（`done` 态）只是**同一份结果的两种样子**，不是库侧的版本切换：
+ * 规格 §13.8 决定二把「原文 ↔ 优化稿」的并排对比与 `rollbackPrompt` swap 迁到管理面板详情页
+ * （`PromptManagerModal`），故 `saved` 态只剩「已存入词库」+ **指向详情页的提示**，不再有切换按钮。
  */
 type Status =
   | "idle"
@@ -47,14 +49,6 @@ type Status =
   | "saveFailed"
   | "writeBackFailed";
 
-/** 库侧切换失败的面内文案：key / extra 走 i18n，detail 是宿主/ApiError 的可读原因。 */
-interface ToggleError {
-  key: PromptEnhancerKey;
-  /** 404 追加的那一行（复用 P4 的 error.noPrompt），其余错误没有。 */
-  extra?: PromptEnhancerKey;
-  detail: string;
-}
-
 /** 「已复制」的回退时长（与 P4 notice 同款：自动消失，不打断输入）。 */
 const COPIED_MS = 2000;
 
@@ -66,7 +60,7 @@ function previewText(body: string): string {
   return body.length > PREVIEW_MAX ? body.slice(0, PREVIEW_MAX) + "…" : body;
 }
 
-/** 失败原因给人看的那一行：ApiError / Error 自带可读 message，其余 String()。 */
+/** 失败原因给人看的那一行：Error 自带可读 message，其余 String()。 */
 function reasonOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -101,7 +95,6 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   /** 本次 create 触发了超限淘汰（二次确认归 P6，本任务只做可见性）。 */
   const [evicted, setEvicted] = React.useState(false);
   const [saveError, setSaveError] = React.useState<string | null>(null);
-  const [toggleError, setToggleError] = React.useState<ToggleError | null>(null);
   const [errorKey, setErrorKey] = React.useState<PromptEnhancerKey | null>(null);
   /** 一键完善的失败：只作 `done` 面板内一行，不推翻已有润色结果。 */
   const [refineErrorKey, setRefineErrorKey] = React.useState<PromptEnhancerKey | null>(null);
@@ -152,7 +145,6 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setSaved(null);
     setEvicted(false);
     setSaveError(null);
-    setToggleError(null);
     setErrorKey(null);
     setRefineErrorKey(null);
     setCopied(false);
@@ -288,7 +280,6 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     if (busyRef.current || refined === null) return;
     busyRef.current = true;
     setSaveError(null);
-    setToggleError(null);
     setStatus("saving");
     void (async () => {
       try {
@@ -343,36 +334,6 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
         if (!aliveRef.current) return;
         setSaveError(reasonOf(err));
         setStatus("writeBackFailed");
-      } finally {
-        busyRef.current = false;
-      }
-    })();
-  };
-
-  /**
-   * 「原文 ↔ 优化稿」双向切换（**库侧**）：宿主 `swap(body, sourceBody)` 并返回换过之后的整条记录，
-   * 用它整条替换本地 `saved`——可反复点击来回切，预览与「当前显示」永远取自真实记录。
-   * 400（sourceBody 为空）与 404（记录已删）都只关掉本次切换：不猜状态、不假装换过。
-   */
-  const toggle = (): void => {
-    if (busyRef.current || saved === null) return;
-    busyRef.current = true;
-    setToggleError(null);
-    void (async () => {
-      try {
-        const swapped = await api.rollbackPrompt(saved.id);
-        if (!aliveRef.current) return;
-        setSaved(swapped);
-      } catch (err) {
-        console.warn("[prompt-enhancer] 原文/优化稿切换失败", err);
-        if (!aliveRef.current) return;
-        // 文案走 aiErrorKey；404（记录已被删）额外补一行 P4 已有的 error.noPrompt。
-        const notFound = err instanceof ApiError && err.status === 404;
-        setToggleError({
-          key: aiErrorKey(err),
-          extra: notFound ? "error.noPrompt" : undefined,
-          detail: reasonOf(err),
-        });
       } finally {
         busyRef.current = false;
       }
@@ -589,30 +550,14 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   {t("ai.saved")}
                 </span>
                 {evictedNotice}
-                {toggleError !== null && (
-                  <span role="alert" style={ERROR}>
-                    <span>{t(toggleError.key)}</span>
-                    {toggleError.extra !== undefined && <span>{t(toggleError.extra)}</span>}
-                    <span style={ERROR_DETAIL} title={toggleError.detail}>
-                      {toggleError.detail}
-                    </span>
-                  </span>
-                )}
+                {/* §13.8 决定二：库侧的「原文 ↔ 优化稿」并排对比与切换已迁往管理面板详情页，
+                    这里只留指向它的提示（验收 6 的切换能力由详情页承担）。 */}
                 {canToggle(saved) ? (
-                  <>
-                    <span style={ACTIONS}>
-                      <button type="button" style={PANEL_BUTTON} onClick={toggle}>
-                        {t("ai.toggle")}
-                      </button>
-                    </span>
-                    <span style={MUTED}>
-                      {t(saved.body === original ? "ai.showingOriginal" : "ai.showingPolished")}
-                    </span>
-                    <span style={PREVIEW}>{previewText(saved.body)}</span>
-                  </>
+                  <span style={MUTED}>{t("ai.toggleMoved")}</span>
                 ) : (
                   <span style={MUTED}>{t("ai.sameAsOriginal")}</span>
                 )}
+                <span style={PREVIEW}>{previewText(saved.body)}</span>
                 <span style={ACTIONS}>
                   <button type="button" style={PANEL_BUTTON} onClick={close}>
                     {t("ai.close")}

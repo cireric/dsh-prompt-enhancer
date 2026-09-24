@@ -21,6 +21,9 @@ const EXPECTED_SLOTS = [
   ["conversation.input.left", "prompt-enhancer", 10],
   ["conversation.input.overlay", "prompt-enhancer-hash", 20],
   ["conversation.input.left", "prompt-enhancer-ai-polish", 11],
+  // P6 T2 追加的两个 root 座位：弹窗宿主（root 作用域 → 无会话也能开面板）与左栏入口。
+  ["shell.overlay", "prompt-enhancer", 100],
+  ["sidebar.footer.action", "prompt-enhancer", 100],
 ];
 
 let failures = 0;

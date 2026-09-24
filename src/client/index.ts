@@ -5,11 +5,13 @@
  *   window.__ModuleLoader__.load({ id, factory: (require) => {...} })
  * 模块 id 由 scripts/build.mjs 从 package.json.name 派生，不得硬编码。
  *
- * P4 起在此注册插槽（规格 §7.1）；至今落下三个座位——
+ * P4 起在此注册插槽（规格 §7.1）；至今落下五个座位——
  *   conversation.input.left（词库按钮，order 10）
  *   conversation.input.overlay（`#` 候选浮层，order 20）
  *   conversation.input.left（AI 优化按钮，order 11）
- * 其余座位按路线图属 P6/P7/P8。i18n 字典随本 fiber 注册，卸载即撤。
+ *   shell.overlay（管理面板弹窗宿主，order 100）—— P6
+ *   sidebar.footer.action（左侧下方入口，order 100）—— P6
+ * 其余两个座位（recommend / settings.section）按路线图属 P7/P8。i18n 字典随本 fiber 注册，卸载即撤。
  * 注册顺序即产物内注册顺序，也是 scripts/smoke.mjs 行为断言的账本顺序。
  * P6 追加：目录选择能力（ctx.uiWorkspace）经**条件注入**持有，inject 导出数组不扩张。
  */
@@ -25,6 +27,8 @@ import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import { AIPolishButton } from "./components/AIPolishButton.tsx";
 import { HashSuggestOverlay } from "./components/HashSuggestOverlay.tsx";
 import { PromptLibraryButton } from "./components/PromptLibraryButton.tsx";
+import { PromptSurfaceHost } from "./components/PromptSurfaceHost.tsx";
+import { SidebarPromptEntry } from "./components/SidebarPromptEntry.tsx";
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
 import { setDirectoryCapability } from "./utils/workspace-dir.ts";
 
@@ -56,6 +60,21 @@ export function apply(ctx: ClientContext): void {
       scope.slots.register(
         { name: "conversation.input.left", id: "prompt-enhancer-ai-polish", order: 11, locale: NS },
         AIPolishButton,
+      ),
+    );
+    // root 作用域的弹窗宿主（规格 §7.1）：**始终挂载**，由组件自己按 store 决定渲染与否；
+    // 关闭态必须零盒子（见 PromptSurfaceHost 的注释——该层 inset:0 且继承 pointer-events:auto）。
+    scope.slots.inject("shell.overlay", () =>
+      scope.slots.register(
+        { name: "shell.overlay", id: "prompt-enhancer", order: 100, locale: NS },
+        PromptSurfaceHost,
+      ),
+    );
+    // 左侧下方入口（规格 §7.3 / 验收 18）：无会话也能打开管理面板（root 作用域）。
+    scope.slots.inject("sidebar.footer.action", () =>
+      scope.slots.register(
+        { name: "sidebar.footer.action", id: "prompt-enhancer", order: 100, locale: NS },
+        SidebarPromptEntry,
       ),
     );
   });

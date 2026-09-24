@@ -16,6 +16,7 @@ import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
+import { openManager } from "../utils/ui-state.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 
 /** 输入框旁「词库」按钮（任务 5 落地完整行为）。 */
@@ -188,7 +189,24 @@ export function PromptLibraryButton({
       {open && pending === null && (
         <span style={ANCHOR}>
           <span role="dialog" aria-label={t("list.title")} style={PANEL}>
-            <span style={HEADER}>{t("list.title")}</span>
+            <span style={PANEL_HEADER}>
+              <span style={HEADER}>{t("list.title")}</span>
+              {/* 「管理」动作（规格 §7.1/§7.3）：只经 ui-state 的 openManager 打开面板，
+                  与左侧入口不互相引用（D-P6-1）。先收起源浮层，再把弹窗交给 shell.overlay。 */}
+              <button
+                type="button"
+                style={ACTION_BUTTON}
+                title={t("list.manage")}
+                aria-label={t("list.manage")}
+                aria-haspopup="dialog"
+                onClick={() => {
+                  close();
+                  openManager();
+                }}
+              >
+                {t("list.manage")}
+              </button>
+            </span>
             {loadError !== null && (
               <span role="alert" style={ERROR}>
                 <span>{t("error.load")}</span>
@@ -285,6 +303,14 @@ const PANEL: React.CSSProperties = {
   overflowY: "auto",
   padding: 8,
   fontSize: 12,
+};
+
+/** 面板头：标题 + 「管理」动作。 */
+const PANEL_HEADER: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 6,
 };
 
 const HEADER: React.CSSProperties = { color: TOKEN.muted, fontSize: 11, fontWeight: 600 };
