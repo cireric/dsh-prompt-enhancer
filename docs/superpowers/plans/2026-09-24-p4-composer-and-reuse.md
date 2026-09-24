@@ -728,6 +728,7 @@ git commit -m "feat(client): template variable dialog and hash suggest overlay"
 | `{{变量}}` | 用一条含变量的提示词 → 断言弹窗出现该变量名；填入后插入 → 断言占位被替换；关闭后重开 → 断言带出上次值 |
 | `#` 浮层 | 在输入框输入「帮我 #周」→ 断言浮层出现且只剩匹配项；点击后断言草稿被替换为正文 |
 | 零 console error | `browser_console_messages` 里 Errors: 0（本插件相关为 0） |
+| 宿主加载无 unresolved require | 浏览器控制台/宿主日志里不得出现该插件的 unresolved require 报错（任务 1 的 ⚠️2 归属本项；若报错则按报错内容调整 `dsh.client.inject`） |
 
 - [ ] **步骤 3：把验收结论写入本文件末尾**（命令、断言结果、失败项、以及「插入并发送」实际发出的消息内容）
 - [ ] **步骤 4：提交**：`test(client): record M4 live GUI acceptance`
