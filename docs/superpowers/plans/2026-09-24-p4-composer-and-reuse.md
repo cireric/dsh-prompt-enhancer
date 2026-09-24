@@ -788,7 +788,7 @@ git commit -m "feat(client): template variable dialog and hash suggest overlay"
 
 **已知限制与遗留（交接给后续里程碑）**
 
-1. **弹窗 Cancel 后焦点不归还**（验收第 15 行 FAIL）：`activeElement` 落回 `<body>`，随后键入不进 composer。宿主 `SessionStandardProps`/`InputActions` **无公开 focus 能力**（已核实 `input.d.ts:219-230`、`slots.d.ts:241-247`），用 DOM focus 绕过会违反规格 §7.3 ⇒ **需用户拍板**（接受「再点一次输入框」或另议方案）。候选点击路径实测不受影响（PASS）。
+1. **弹窗 Cancel 后焦点不归还**（验收第 15 行 FAIL）：`activeElement` 落回 `<body>`，随后键入不进 composer。宿主 `SessionStandardProps`/`InputActions` **无公开 focus 能力**（已核实 `input.d.ts:219-230`、`slots.d.ts:241-247`），用 DOM focus 绕过会违反规格 §7.3。**用户 2026-09-24 裁定：接受此限制，归 P5/P6 的 UI 打磨时一并决定**（不单独返工）。候选点击路径实测不受影响（PASS）。
 2. **设置即时生效**：`showComposerButton` 与 `hashTriggerEnabled` 均为「mount 时读一次」语义；P8 的设置页须同时接入二者并决定是否改成即时（本轮验收已按「重挂载后生效」口径通过）。
 3. **`#` 令牌的边界**：仅识别草稿**末尾**令牌（宿主无 caret）；`#` 后紧跟标点会并入查询词；`"#a#b"` 不触发——均为待产品决策项。
 4. **延期轻微项**（最终评审已分拣为「可作后续任务，建议 P5 顺手做」）：smoke 两条插槽断言可进一步收紧（当前正则对 alias/嵌套对象写法会假 RED）、`api.ts` 与 `promptSummary` 无单测、`PREFIX` 字面量双份、`parseMemory` 应下移以便单测、`replaceHashToken` 无令牌分支未测、notice 同文案不重置计时器等。
