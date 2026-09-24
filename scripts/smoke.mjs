@@ -37,15 +37,25 @@ if (clientSrc === null) {
     fail("lib/client.js 缺少纯净的 { apply, inject } 导出重写（检查 build.mjs 的 footer）");
   } else ok("lib/client.js 含 { apply, inject } 导出重写");
 
-  // 客户端产物必须真的注册了本轮的两个座位（防止「构建成功但插槽没进去」）
+  // 客户端产物必须真的注册了本轮的两个座位（防止「构建成功但插槽没进去」）。
+  // 每条断言必须**同时**看到 `slots.inject("<slot>")` 与 `register({ … name: "<slot>" })`：
+  // 裸子串检查会被注入面里的字符串单独满足（同一字面量在 inject 参数与 register 选项里各出现
+  // 一次），因此「删掉 register 调用、只留 inject」依旧全绿——见变异验证（临时删掉某处
+  // `name: "conversation.input.left"` 后本条必须 FAIL）。
+  const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const slot of ["conversation.input.left", "conversation.input.overlay"]) {
-    if (!clientSrc.includes(slot)) fail("lib/client.js 未注册插槽 " + slot);
-    else ok("lib/client.js 注册插槽 " + slot);
+    const esc = reEscape(slot);
+    const injected = new RegExp('slots\\.inject\\(\\s*"' + esc + '"').test(clientSrc);
+    const registered = new RegExp('register\\(\\s*\\{[^{}]*name:\\s*"' + esc + '"').test(clientSrc);
+    if (!injected) fail("lib/client.js 未注入插槽 " + slot + '（slots.inject("' + slot + '") 缺失）');
+    else if (!registered) fail("lib/client.js 未注册插槽 " + slot + '（register({ … name: "' + slot + '" }) 缺失）');
+    else ok("lib/client.js 注册插槽 " + slot + "（inject + register 同时存在）");
   }
   // i18n 断言必须同时看到「命名空间常量」与「把该常量交给 register」：裸子串检查会被
   // 插槽选项里的 locale: NS 误判为通过（NS 的字符串值在那里也出现）。
   // 常量名不写死：直接从 bundle 里 shape 出保存 NS 值的那个标识符。
-  const nsConst = clientSrc.match(/var ([A-Za-z_$][\w$]*) = "prompt-enhancer"/);
+  // 声明关键字放宽为 var|const|let：esbuild 改写或压缩后可能是 const/let，写死 var 会误报 RED。
+  const nsConst = clientSrc.match(/\b(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*"prompt-enhancer"/);
   if (nsConst === null) fail("lib/client.js 未见值为 prompt-enhancer 的命名空间常量");
   else if (!new RegExp("\\.register\\(\\s*" + nsConst[1] + "\\b").test(clientSrc)) {
     fail("lib/client.js 定义了命名空间常量 " + nsConst[1] + " 却未用它注册字典（register 调用缺失）");
