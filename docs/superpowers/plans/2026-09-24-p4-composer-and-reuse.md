@@ -771,3 +771,25 @@ git commit -m "feat(client): template variable dialog and hash suggest overlay"
 1. **D2 已选**：`#` 浮层采用「尾令牌 + 点击选择」，**不**接管键盘（不接受 D2-b）。因此规格 §9.3 验收 2 里的「↑↓ 选择、回车插入」**改为**「点击选择」；这一偏离已在执行记录中声明。
 2. **规格追加已批**：把 `conversation.input.overlay` 纳入 §7.1 的座位表（规格 §13.7），计划按此执行。
 3. ③ 降级路径未采纳（`#` 触发保留）。
+
+---
+
+## P4 执行记录（2026-09-24，子代理驱动）
+
+**状态：** M4 达成。7 个任务全部完成、逐一经任务评审（含 2 轮修复），并通过最终全分支评审（判「修复后可合并」→ 一轮修复波 → 范围化复审全项 ADDRESSED）。
+
+| 证据 | 结果 |
+| --- | --- |
+| 单元测试 | **64/64 通过**（新增 3 个纯逻辑测试文件：template / hash-token / insert），多轮变异验证 |
+| 四项检查 | `typecheck` 0 / `test` 64 / `build` 0 / `smoke` PASSED（smoke 新增 i18n + 2 座位断言，并修掉一条假绿） |
+| 活 GUI 验收 | `docs/superpowers/plans/2026-09-24-p4-m4-acceptance.md`：与验收表**逐行对齐 18 行** → PASS 17 / FAIL 1 / NOT RUN 1 |
+| 产物一致性 | 评审者用同参数 esbuild 重建 `lib/client.js`，与提交**逐字节一致**；dev 日志位于 `if (false)` 内 |
+| 零 DOM 注入 | `src/client/**` 无 `querySelector`/`MutationObserver`/`appendChild`/任何键盘监听；唯一 document 监听为只读 `pointerdown`（与官方 `PopupSelectView` 同款） |
+
+**已知限制与遗留（交接给后续里程碑）**
+
+1. **弹窗 Cancel 后焦点不归还**（验收第 15 行 FAIL）：`activeElement` 落回 `<body>`，随后键入不进 composer。宿主 `SessionStandardProps`/`InputActions` **无公开 focus 能力**（已核实 `input.d.ts:219-230`、`slots.d.ts:241-247`），用 DOM focus 绕过会违反规格 §7.3 ⇒ **需用户拍板**（接受「再点一次输入框」或另议方案）。候选点击路径实测不受影响（PASS）。
+2. **设置即时生效**：`showComposerButton` 与 `hashTriggerEnabled` 均为「mount 时读一次」语义；P8 的设置页须同时接入二者并决定是否改成即时（本轮验收已按「重挂载后生效」口径通过）。
+3. **`#` 令牌的边界**：仅识别草稿**末尾**令牌（宿主无 caret）；`#` 后紧跟标点会并入查询词；`"#a#b"` 不触发——均为待产品决策项。
+4. **延期轻微项**（最终评审已分拣为「可作后续任务，建议 P5 顺手做」）：smoke 两条插槽断言可进一步收紧（当前正则对 alias/嵌套对象写法会假 RED）、`api.ts` 与 `promptSummary` 无单测、`PREFIX` 字面量双份、`parseMemory` 应下移以便单测、`replaceHashToken` 无令牌分支未测、notice 同文案不重置计时器等。
+5. **客户端入口缺可执行测试**：`apply(fakeCtx)` 后断言 `slots.register` 次数与参数——评审建议的下一步（可把插槽接线从「文本扫描」升级为行为断言）。
