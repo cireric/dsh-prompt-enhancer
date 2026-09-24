@@ -37,11 +37,31 @@ if (clientSrc === null) {
     fail("lib/client.js 缺少纯净的 { apply, inject } 导出重写（检查 build.mjs 的 footer）");
   } else ok("lib/client.js 含 { apply, inject } 导出重写");
 
+  // 客户端产物必须真的注册了本轮的两个座位（防止「构建成功但插槽没进去」）
+  for (const slot of ["conversation.input.left", "conversation.input.overlay"]) {
+    if (!clientSrc.includes(slot)) fail("lib/client.js 未注册插槽 " + slot);
+    else ok("lib/client.js 注册插槽 " + slot);
+  }
+  // i18n 断言必须同时看到「命名空间常量」与「把该常量交给 register」：裸子串检查会被
+  // 插槽选项里的 locale: NS 误判为通过（NS 的字符串值在那里也出现）。
+  // 常量名不写死：直接从 bundle 里 shape 出保存 NS 值的那个标识符。
+  const nsConst = clientSrc.match(/var ([A-Za-z_$][\w$]*) = "prompt-enhancer"/);
+  if (nsConst === null) fail("lib/client.js 未见值为 prompt-enhancer 的命名空间常量");
+  else if (!new RegExp("\\.register\\(\\s*" + nsConst[1] + "\\b").test(clientSrc)) {
+    fail("lib/client.js 定义了命名空间常量 " + nsConst[1] + " 却未用它注册字典（register 调用缺失）");
+  } else ok("lib/client.js 注册 i18n 命名空间 prompt-enhancer");
+
   // 在受控沙箱中真实执行 bundle，捕获 __ModuleLoader__.load 的入参
   let captured = null;
   const fakeWindow = { __ModuleLoader__: { load: (entry) => { captured = entry; } } };
-  // react / @deepseek-ai/* 由加载器在运行时解析；P1 的入口在加载期不 require 任何东西
-  const fakeRequire = (id) => { throw new Error("smoke: 加载期不应 require 外部模块（" + id + "）"); };
+  // react / @deepseek-ai/* 由宿主的模块表在运行时解析（宿主 require 是同步查表：
+  // seed → 已物化记录 → 已注册 factory，见 dsh-client-modules 的 makeRequire）。
+  // P1 的零 import 入口在此只需一个「不请求任何外部模块」的 require；P4 起入口真的
+  // 引入 React 组件，故这里按 external 清单给出最小桩，其余裸模块名一律报错。
+  const fakeRequire = (id) => {
+    if (id === "react" || id === "react/jsx-runtime") return { createElement: () => null };
+    throw new Error("smoke: 意外的外部模块请求（" + id + "）——不在 P1 契约的 external 清单里");
+  };
 
   try {
     new Function("window", clientSrc)(fakeWindow);
