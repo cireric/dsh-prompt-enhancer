@@ -216,7 +216,8 @@ export function skillTargetPath(name: string): string;                   // $DSH
 ```
 
 - [ ] **步骤 2：单测（含负样本）**
-  - 名字校验：`"Weekly Report"` → `weekly-report`；`"../evil"`、`"a/b"`、`""`、`"A_B"` **必须拒绝**（路径穿越防护）
+  - 名字校验：`"Weekly Report"` → `weekly-report`（kebab 化后接受）；`"../evil"`、`"a/b"`、`""` **必须拒绝**（结构性输入）
+  - **策略澄清（执行时细化）**：路径安全由「校验**最终**名字」保证，而不是由「拒绝原始输入的一切异常形态」保证——因此大小写混合/下划线这类**无害**输入会被归一后接受（若一律拒绝会把 AI 常给的 `Weekly Report` 也堵死）；只有含路径分隔符或 `..` 的结构性输入才直接拒绝
   - frontmatter **三字段齐全**（含 `whenToUse`；AI 没给时省略该行但 name/description 必有）
   - description 兜底链：只有 summary → 用 summary；只有正文 → 用首行；全空 → **拒绝导出**并回明确错误（负样本：空 description 必须拒）
   - 同名冲突：目标目录已存在且**不属于本插件任何提示词** → 返回 `conflict: true`（由路由决定是否弹确认）
