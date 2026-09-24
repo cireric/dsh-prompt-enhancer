@@ -738,7 +738,7 @@ git commit -m "feat(client): template variable dialog and hash suggest overlay"
 | 面板不被裁剪 | 快速列表/浮层在 composer 区域可见、未被祖先 `overflow` 裁掉 |
 | 焦点归还 | 弹窗确认/取消后焦点回到输入框（否则用户需再点一次） |
 | 重复提示可见 | 连续两次触发同一提示（如列表里已删除的项）时提示仍可见（notice 定时器/相同文案不重跑的回归点） |
-| 设置关闭按钮 | `PUT /settings` 把 `showComposerButton` 置 false → 按钮消失；置 true → 恢复 |
+| 设置关闭按钮 | `PUT /settings` 把 `showComposerButton` 置 false → **重挂载后**按钮消失（本组件在 mount 时读一次设置）；置 true → 恢复。**即时生效不属本里程碑**：P8 的设置页负责「改完立即生效」，并与 `hashTriggerEnabled` 的接线同批做（最终评审发现此条与实现约束矛盾，已就地修正计划） |
 | 宿主加载无 unresolved require | 浏览器控制台/宿主日志里不得出现该插件的 unresolved require 报错（任务 1 的 ⚠️2 归属本项；若报错则按报错内容调整 `dsh.client.inject`） |
 
 - [ ] **步骤 3：把验收结论写入本文件末尾**（命令、断言结果、失败项、以及「插入并发送」实际发出的消息内容）
