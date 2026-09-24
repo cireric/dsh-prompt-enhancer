@@ -1,0 +1,5 @@
+# dsh-prompt-enhancer bundle patch：把本插件的 loader 行挂进任何在
+# dsh.profile.bundles 中列出本 bundle 的 profile。
+- insert:
+    - id: prompt-enhancer
+      name: 'dsh-prompt-enhancer'

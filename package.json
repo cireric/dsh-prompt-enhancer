@@ -1,0 +1,48 @@
+{
+  "name": "dsh-prompt-enhancer",
+  "version": "0.1.0",
+  "description": "DSH 提示词增强插件：提示词管理、AI 优化、沉淀与复用（精简版）",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": { "default": "./lib/index.js" },
+    "./client": { "default": "./lib/client.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "cordis.patch.yml"],
+  "engines": { "node": ">=22.19" },
+  "scripts": {
+    "link-dsh-deps": "node scripts/link-dsh-deps.mjs",
+    "build": "node scripts/build.mjs",
+    "build:dev": "node scripts/build.mjs --dev",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.6.0"
+  },
+  "contributors": [
+    {
+      "name": "master1Sun",
+      "url": "https://github.com/master1Sun",
+      "comment": "upstream author of dsh-prompt-library (MIT), from which this plugin is derived"
+    }
+  ],
+  "license": "MIT"
+}
