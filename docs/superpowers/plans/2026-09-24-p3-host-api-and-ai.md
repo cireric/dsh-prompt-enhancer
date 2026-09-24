@@ -74,7 +74,7 @@ src/index.ts（唯一 host 装配点）
 | **P3-D7** | `/skills/export`：技能名必须过 `/^[a-z0-9]+(-[a-z0-9]+)*$/` 且 `description` 非空（走 summary → AI description → body 首行 → 标题的兜底链），否则**拒绝导出**并回明确错误；目标目录固定 `$DSH_HOME/skills/<name>/` | 规格 §6.5 的三个实测缺陷修正；kebab 校验同时阻断路径穿越（`../` 不可能通过该正则） |
 | **P3-D8** | 技能目录归属判定：读 `$DSH_HOME/skills/<name>/SKILL.md` 的 frontmatter 之外，另用 `getPromptIdBySkillName`（遍历 store 里 `skillName` 字段）判断「该目录是否属于本插件」 | 规格 §7.6「同名冲突确认」需要它；只用文件系统判断无法区分「我们导出的」与「用户手写的」 |
 | **P3-D9** | 路由层**不写业务逻辑**：只做「解析请求 → 调 store/ai/skills → 组装信封 → 错误映射」 | 保证 26 条路由薄而一致；业务语义全部已在 P2 的 store 与 P3 的 ai/skills 中，且各有测试 |
-| **P3-D10** | 统一错误映射：`ApiResponse` 一律 `{ ok, data?, error? }`；参数错误 400、未找到 404、AI 不可用 503、未预期异常 500（且 `console.error` 打印堆栈） | 规格 §5 的信封契约；「错误可见」是全局规则 |
+| **P3-D10** | 统一错误映射：`ApiResponse` 一律 `{ ok, data?, error? }`；参数错误 400、未找到 404、**同名冲突 409**、AI 或设置服务不可用 503、未预期异常 500（且 `console.error` 打印堆栈） | 规格 §5 的信封契约；「错误可见」是全局规则。409 是执行时新增：前端需据此区分「同名目录不属于本插件，请确认」（信封里不能带 data 表示冲突，因为规格规定客户端以 `data === undefined` 判失败） |
 | **P3-D11** | `@deepseek-ai/dsh-llm` 与 `@deepseek-ai/schemastery` 声明为 **optional peer**（`peerDependenciesMeta.optional = true`），`@deepseek-ai/cordis` 保持必需 | schemastery 不在 web profile 的依赖树里（只在共享 `profiles/node_modules`）：若声明为**必需** peer，pnpm 默认的 `auto-install-peers` 会去 registry 拉一个**版本可能与宿主不同**的副本——既是一次供应链事件（用户对此敏感），也会造成「两份 schemastery」的隐患。声明为 optional 的语义正是「宿主提供、缺失可降级」，与我们既定的降级行为（无 settings → 默认值；无 llm → 503）一致。上游正是用 optional 标记 `dsh-llm` |
 
 ---
@@ -294,3 +294,35 @@ export function skillTargetPath(name: string): string;                   // $DSH
 2. `GET /ai/providers` 的返回形状由 P4/P8 的设置页下拉直接消费。
 3. 技能过期判定字段（`updatedAt` vs `skillExportedAt`）已就绪，P7 只做 UI。
 4. P6 的导入导出 UI：导入走「客户端读文件 → 解析成对象 → `POST /import`」；导出走「选目录 → `POST /export/save`」（**不需要** `/fs/*` 路由）。
+5. **AI 路由的耗时特征（实测）**：`POST /ai/polish` 一次真实调用耗时 **42.7s**——首个候选约 30s 超时后自动回退到下一个候选才成功。故 P5 的 AI 按钮前端超时必须远大于 30s（建议 ≥120s），并给出「正在调用」的状态提示，否则用户会以为按钮坏了。
+6. `POST /skills/export` 同名冲突返回 **409**（不是 400），P7 据此弹确认框，再带 `conflictConfirmed: true` 重试。
+
+---
+
+## P3 执行记录（2026-09-24）
+
+**状态：** M3 达成——26 条路由全部落地并在**活宿主**上逐条 curl 通过（40 项断言：正样本 + 负样本），`node --test` **54 个用例全绿**，`typecheck` / `build` / `smoke` 退出码均为 0。
+
+**交付物：** `src/host/settings.ts`、`src/host/ai.ts`、`src/host/refine.ts`、`src/host/text.ts`（承载 AI 文本后处理）、`src/host/skills.ts`、`src/host/routes.ts`、`src/index.ts`（四段装配）；测试 `tests/text.test.mjs`、`tests/settings.test.mjs`、`tests/skills.test.mjs`；`package.json` 增 optional peer；`scripts/build.mjs` external 增 schemastery / dsh-settings。
+
+**验收方式：** 用 super-injector 热重载已注入的本插件（不碰 profile、不重启 `dsh web`），再用 `curl` 打活宿主。脚本 `.tmp/m3-acceptance.sh`（一次性工具，gitignored）。
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 26 条路由逐条可用 | 通过 | 40/40 断言 PASS（每条含正样本与负样本：404 / 400 / 409 / 503 分支都走到） |
+| 设置只动自己的命名空间 | 通过 | `PUT /settings` 前后，`settings.yaml` 除新增 `prompt-enhancer:` 段外**其余顶层键内容逐行完全一致**（3144 字节 vs 3144 字节，差异行 0） |
+| AI 链路端到端 | 通过 | `GET /ai/providers` 列出 3 个 provider / 10 个模型；`POST /ai/polish` 一次真实调用返回结果（42.7s，含首候选超时后的自动回退） |
+| 技能导出真实写盘 | 通过 | `POST /skills/export` → `$DSH_HOME/skills/m3-acceptance-temp/SKILL.md`，**被 DSH 技能系统即时发现**并出现在可用技能列表中（frontmatter 的 name/description 均解析成功，description 走了「正文首行」兜底） |
+| 清理与复原 | 通过 | 临时提示词与回收站已清空（`/prompts` 只剩种子）、临时技能目录已删除、`/tmp` 备份已删、验收改动的两个设置值已复原为默认 |
+
+**E2E 抓到的两个真问题（只有活宿主验收能发现）**：
+
+1. **`renameTag` 对空标签静默失效**（我的实现缺陷）：原实现对「没有任何提示词使用该标签」直接 `return 0`，于是字典里用户手动建的空标签**改名无效**（旧名残留、新名不存在）。已修：仅当「没人用 **且** 字典里也没有」才返回 0；新增回归用例并做变异验证（退回旧实现 → 用例失败）。
+2. **技能导出会写进工作区外**：`$DSH_HOME/skills/` 不在会话沙箱可写范围，验收产生的临时技能目录需**一次性提权**才删得掉（且它已进入用户的可用技能列表）。已清理；结论记入下方「操作注意」。
+
+**操作注意（给后续验收 / P7）**：
+
+- 任何会真实写盘的验收项（技能导出、`/export/save`）都会在用户环境留下痕迹；技能导出**没有反向删除接口**（D8 只做单向导出），验收脚本必须自带清理，而清理可能需提权。
+- 本轮验收把「真实写盘」一项从脚本里移除（首次已证），避免重复污染用户技能库；其内容正确性由 `tests/skills.test.mjs` 持续覆盖。
+
+**测试口径说明：** `tests/text.test.mjs` 钉住了一条**上游既有局限**（`stripAiFiller` 的两个正则只有行首锚定，正文首行以「好的」开头时会被整行误剥）——本版按规格「搬运」保留，是否改为行尾锚定留给用户决定（见风险 R-P3-7）。

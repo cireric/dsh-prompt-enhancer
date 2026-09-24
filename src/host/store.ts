@@ -579,14 +579,21 @@ export function listTags(): Array<{ name: string; count: number }> {
   return rows.map((r) => ({ name: r.name, count: counts.get(r.name) ?? 0 }));
 }
 
-/** 重命名：字典表 + 所有引用了该标签的提示词一起改；返回受影响条数。 */
+/**
+ * 重命名：字典表 + 所有引用了该标签的提示词一起改；返回受影响（提示词）条数。
+ *
+ * ⚠️ **不能因为「没有提示词在用」就提前返回**：字典里可能有用户手动建的空标签，
+ * 它照样应该被改名。只有「没人用 **且** 字典里也没有」才是无事可做。
+ * （E2E 验收发现的缺陷：早期版本对空标签直接 return 0，导致改名静默失效。）
+ */
 export function renameTag(from: string, to: string): number {
   const cur = getDb();
   const target = normalizeTagName(to);
   if (!target) return 0;
 
   const affected = selectAllPrompts().map(rowToPrompt).filter((p) => p.tags.includes(from));
-  if (affected.length === 0) return 0;
+  const existsInDict = cur.prepare("SELECT 1 FROM tags WHERE name = ?").get(from) !== undefined;
+  if (affected.length === 0 && !existsInDict) return 0;
 
   return inTransaction(cur, () => {
     ensureTagWith(cur, target);

@@ -287,6 +287,23 @@ test("标签：in-use 拒绝（N3）、重命名连带更新提示词、计数",
   assert.equal(store.createTag("重复创建"), "重复创建", "createTag 必须幂等");
 });
 
+test("标签重命名：空标签（无人使用但字典里有）也必须改名，不存在才返回 0", () => {
+  // E2E 验收发现的缺陷回归：早期实现对「没有被任何提示词使用」的标签直接 return 0，
+  // 于是字典里的空标签改名静默失效（旧名残留、新名不存在）。
+  store.createTag("空标签旧名");
+  assert.equal(store.renameTag("空标签旧名", "空标签新名"), 0, "没有提示词受影响，返回 0");
+  const names = store.listTags().map((t) => t.name);
+  assert.ok(names.includes("空标签新名"), "字典里的标签必须已改名");
+  assert.ok(!names.includes("空标签旧名"), "旧名必须从字典消失");
+
+  assert.equal(store.renameTag("根本不存在的标签", "x"), 0, "字典里没有 → 返回 0");
+
+  // 被提示词使用的标签仍是「连带更新 + 返回受影响条数」
+  const p = store.createPrompt({ title: "改名对象", body: "x", tags: ["连带旧名"] });
+  assert.equal(store.renameTag("连带旧名", "连带新名"), 1);
+  assert.ok(store.getPrompt(p.id).tags.includes("连带新名"));
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 超限淘汰：N5 + N6（本文件最后一个用例，会清空全库以构造受控数据集）
 // ─────────────────────────────────────────────────────────────────────────────
