@@ -218,6 +218,10 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
 
   return (
     <div
+      // T7 活体探针的锚点（修复轮 1 评审要求 6）：挂在**管理面板自己的对话框元素**上——
+      // 面板关闭即该节点不存在（不是「存在但零尺寸」），而遮罩层根节点不带此锚点，
+      // 故「只剩确认弹窗」不会被误判成面板开着。
+      data-prompt-enhancer-manager=""
       role="dialog"
       aria-modal="true"
       aria-label={t("manager.title")}

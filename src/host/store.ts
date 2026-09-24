@@ -794,12 +794,18 @@ function pruneOrphanTags(cur: DatabaseSync): void {
 
 /**
  * 超过上限时物理删除（不进回收站），返回被淘汰的 id。
- * 顺序：**`aiRefined = 0` 优先**（未经人工确认价值），其次 `lastUsedAt` 最旧——规格 §4.4，
- * 与上游的 `usageCount` 升序**不同**，不得照抄上游（P2-D3）。
+ * 顺序：**`aiRefined = 0` 优先**（未经人工确认价值），其次 `lastUsedAt` 最旧、`createdAt` 最旧，
+ * 最后以 `id` 升序兜底——规格 §4.4，与上游的 `usageCount` 升序**不同**，不得照抄上游（P2-D3）。
+ *
+ * 必须是**全序**（修复轮 1 的评审阻断项）：客户端预检读的是 `GET /prompts` 的 default 排序
+ * （最新优先），而本函数读 `selectAllPrompts()`（无 `ORDER BY` = 插入序）——同一集合、**不同顺序**。
+ * 键并列时排序稳定性只会各自保持输入序，两端就会给出不同的受害者；全序（最后一键 `id` 唯一）
+ * 才能让「弹窗列的受害者」与「实际被物理删除的对象」必然一致。`createdAt` 也会并列
+ * （导入把备份里的 `createdAt` 原样写入，见 `validateBackup`），故 `id` 兜底不是可选项。
  *
  * ⇄ **同源排序键**：`src/client/utils/eviction.ts#previewEvictions` 逐键复现这里的受害者
- * （宿主没有 dry-run 路由，§4.4 的二次确认靠客户端预演）。改这里的排序键**必须**同时改那一端，
- * 一致性由 `tests/eviction.test.mjs` 的「双跑对照」逐 id 锁死。
+ * （宿主没有 dry-run 路由，§4.4 的二次确认靠客户端预演）。本键序是 §4.4 的**单一事实源**，
+ * 改任一侧**必须**同改另一侧；一致性由 `tests/eviction.test.mjs` 的「双跑对照」逐 id 锁死。
  */
 export function enforceMaxCount(maxCount: number): string[] {
   const cur = getDb();
@@ -807,8 +813,15 @@ export function enforceMaxCount(maxCount: number): string[] {
   if (all.length <= maxCount) return [];
 
   const victims = [...all]
-    // ⇄ 同源排序键：与 src/client/utils/eviction.ts#previewEvictions 逐键对应（改一处必改另一处）
-    .sort((a, b) => Number(a.aiRefined) - Number(b.aiRefined) || a.lastUsedAt - b.lastUsedAt)
+    // ⇄ 本键序是 §4.4 的**单一事实源**：与 src/client/utils/eviction.ts#previewEvictions 逐字同键同序，
+    //   改任一侧必须同改另一侧。
+    .sort(
+      (a, b) =>
+        Number(a.aiRefined) - Number(b.aiRefined) ||
+        a.lastUsedAt - b.lastUsedAt ||
+        a.createdAt - b.createdAt ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    )
     .slice(0, all.length - maxCount);
 
   inTransaction(cur, () => {

@@ -46,7 +46,7 @@ function ConfirmDialog({
 }): React.ReactElement {
   return (
     <div
-      // T7 活体探针的锚点（与 data-prompt-enhancer-manager 区分）。
+      // T7 活体探针的**独立**锚点：确认层存在即在场，与 data-prompt-enhancer-manager 分开取证。
       data-prompt-enhancer-confirm=""
       style={CONFIRM_LAYER}
       onPointerDownCapture={(ev) => {
@@ -84,8 +84,10 @@ export function PromptSurfaceHost({ t }: PromptSurfaceHostProps): React.ReactEle
   if (!open && confirmRequest === null) return null;
   return (
     <div
-      // T7 活体探针的锚点：关闭态该节点**不存在**（不是「存在但零尺寸」）。
-      data-prompt-enhancer-manager=""
+      // 本节点只是「遮罩层」：它铺 backdrop 并接管「点外面关」。**不带任何探针锚点**——
+      // 管理面板的锚点挂在管理面板自己的对话框元素上（见 PromptManagerModal 根节点），
+      // 于是「只有确认层在场」时不存在 data-prompt-enhancer-manager，
+      // T7 的「关闭态零盒子」探针不会被误判成「管理面板开着」（修复轮 1 评审要求 6）。
       style={backdrop}
       // 点外面关：作用域是**本弹窗根节点**（不是 document），且判定是「点在遮罩自身」——
       // 卡片内 / 嵌套确认层内的点击目标是后代节点，target !== currentTarget，因此不会被误关。

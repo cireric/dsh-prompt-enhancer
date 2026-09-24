@@ -147,3 +147,110 @@ test("不改动入参：previewEvictions 不得就地排序调用方给的数组
   previewEvictions(prompts, 1, 0);
   assert.deepEqual(prompts.map((p) => p.id), ids, "入参数组的顺序必须原样保留（内部先复制）");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 修复轮 1（评审阻断项）：客户端读到的顺序 ≠ 存储层的行序
+//
+// 客户端读 `GET /prompts`（api.listPrompts 不传 sort → 宿主的 default 排序 = 最新优先），
+// 而 `enforceMaxCount` 读 `selectAllPrompts()`（无 ORDER BY = 插入序）。同一集合、**不同顺序**：
+// 键并列时排序稳定性只会各自保持输入序，两端就会给出不同的受害者（实测：弹窗报最新的一条、
+// 实际物理删除最旧的一条）。下面三组用例分别锁住「复现场景 / ≥4 条并列 / createdAt 也并列」。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 把全库 `createdAt` 统一成同一个值。
+ *
+ * store 的公开 API 不写 `createdAt`（不在 PUT 白名单），但**导入**路径会把备份里的 `createdAt`
+ * 原样写入（`store.ts#validateBackup`），故「createdAt 并列」是**可达状态**，不是人为构造的边角。
+ * 这里直接对临时库执行 UPDATE 来造它（与 tests/store.test.mjs 的 schema 用例同一手法）。
+ */
+async function flattenCreatedAt(value) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { dbPath } = await import("../src/host/paths.ts");
+  const db = new DatabaseSync(dbPath());
+  try {
+    db.prepare("UPDATE prompts SET createdAt = ?").run(value);
+  } finally {
+    db.close();
+  }
+}
+
+test("修复轮 1 ① 复现场景：客户端最新优先、存储层插入序，全并列下双跑仍逐 id 相等", async () => {
+  wipe();
+  const a = store.createPrompt({ title: "A 最旧", body: "a" });
+  await pause();
+  const b = store.createPrompt({ title: "B 中间", body: "b" });
+  await pause();
+  const c = store.createPrompt({ title: "C 最新", body: "c" });
+
+  const clientOrder = store.listPrompts(); // = GET /prompts 的真实顺序
+  assert.deepEqual(
+    clientOrder.map((p) => p.id),
+    [c.id, b.id, a.id],
+    "前提：客户端顺序是「最新优先」，与存储层插入序正好相反（这正是故障的土壤）",
+  );
+  assert.ok(
+    clientOrder.every((p) => !p.aiRefined && p.lastUsedAt === 0),
+    "前提：新建的 lastUsedAt 恒为 0 → 三条在 (aiRefined, lastUsedAt) 上完全并列",
+  );
+
+  const predicted = previewEvictions(clientOrder, 3, 1).map((p) => p.id);
+  const actual = store.enforceMaxCount(3 - 1); // ≡ 落库 1 条后按上限 3 淘汰
+  assert.deepEqual(predicted, [a.id], "全序第三键 createdAt 升序 → 命中最旧的那条（不是客户端顺序的第一条）");
+  assert.deepEqual(predicted, actual, "双跑对照：弹窗列的受害者必须 = 实际被物理删除的对象");
+});
+
+test("修复轮 1 ② 五条 lastUsedAt=0 / aiRefined=false 的并列集：双跑逐 id 相等，淘汰最旧的两条", async () => {
+  wipe();
+  const ids = [];
+  for (let i = 0; i < 5; i += 1) {
+    ids.push(store.createPrompt({ title: "并列 " + i, body: "x" + i }).id);
+    await pause();
+  }
+  const clientOrder = store.listPrompts();
+  assert.equal(
+    clientOrder.filter((p) => !p.aiRefined && p.lastUsedAt === 0).length,
+    5,
+    "前提：五条在 (aiRefined, lastUsedAt) 上全部并列（≥4 条）",
+  );
+
+  const predicted = previewEvictions(clientOrder, 5, 2).map((p) => p.id);
+  const actual = store.enforceMaxCount(5 - 2); // 2 名受害者
+  assert.deepEqual(predicted, [ids[0], ids[1]], "并列时按 createdAt 升序淘汰最旧的两条");
+  assert.deepEqual(predicted, actual, "双跑对照：并列集也必须逐 id 相等（含次序）");
+});
+
+test("修复轮 1 ③ createdAt 也全部并列（导入可达）：id 兜底键给出同一名受害者", async () => {
+  wipe();
+  const a = store.createPrompt({ title: "同刻 A", body: "a" });
+  await pause();
+  const b = store.createPrompt({ title: "同刻 B", body: "b" });
+  await pause();
+  const c = store.createPrompt({ title: "同刻 C", body: "c" });
+
+  // 早于 FRESH_MS：让 default 排序走 tail 分支（按 updatedAt desc），客户端顺序与插入序相反。
+  await flattenCreatedAt(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const clientOrder = store.listPrompts();
+  assert.equal(new Set(clientOrder.map((p) => p.createdAt)).size, 1, "前提：createdAt 全部并列");
+  assert.deepEqual(
+    clientOrder.map((p) => p.id),
+    [c.id, b.id, a.id],
+    "前提：客户端顺序（最新更新优先）与存储层插入序相反",
+  );
+
+  const predicted = previewEvictions(clientOrder, 3, 1).map((p) => p.id);
+  const actual = store.enforceMaxCount(3 - 1);
+  assert.deepEqual(
+    predicted,
+    actual,
+    "createdAt 并列时必须由 id 兜底键决出同一名受害者（删掉 id 键本用例必红）",
+  );
+  assert.deepEqual(
+    previewEvictions(clientOrder, 3, 1).map((p) => p.id),
+    predicted,
+    "同输入必须给出同一结果（可重复）",
+  );
+  assert.equal(store.getPrompt(predicted[0]), undefined, "该受害者确实被物理删除");
+});
+
