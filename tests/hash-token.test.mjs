@@ -18,9 +18,18 @@ test("replaceHashToken：用正文替换尾令牌，保留令牌之前的文本"
 
 test("filterPrompts：标题/标签/正文子串匹配，标题命中优先，limit 生效", () => {
   const p = (id, title, body, tags) => ({ id, title, body, tags });
-  const list = [p("1", "周报生成", "写周报", []), p("2", "翻译", "写周报的英文版", ["周报"]), p("3", "无关", "无关", [])];
-  assert.deepEqual(h.filterPrompts(list, "周报").map(x => x.id), ["1", "2"], "标题命中排前，正文命中在后");
-  assert.deepEqual(h.filterPrompts(list, "周报", 1).map(x => x.id), ["1"]);
+  // 低优先级命中（p2：标签+正文）故意排在标题命中（p1）之前：只有真正的打分优先级
+  // 才能把它顶到前面，扁平化/倒置优先级/只按正文匹配/删掉 sort 都会退化为输入顺序 ["2","1"]。
+  const list = [p("2", "翻译", "写周报的英文版", ["周报"]), p("1", "周报生成", "写周报", []), p("3", "无关", "无关", [])];
+  assert.deepEqual(h.filterPrompts(list, "周报").map(x => x.id), ["1", "2"], "标题命中排前，标签/正文命中在后");
+  assert.deepEqual(h.filterPrompts(list, "周报", 1).map(x => x.id), ["1"], "limit 生效：截断发生在排序之后");
   assert.equal(h.filterPrompts(list, "").length, 3, "空查询返回全部（截到 limit）");
   assert.deepEqual(h.filterPrompts(list, "不存在的词"), []);
+});
+
+test("filterPrompts：标签命中优先于正文命中（title > tags > body 契约的中段）", () => {
+  const p = (id, title, body, tags) => ({ id, title, body, tags });
+  // 正文命中(b) 故意排在标签命中(t) 之前；只有「标签 2 > 正文 1」才能把 t 顶到前面。
+  const list = [p("b", "翻译", "写周报", []), p("t", "翻译", "无关", ["周报"])];
+  assert.deepEqual(h.filterPrompts(list, "周报").map(x => x.id), ["t", "b"], "标签命中排前，正文命中在后");
 });
