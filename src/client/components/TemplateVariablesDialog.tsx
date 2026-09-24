@@ -11,7 +11,7 @@ import * as React from "react";
 import type { TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
 import { api } from "../utils/api.ts";
 import { en, zh } from "../utils/i18n.ts";
-import { fillTemplate, memoryKey, parseVariables, pickRemembered } from "../utils/template.ts";
+import { fillTemplate, memoryKey, parseVariables, parseMemory, pickRemembered } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 
 /** 任务 6 依赖的对外接口：正文 + 取消 + 回填。 */
@@ -46,23 +46,6 @@ function hostLanguage(): string {
 function fallbackTranslate(): TranslateNS<"prompt-enhancer"> {
   const dict: Record<string, string> = hostLanguage().toLowerCase().startsWith("zh") ? zh : en;
   return (key: string) => dict[key] ?? key;
-}
-
-/** 容错读取变量记忆：空值即「没有记忆」，非法 JSON 按空对象并留 console 痕迹。 */
-function parseMemory(raw: string): Record<string, string> {
-  if (raw.trim() === "") return {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, string> = {};
-    for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === "string") out[name] = value;
-    }
-    return out;
-  } catch (err) {
-    console.warn("[prompt-enhancer] " + memoryKey + " 不是合法 JSON，本次按无记忆处理", err);
-    return {};
-  }
 }
 
 export function TemplateVariablesDialog({

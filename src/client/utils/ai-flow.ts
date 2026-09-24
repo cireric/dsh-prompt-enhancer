@@ -21,9 +21,12 @@ export function libraryCreateInput(refined: AiRefineResult, originalDraft: strin
   tags: string[];
   summary: string;
 } {
-  const firstLine = originalDraft.split(/\r\n|\n|\r/)[0] ?? "";
+  // 兜底取**首个非空行**：草稿以空行开头（先回车再打字）时 [0] 是空串，落库 title 就会是空的；
+  // 整份草稿全空白时没有任何可用标题（返回空串，不抛）。
+  const firstLine = originalDraft.split(/\r\n|\n|\r/).find((line) => line.trim() !== "") ?? "";
   return {
-    title: clampTitle(refined.title || firstLine),
+    // AI 标题只有空白字符时等于没给标题：判据用 trim，兜底后才交给 clampTitle。
+    title: clampTitle(refined.title.trim() || firstLine),
     body: originalDraft,
     tags: refined.tags.slice(0, 1),
     summary: refined.summary,

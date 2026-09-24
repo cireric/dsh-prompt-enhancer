@@ -398,11 +398,21 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   if (settings === null || settings.showAIPolishButton === false) return null;
 
-  // 调用/完善/存库三态同属「忙」：按钮置灰、状态行可见，重入由 busyRef 兜底。
-  const busy = status === "polishing" || status === "refining" || status === "saving";
-  const polishing = status === "polishing";
+  // 调用/完善/存库三态同属「忙」：按钮置灰、aria-busy、状态行可见，重入由 busyRef 兜底。
+  // 提示文案按阶段取值：refining 是另一次 AI 调用、saving 是本地写库，都不该沿用
+  // polishing 那句「正在调用 AI…（最长约 2 分钟）」。
+  const busyKey: PromptEnhancerKey | null =
+    status === "polishing"
+      ? "ai.polishing"
+      : status === "refining"
+        ? "ai.refining"
+        : status === "saving"
+          ? "ai.saving"
+          : null;
   const empty = draft.trim() === "";
-  const hint = busy ? t("ai.polishing") : empty ? t("ai.empty") : t("ai.tip");
+  const hint = busyKey !== null ? t(busyKey) : empty ? t("ai.empty") : t("ai.tip");
+  /** 淘汰提示：写回失败时也必须可见（那时 status 不是 saved，但淘汰已经真实发生）。 */
+  const evictedNotice = evicted ? <span style={MUTED}>{t("ai.evicted")}</span> : null;
   const showRefined = status === "refined" || status === "saveFailed";
   const dialogLabel =
     status === "done"
@@ -417,11 +427,11 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     <span ref={rootRef} style={WRAP}>
       <button
         type="button"
-        style={{ ...BUTTON, cursor: empty || busy ? "default" : "pointer", opacity: empty || busy ? 0.6 : 1 }}
+        style={{ ...BUTTON, cursor: empty || busyKey !== null ? "default" : "pointer", opacity: empty || busyKey !== null ? 0.6 : 1 }}
         title={hint}
         aria-label={t("ai.button")}
-        aria-busy={polishing}
-        disabled={empty || busy}
+        aria-busy={busyKey !== null}
+        disabled={empty || busyKey !== null}
         onClick={() => {
           if (empty) return;
           run(draft);
@@ -433,9 +443,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
       {status !== "idle" && (
         <span style={ANCHOR}>
           <span role="dialog" aria-label={dialogLabel} style={PANEL}>
-            {busy && (
+            {busyKey !== null && (
               <span role="status" aria-live="polite" style={MUTED}>
-                {t(status === "polishing" ? "ai.polishing" : status === "refining" ? "ai.refining" : "ai.saving")}
+                {t(busyKey)}
               </span>
             )}
             {status === "error" && (
@@ -562,6 +572,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                     </span>
                   )}
                 </span>
+                {evictedNotice}
                 <span style={ACTIONS}>
                   <button type="button" style={PANEL_BUTTON} onClick={retryWriteBack}>
                     {t("ai.retryWriteBack")}
@@ -577,7 +588,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                 <span role="status" aria-live="polite" style={MUTED}>
                   {t("ai.saved")}
                 </span>
-                {evicted && <span style={MUTED}>{t("ai.evicted")}</span>}
+                {evictedNotice}
                 {toggleError !== null && (
                   <span role="alert" style={ERROR}>
                     <span>{t(toggleError.key)}</span>

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { api, ApiError, AI_TIMEOUT_MS } = await import("../src/client/utils/api.ts");
+const { api, ApiError, AI_TIMEOUT_MS, AI_PROBE_TIMEOUT_MS } = await import("../src/client/utils/api.ts");
 
 /** 打桩 globalThis.fetch：记录每次调用，调用方必须 try/finally 复原。 */
 function stubFetch(handler) {
@@ -140,6 +140,42 @@ test("listAiProviders：数组原样透传", async () => {
     assert.deepEqual(await api.listAiProviders(), providers);
     assert.equal(s.calls[0].url, "/api/prompt-enhancer/ai/providers");
     assert.equal(s.calls[0].init.method, "GET");
+  } finally {
+    s.restore();
+  }
+});
+
+// 探测请求也必须自己收尾：任务 2 的重入闸门会一直持有到它落定，
+// 没有 AbortSignal 时 GET /ai/providers 挂起 = AI 按钮持续 disabled。
+test("listAiProviders：探测请求带未中断的 AbortSignal，且超时常量有界、短于 AI 调用", async () => {
+  const s = stubFetch(() => jsonRes({ ok: true, data: [] }));
+  try {
+    assert.deepEqual(await api.listAiProviders(), []);
+    const { init } = s.calls[0];
+    assert.ok(init.signal instanceof AbortSignal, "init.signal 应是 AbortSignal");
+    assert.equal(init.signal.aborted, false);
+    assert.equal(AI_PROBE_TIMEOUT_MS, 15000, "探测超时 15s");
+    assert.ok(AI_PROBE_TIMEOUT_MS < AI_TIMEOUT_MS, "探测不得等满 2 分钟");
+  } finally {
+    s.restore();
+  }
+});
+
+// 超时靠「call() 不包裹 fetch」这一结构成立：一旦有人为统一错误面把 fetch 包进
+// try/catch 重抛 ApiError，DOMException("TimeoutError") 会被降级成 "ai.fail"。
+// 这条零等待用例把该结构钉死（不伪造 120s 真实超时）。
+test("polishPrompt：超时异常原样穿过 call() 抵达分类器（TimeoutError → ai.timeout）", async () => {
+  const { aiErrorKey } = await import("../src/client/utils/ai-flow.ts");
+  const s = stubFetch(() => {
+    throw new DOMException("signal timed out", "TimeoutError");
+  });
+  try {
+    await assert.rejects(api.polishPrompt("原文草稿"), (err) => {
+      assert.equal(err.name, "TimeoutError", "不得被包装成 ApiError");
+      assert.equal(err instanceof ApiError, false, "超时不走 ApiError 信封路径");
+      assert.equal(aiErrorKey(err), "ai.timeout");
+      return true;
+    });
   } finally {
     s.restore();
   }

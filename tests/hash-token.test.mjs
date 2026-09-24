@@ -16,6 +16,11 @@ test("replaceHashToken：用正文替换尾令牌，保留令牌之前的文本"
   assert.equal(h.replaceHashToken("#周", "生成周报"), "生成周报");
 });
 
+test("replaceHashToken：草稿里没有令牌时原样返回（不得吞掉/改写正文）", () => {
+  assert.equal(h.replaceHashToken("没有令牌", "正文"), "没有令牌");
+  assert.equal(h.replaceHashToken("", "正文"), "");
+});
+
 test("filterPrompts：标题/标签/正文子串匹配，标题命中优先，limit 生效", () => {
   const p = (id, title, body, tags) => ({ id, title, body, tags });
   // 低优先级命中（p2：标签+正文）故意排在标题命中（p1）之前：只有真正的打分优先级

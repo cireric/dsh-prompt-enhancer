@@ -17,6 +17,9 @@ export const SCHEMA_VERSION = 2;
 /** 导入导出信封的版本号（与参考项目同构，见规格 §4.3）。 */
 export const BACKUP_VERSION = 1;
 
+/** 唯一路由前缀：host 注册（routes.ts）与 client 调用（api.ts）共用，避免两处字面量漂移。 */
+export const API_PREFIX = "/api/prompt-enhancer";
+
 /** 把小标题限制在 TITLE_MAX_LEN 个字符内。 */
 export function clampTitle(title: string): string {
   return title.slice(0, TITLE_MAX_LEN);

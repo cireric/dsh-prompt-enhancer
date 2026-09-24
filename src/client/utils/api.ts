@@ -1,9 +1,17 @@
-import type { PluginSettings, Prompt, PromptPatch, PromptSort } from "../../types.ts";
-
-const PREFIX = "/api/prompt-enhancer";
+import { API_PREFIX, type PluginSettings, type Prompt, type PromptPatch, type PromptSort } from "../../types.ts";
 
 /** 前端 AI 路由超时（120s，用户裁定）；超时由 AbortSignal.timeout 触发，分类见 ai-flow.ts#aiErrorKey。 */
 export const AI_TIMEOUT_MS = 120_000;
+
+/**
+ * `/ai/providers` 探测超时（15s）。
+ *
+ * 与 AI_TIMEOUT_MS 分开：探测只问「有没有可用模型」，不该让按钮等满 2 分钟。
+ * 它是硬需求而非优化——任务 2 的重入闸门（busyRef）会一直持有到该请求落定，
+ * 没有 signal 时一次挂起的 GET 等于 AI 按钮永久 disabled，而「最长约 2 分钟」
+ * 那句文案约束不到这个请求。
+ */
+export const AI_PROBE_TIMEOUT_MS = 15_000;
 
 /** 信封失败与响应解析失败统一抛出的错误：带 HTTP status，供调用方按状态分类（不匹配 message 文本）。 */
 export class ApiError extends Error {
@@ -28,7 +36,7 @@ interface Envelope<T> { ok: boolean; data?: T; error?: string }
  * `timeoutMs` 传了才挂 AbortSignal.timeout：AI 路由用 AI_TIMEOUT_MS，其余路由不设超时（保持 P4 行为）。
  */
 async function call<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
-  const res = await fetch(PREFIX + path, {
+  const res = await fetch(API_PREFIX + path, {
     method,
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -72,7 +80,7 @@ export const api = {
   updatePrompt: (id: string, patch: PromptPatch & { aiWriteBack?: boolean }) =>
     call<Prompt>("PUT", "/prompts/" + encodeURIComponent(id), patch),
   rollbackPrompt: (id: string) => call<Prompt>("POST", "/prompts/" + encodeURIComponent(id) + "/rollback"),
-  listAiProviders: () => call<AiSelectable[]>("GET", "/ai/providers"),
+  listAiProviders: () => call<AiSelectable[]>("GET", "/ai/providers", undefined, AI_PROBE_TIMEOUT_MS),
   polishPrompt: (body: string, opts: { keepVariables?: boolean } = {}) =>
     call<{ polished: string; summary?: string }>(
       "POST",

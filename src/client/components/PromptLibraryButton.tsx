@@ -50,7 +50,11 @@ export function PromptLibraryButton({
   /** null = 本次打开还没加载完。 */
   const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
-  const [notice, setNotice] = React.useState<string | null>(null);
+  /**
+   * 已删除提示。带 seq 而不是裸字符串：同一条文案再次触发时 React 不为同值 setState
+   * 重跑 effect，4s 计时器就不会重置——seq 每次 +1 让 effect 依赖真的变化。
+   */
+  const [notice, setNotice] = React.useState<{ text: string; seq: number } | null>(null);
   const [pending, setPending] = React.useState<PendingUse | null>(null);
   const rootRef = React.useRef<HTMLSpanElement | null>(null);
 
@@ -137,7 +141,7 @@ export function PromptLibraryButton({
       // 宿主 `POST /prompts/:id/use` 对已删除的提示词回 404「提示词不存在」。
       if (reason.includes("不存在")) {
         setPrompts((prev) => (prev === null ? prev : prev.filter((item) => item.id !== prompt.id)));
-        setNotice(t("error.noPrompt"));
+        setNotice((prev) => ({ text: t("error.noPrompt"), seq: (prev?.seq ?? 0) + 1 }));
       }
     });
   };
@@ -168,7 +172,7 @@ export function PromptLibraryButton({
       </button>
       {notice !== null && (
         <span role="status" aria-live="polite" style={NOTICE}>
-          {notice}
+          {notice.text}
         </span>
       )}
       {open && pending !== null && (

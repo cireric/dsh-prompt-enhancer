@@ -15,10 +15,7 @@ import * as skills from "./skills.ts";
 import * as store from "./store.ts";
 import { clearRouteCache } from "./ai.ts";
 import { getSettings, isSettingsAvailable, updateSettings } from "./settings.ts";
-import type { PromptPatch, PromptSort } from "../types.ts";
-
-/** 唯一路由前缀。 */
-export const PREFIX = "/api/prompt-enhancer";
+import { API_PREFIX, type PromptPatch, type PromptSort } from "../types.ts";
 
 /** 路由注册对象（与 `@deepseek-ai/dsh-host-webserver` 的 `WebRoute` 对齐）。 */
 export interface PromptEnhancerRoute {
@@ -73,7 +70,7 @@ function asStringArray(value: unknown): string[] | undefined {
 
 function segments(pathname: string): string[] {
   return pathname
-    .slice(PREFIX.length)
+    .slice(API_PREFIX.length)
     .split("/")
     .filter(Boolean)
     .map((s) => {
@@ -373,5 +370,5 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
 
 /** 构造注册用的路由数组（单条 prefix 路由）。 */
 export function makeRoutes(): PromptEnhancerRoute[] {
-  return [{ kind: "prefix", path: PREFIX, handler: dispatch }];
+  return [{ kind: "prefix", path: API_PREFIX, handler: dispatch }];
 }

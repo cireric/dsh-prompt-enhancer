@@ -33,6 +33,21 @@ test("libraryCreateInput：AI title 为空串时取原文首行（第一个换�
   assert.equal(flow.libraryCreateInput(refined, longFirstLine).title, "甲".repeat(TITLE_MAX_LEN));
 });
 
+test("libraryCreateInput：原文以空行开头时取首个非空行（否则落库 title 为空）", () => {
+  const refined = { title: "", tags: [], summary: "", body: "完善稿" };
+  assert.equal(flow.libraryCreateInput(refined, "\n标题").title, "标题");
+  assert.equal(flow.libraryCreateInput(refined, "\n\n标题\n正文").title, "标题");
+  const blank = flow.libraryCreateInput(refined, "   \n\t\n  ");
+  assert.equal(blank.title, "", "全空白草稿 → 空 title，且不抛");
+  assert.equal(blank.body, "   \n\t\n  ", "body 永远是原文，一字不改");
+});
+
+test("libraryCreateInput：AI title 只有空白字符时视为没有标题，取原文首行", () => {
+  const refined = { title: "  ", tags: [], summary: "", body: "完善稿" };
+  assert.equal(flow.libraryCreateInput(refined, "第一行\n第二行").title, "第一行");
+  assert.equal(flow.libraryCreateInput({ ...refined, title: "\t" }, "第一行").title, "第一行");
+});
+
 test("needsWriteBack：完善稿与原文不同 → true；完全相同 → false（对应 store.ts 的写回边界）", () => {
   assert.equal(flow.needsWriteBack("AI 完善稿", "原文草稿"), true);
   assert.equal(flow.needsWriteBack("原文草稿", "原文草稿"), false);
