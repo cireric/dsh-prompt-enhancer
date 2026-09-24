@@ -77,15 +77,28 @@ export function TemplateVariablesDialog({
   const [remembered, setRemembered] = React.useState(false);
   /** 落库的完整记忆（本轮未填的变量不被抹掉）。 */
   const memory = React.useRef<Record<string, string>>({});
+  /**
+   * 记忆读取状态：`pending` 未返回 → `ok` 读到完整记忆 / `failed` 读取失败。
+   *
+   * 只有 `ok` 时 `memory.current` 才是**完整**记忆、可以安全地读-改-写；
+   * `pending` 与 `failed` 下它都是空对象，此时写回会把所有提示词共用的整份
+   * `pl:template-var-memory` 替换成本轮值（全部变量为空时就是写入 `{}`，
+   * 静默抹掉其它模板的已记忆值）。故这两态一律**跳过** `setMeta`，
+   * 语义为「本次按无记忆处理」，而不是「清空记忆」。
+   */
+  const readState = React.useRef<"pending" | "ok" | "failed">("pending");
 
   // 打开时读一次记忆：预填上次填过的值，并提示用户。
   React.useEffect(() => {
     let alive = true;
+    // body 变了就重新等这一次读取（未就绪期间不得写回陈旧记忆）。
+    readState.current = "pending";
     api.getMeta(memoryKey).then(
       (raw) => {
         if (!alive) return;
         const stored = parseMemory(raw);
         memory.current = stored;
+        readState.current = "ok";
         const prefill = pickRemembered(body, stored);
         // 记忆是异步回来的：合并而不是覆盖，用户在这期间敲进去的值不被抹掉。
         setValues((prev) => {
@@ -96,6 +109,9 @@ export function TemplateVariablesDialog({
         setRemembered(Object.keys(prefill).length > 0);
       },
       (err: unknown) => {
+        if (!alive) return;
+        // 置位为 failed：不再算「未就绪」，但同样不允许写回（见 readState 注释）。
+        readState.current = "failed";
         console.warn("[prompt-enhancer] " + memoryKey + " 读取失败，本次按无记忆处理", err);
       },
     );
@@ -106,12 +122,17 @@ export function TemplateVariablesDialog({
 
   const confirm = (ev: React.FormEvent<HTMLFormElement>): void => {
     ev.preventDefault();
-    const merged: Record<string, string> = { ...memory.current };
-    for (const [name, value] of Object.entries(values)) if (value !== "") merged[name] = value;
-    // 记忆写入不阻塞插入：失败只留 console 痕迹（宿主标准 props 无 toast 座位）。
-    void api.setMeta(memoryKey, JSON.stringify(merged)).catch((err: unknown) => {
-      console.warn("[prompt-enhancer] " + memoryKey + " 保存失败", err);
-    });
+    if (readState.current === "ok") {
+      const merged: Record<string, string> = { ...memory.current };
+      for (const [name, value] of Object.entries(values)) if (value !== "") merged[name] = value;
+      // 记忆写入不阻塞插入：失败只留 console 痕迹（宿主标准 props 无 toast 座位）。
+      void api.setMeta(memoryKey, JSON.stringify(merged)).catch((err: unknown) => {
+        console.warn("[prompt-enhancer] " + memoryKey + " 保存失败", err);
+      });
+    } else {
+      // 读取未返回或已失败：memory.current 不完整，写回会覆盖共享记忆。
+      console.warn("[prompt-enhancer] " + memoryKey + " 记忆未就绪，本次不写回");
+    }
     onFilled(fillTemplate(body, values));
   };
 
