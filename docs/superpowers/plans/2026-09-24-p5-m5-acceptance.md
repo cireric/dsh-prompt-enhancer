@@ -8,6 +8,7 @@
 ## 环境与口径
 
 - 被验收提交：**HEAD `474239725dfcd883aa33e1624b488beecf92fee2`**（= `4742397`），工作区开始与结束均 `git status --porcelain` 为空。
+- **元信息（后续补记）**：本记录对应提交 `4742397`；其后 `d8ca9b0` / `ee4056a` / 本次修复仅改文案、文档与 smoke 断言，未改变任何已记录断言的结论。
 - 宿主：`http://127.0.0.1:3080`（DSH Local Build 0.1.5-rc.2-c291；viewport 1280×720；`document.documentElement.lang === "en"`）。
 - 驱动方式：Playwright（`browser_navigate` / `browser_find` / `browser_click` / `browser_type` / `browser_press_key` / `browser_evaluate` / `browser_console_messages` / `browser_network_requests`）+ 只读或受控 `curl` HTTP。
 - **证据分层（明确区分，不混用）**：
@@ -89,7 +90,7 @@
 | O-2 | 观察（测试自身造成） | 淘汰测试必然产生 1 条 404 与「提示词不存在」写回失败 | 被淘汰记录是**物理删除**（不进回收站），面板随后的写回 PUT 必然 404；这正是这个分支要展示的真实场景。 | 表 A 第 10 行 |
 | O-3 | 观察（遗留，与 P4 一致） | **AI 结果面板几何上覆盖 composer** | 真实 Playwright 点击 composer 中心时被面板内「One-click refine」拦截（actionability 失败 `… intercepts pointer events`）；面板 rect `[702,404,398,221]` 与 composer 区域相交。P4 验收第 14 行对词库面板记过同一形态的「预期布局（非裁剪）」。本项已通过「面板可 `Close`、且点面板外任意 pointerdown 即关闭」缓解（表 A 第 12 行实测）。用户真实点击的最终落点未在本轮验证。 | `AIPolishButton.tsx:653-660`（`ANCHOR` 贴按钮上沿、zIndex 31） |
 | O-4 | 观察（数据卫生） | **被淘汰提示词留下的标签仍在标签字典里** | 建记录时标签已写入字典（`ensureTagsWith`），随后记录被物理淘汰，标签成为 `count=0` 的孤儿（本轮产生 `文本改写`）。不属本任务判定范围（标签清理是管理面板事项），已由本验收手动删除。 | `src/host/store.ts`（`createPrompt` → `ensureTagsWith`；`enforceMaxCount` 只删 prompts 行） |
-> **D-1 已修（d8ca9b05475600e129908b7713f56366692acc5c）**：`ai.timeout` 文案去掉具体时长——探测 15s 与调用 120s 共用该键，写死数字对二者之一必然错；时长信息由 `ai.polishing` 承担。
+> **D-1 已修（`d8ca9b0`）**：`ai.timeout` 文案去掉具体时长——探测 15s 与调用 120s 共用该键，写死数字对二者之一必然错。**P5 收尾（本次修复）把时长声明也从 `ai.polishing` 移出**：该键同样被 15s 的探测路径复用，等于 D-1 的同类错配换了个键；改后 `ai.polishing` 不含数字（en `Calling AI…` / zh `正在调用 AI…`），「可能较长」的预期移到闲置态悬停文案 `ai.tip`（en `Polish the composer draft with AI (may take a minute or two)`）——探测 15s 与调用 120s 两条路径都不再含写死时长。
 
 ## 临时数据与副作用
 

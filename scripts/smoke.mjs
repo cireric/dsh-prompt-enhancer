@@ -141,19 +141,38 @@ if (clientSrc === null) {
             );
           } else ok("register " + ledger.length + " 条账本逐条相符 " + JSON.stringify(ledger));
 
-          // 2) 每条都是 function 组件且带 locale；3) 每条都接线在某个 slots.inject 里
+          // 2) 每条都是 function 组件且带 locale
           const before = failures;
           for (const [, opts, comp] of register) {
             const label = String(opts.id) + "（" + String(opts.name) + "）";
             if (typeof comp !== "function") fail("座位 " + label + " 的组件不是 function，实为 " + typeof comp);
             if (opts.locale !== NS) fail("座位 " + label + " 的 locale 应为 " + NS + "，实为 " + String(opts.locale));
-            if (!records.some((rec) => rec[0] === "inject" && rec[1] === opts.name)) {
-              fail('座位 ' + label + " 未接线：没有对应的 slots.inject(\"" + String(opts.name) + '\")');
-            }
           }
           if (failures === before && register.length > 0) {
-            ok("每条 register 的组件均为 function、locale = " + NS + "、且 name 都出现在某条 inject 里");
+            ok("每条 register 的组件均为 function、locale = " + NS);
           }
+
+          // 3) 接线成对：**按注册顺序**逐条配对。本插件有两处同名座位
+          //    （conversation.input.left × 2），用「该 name 出现在某条 inject 里」这种集合判定
+          //    会让第二处座位接到哪条 inject 上不受检查（评审已用变异实测到该漏网）。
+          const injects = records.filter((rec) => rec[0] === "inject").map((rec) => rec[1]);
+          const registeredNames = register.map((rec) => rec[1].name);
+          if (injects.length !== registeredNames.length) {
+            fail(
+              "inject 与 register 条数不等：inject " + injects.length + " 条 / register " + registeredNames.length + " 条",
+            );
+          } else if (!same(injects, registeredNames)) {
+            fail(
+              "接线未成对（按注册顺序应 injects[i] === register[i].name）\n" +
+                "      期望 " + JSON.stringify(registeredNames) + "\n" +
+                "      实为 " + JSON.stringify(injects),
+            );
+          } else ok("接线成对：injects 与 register 按注册顺序逐条同名（" + injects.length + " 对）");
+
+          // 3b) 每条 inject 的座位名都必须有对应 register —— 座位名拼错（宿主侧静默不渲染）在此暴露。
+          const unregistered = injects.filter((name) => !registeredNames.includes(name));
+          if (unregistered.length > 0) fail("有 inject 未配对到任何 register：" + JSON.stringify(unregistered));
+          else if (injects.length > 0) ok("每条 inject 的座位名都有对应 register");
 
           // 4) 字典注册恰好 1 次，且 zh / en 键集相等且非空
           const locale = records.filter((rec) => rec[0] === "locale");

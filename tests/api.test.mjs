@@ -190,3 +190,15 @@ test("api 表面：P4 的 5 个方法与 P5 新增的 6 个方法都在，且 AI
   }
   assert.equal(AI_TIMEOUT_MS, 120000);
 });
+
+// 宿主 PUT 只认白名单（事实在 src/host/routes.ts 的 PUT 分发）：客户端补丁类型必须与之一致。
+// 此前 api.updatePrompt 的类型宽于白名单，sourceBody / aiRefined / aiRefinedAt 被编译期放行、
+// 运行期被宿主静默丢弃且仍回 200，注释宣称的「防拼错字段」不成立。这里断言白名单本身
+// （不扫描 routes.ts 源码——那种断言会因排版变化而假阳性/假阴性）。
+test("PROMPT_WRITABLE_KEYS：恰好是宿主 PUT 白名单的 6 个键，且不含 sourceBody/aiRefined/aiRefinedAt", async () => {
+  const { PROMPT_WRITABLE_KEYS } = await import("../src/types.ts");
+  assert.deepEqual([...PROMPT_WRITABLE_KEYS], ["title", "body", "tags", "summary", "skillName", "skillExportedAt"]);
+  for (const key of ["sourceBody", "aiRefined", "aiRefinedAt"]) {
+    assert.ok(!PROMPT_WRITABLE_KEYS.includes(key), key + " 不可经 PUT 写入，不得进 api.updatePrompt 的补丁类型");
+  }
+});

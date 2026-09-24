@@ -1,4 +1,4 @@
-import { API_PREFIX, type PluginSettings, type Prompt, type PromptPatch, type PromptSort } from "../../types.ts";
+import { API_PREFIX, type PluginSettings, type Prompt, type PromptSort, type PromptWritablePatch } from "../../types.ts";
 
 /** 前端 AI 路由超时（120s，用户裁定）；超时由 AbortSignal.timeout 触发，分类见 ai-flow.ts#aiErrorKey。 */
 export const AI_TIMEOUT_MS = 120_000;
@@ -72,12 +72,14 @@ export const api = {
   createPrompt: (input: { title: string; body: string; tags?: string[]; summary?: string }) =>
     call<{ prompt: Prompt; evicted: string[] }>("POST", "/prompts", input),
   /**
-   * 宿主 PUT 只认白名单字段：拼错字段名会被静默丢弃且仍回 200，故补丁类型必须是
-   * `PromptPatch`（types.ts 已导出）而不是 `Record<string, unknown>`。
-   * `aiWriteBack` 不在 `PromptPatch` 里（它是 store.updatePrompt 的选项目志，不是记录字段），
-   * 用交叉类型补上。
+   * 宿主 PUT 只认白名单字段（事实见 `src/host/routes.ts` 的 PUT 分发：title | body | tags |
+   * summary | skillName | skillExportedAt），其余字段被静默丢弃且仍回 200。故补丁类型取
+   * `PromptWritablePatch`（types.ts 已导出，由 `PROMPT_WRITABLE_KEYS` 派生的 6 键 Pick），
+   * 把 `sourceBody` / `aiRefined` / `aiRefinedAt` 这类「可读不可写」字段挡在编译期。
+   * `aiWriteBack` 是写回 `sourceBody` 的唯一路径（§4.4），它不是记录字段（store.updatePrompt
+   * 的选项目志），用交叉类型补上。
    */
-  updatePrompt: (id: string, patch: PromptPatch & { aiWriteBack?: boolean }) =>
+  updatePrompt: (id: string, patch: PromptWritablePatch & { aiWriteBack?: boolean }) =>
     call<Prompt>("PUT", "/prompts/" + encodeURIComponent(id), patch),
   rollbackPrompt: (id: string) => call<Prompt>("POST", "/prompts/" + encodeURIComponent(id) + "/rollback"),
   listAiProviders: () => call<AiSelectable[]>("GET", "/ai/providers", undefined, AI_PROBE_TIMEOUT_MS),
