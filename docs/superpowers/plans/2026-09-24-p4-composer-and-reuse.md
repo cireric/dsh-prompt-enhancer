@@ -22,6 +22,8 @@
 6. **不引入任何新依赖**；不注册 systemPrompt section。
 7. 每个任务结束：`typecheck` / `test` / `build` / `smoke` 四项全绿。
 8. 只修改本计划列出的文件。Shell 为 macOS（bash）。
+9. **客户端改动需连同 `lib/` 产物一起提交**（P1 起 `lib/` 受版本控制；否则会留下已跟踪但内容过期的产物）。
+10. **不要重跑 `npm run link-dsh-deps`**：profile 共享目录里有 8 个包是 pnpm 迁移后遗留的**悬空链接**（`dsh-client-runtime` / `dsh-client-schema-form` / `dsh-client-web-react` / `dsh-host-apiproxy` / `dsh-tool-subagent-report` / `node-addon-landlock-run` / `dsh-agent-spine-demo` / `dsh-client-ui-sidebar-textpreview`），重跑会把**当前可用的** `dsh-client-ui-slots` 也换回死路径、静默打断 `tsc`。若遇到类型解析失败：先 `readlink node_modules/@deepseek-ai/<pkg>` 判断是否悬空，若悬空则改指到 `/Users/eric/Project/tests/deepseek-harness/packages/**` 下的真实源码目录，并在报告里说明（任务 2 会把这个自愈能力写进链接器）。
 
 ---
 
@@ -71,6 +73,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 ```
 
 - 需要 type-only import 拉入 SlotMap 声明：`import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'`、`import type {} from '@deepseek-ai/dsh-client-locale/client'`
+- **`ctx.slots` 的 Context 增强由 `@deepseek-ai/dsh-client-ui-renderer/client` 声明**（`ui-slots` 包**没有** `./client` 子路径导出）——任务 1 实测：只引上面两条时 `ctx.slots` 不过编译。补 `import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'` 即可（与官方 `ui-commands` 的写法一致）。
+- 任务 1 起 `lib/client.js` 在**加载期**会合法 `require("react")`（P4 的组件要用 React），故 `scripts/smoke.mjs` 的 `fakeRequire` 必须为 `react` / `react/jsx-runtime` / `@deepseek-ai/*` 返回最小桩——这是 P1「加载期零外部依赖」契约在 P4 的自然终止，**不是**放宽断言。
 
 ### 3. ⚠️ `#` 触发：宿主触发管线**不支持第三方触发字符**（与规格假设不符）
 
@@ -351,6 +355,14 @@ git commit -m "feat(client): register composer button and hash overlay slots wit
   - `needsValues(body: string): boolean`
   - `memoryKey = "pl:template-var-memory"`
   - `pickRemembered(body: string, memory: Record<string, string>): Record<string, string>`
+
+- [ ] **步骤 0：前置修复 `scripts/link-dsh-deps.mjs`（任务 1 暴露的环境缺陷，独立提交）**
+
+任务 1 实测：profile 共享目录的 251 个 `@deepseek-ai/*` 链接里 **8 个悬空**（pnpm 迁移遗留），链接器把它们原样搬到本项目 `node_modules`，于是任何 import 到这些包的代码类型解析失败——任务 1 不得不手工把 `dsh-client-ui-slots` 的链接改指到 DSH checkout 的真实源码路径。手工改法落在 `.gitignore` 覆盖的 `node_modules` 内，**不可复现**，且重跑链接器即丢失。
+
+修复要求：在原有「逐个 symlink」之后增加**自愈**——每个链接 `existsSync` 检查，悬空者按**包名**在 DSH checkout 的 `packages/**/package.json` 中查找同名包，找到则改指该目录并打印 `healed <name> → <path>`；找不到打印 `unresolved <name>`（可见，不静默）。checkout 根目录取 `process.env.DSH_CHECKOUT`，缺失时回退 `$DSH_HOME/dsh-harness` 的 realpath（该符号链接确实存在）。
+
+验收：`node scripts/link-dsh-deps.mjs` 后 `npm run typecheck` 仍为 0，输出中 P4 用到的包不得出现 `unresolved`。提交 message：`fix(scripts): heal dangling @deepseek-ai type links in the linker`。
 
 - [ ] **步骤 1：写失败的测试**
 
