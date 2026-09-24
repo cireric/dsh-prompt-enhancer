@@ -52,6 +52,9 @@ export const zh = {
 
   // ── P6：管理面板（列表 / 详情 / §4.4 并排对比）────────────────────────
   "list.manage": "管理",
+  "list.saveDraft": "当前草稿存为提示词",
+  // 沉淀入口 B：选中聊天文字浮出的按钮。
+  "selection.save": "存为提示词",
   "manager.title": "提示词管理",
   "manager.close": "关闭",
   "manager.tab.list": "列表",
@@ -155,6 +158,9 @@ export const en: Record<keyof typeof zh, string> = {
 
   // ── P6: manager panel (list / detail / §4.4 side-by-side)──────────────
   "list.manage": "Manage",
+  "list.saveDraft": "Save current draft as prompt",
+  // Capture entry B: the button floating above a chat selection.
+  "selection.save": "Save as prompt",
   "manager.title": "Prompt manager",
   "manager.close": "Close",
   "manager.tab.list": "List",

@@ -16,7 +16,8 @@ import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { openManager } from "../utils/ui-state.ts";
+import { openManager, pushCapture } from "../utils/ui-state.ts";
+import { SelectionAddPrompt } from "./SelectionAddPrompt.tsx";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 
 /** 输入框旁「词库」按钮（任务 5 落地完整行为）。 */
@@ -130,6 +131,24 @@ export function PromptLibraryButton({
     setPending(null);
   };
 
+  /**
+   * 沉淀入口 B 的落库前段（R4：pushCapture 由本组件调用）：选中正文推进 store，再打开管理面板。
+   * 真正的落库发生在面板新建态的保存（走 `capture.ts#createFromCapture`，R28）；预填由面板在
+   * 「新建」点击那一刻用 takeCapture() 消费（T2 已实现的消费侧）——本组件不自己创建记录。
+   */
+  const saveSelection = (text: string): void => {
+    pushCapture({ body: text });
+    openManager("list");
+  };
+
+  /** 沉淀入口 C（TBD-P6-6(a)：挂在本快速列表面板里，不新增座位）：当前草稿存为提示词。 */
+  const saveDraft = (): void => {
+    if (draft.trim() === "") return;
+    close();
+    pushCapture({ body: draft });
+    openManager("list");
+  };
+
   /** 真正落草稿 + 上报用量（上报不阻塞 UI，但失败必须可见）。 */
   const apply = (prompt: Prompt, body: string, mode: InsertMode): void => {
     const next = composeDraft(draft, body, mode);
@@ -171,6 +190,13 @@ export function PromptLibraryButton({
       >
         {t("button.title")}
       </button>
+      {/* 沉淀入口 B：选中聊天文字浮出的「存为提示词」（不新增座位：渲染在本组件根节点内）。 */}
+      <SelectionAddPrompt
+        enabled={settings.selectionAddEnabled}
+        rootRef={rootRef}
+        label={t("selection.save")}
+        onSave={saveSelection}
+      />
       {notice !== null && (
         <span role="status" aria-live="polite" style={NOTICE}>
           {notice.text}
@@ -191,21 +217,38 @@ export function PromptLibraryButton({
           <span role="dialog" aria-label={t("list.title")} style={PANEL}>
             <span style={PANEL_HEADER}>
               <span style={HEADER}>{t("list.title")}</span>
-              {/* 「管理」动作（规格 §7.1/§7.3）：只经 ui-state 的 openManager 打开面板，
-                  与左侧入口不互相引用（D-P6-1）。先收起源浮层，再把弹窗交给 shell.overlay。 */}
-              <button
-                type="button"
-                style={ACTION_BUTTON}
-                title={t("list.manage")}
-                aria-label={t("list.manage")}
-                aria-haspopup="dialog"
-                onClick={() => {
-                  close();
-                  openManager();
-                }}
-              >
-                {t("list.manage")}
-              </button>
+              <span style={PANEL_ACTIONS}>
+                {/* 沉淀入口 C（TBD-P6-6(a)）：当前草稿空时不给点（空正文宿主会回 400）。 */}
+                <button
+                  type="button"
+                  style={{
+                    ...ACTION_BUTTON,
+                    opacity: draft.trim() === "" ? 0.6 : 1,
+                    cursor: draft.trim() === "" ? "default" : "pointer",
+                  }}
+                  title={t("list.saveDraft")}
+                  aria-label={t("list.saveDraft")}
+                  disabled={draft.trim() === ""}
+                  onClick={saveDraft}
+                >
+                  {t("list.saveDraft")}
+                </button>
+                {/* 「管理」动作（规格 §7.1/§7.3）：只经 ui-state 的 openManager 打开面板，
+                    与左侧入口不互相引用（D-P6-1）。先收起源浮层，再把弹窗交给 shell.overlay。 */}
+                <button
+                  type="button"
+                  style={ACTION_BUTTON}
+                  title={t("list.manage")}
+                  aria-label={t("list.manage")}
+                  aria-haspopup="dialog"
+                  onClick={() => {
+                    close();
+                    openManager();
+                  }}
+                >
+                  {t("list.manage")}
+                </button>
+              </span>
             </span>
             {loadError !== null && (
               <span role="alert" style={ERROR}>
@@ -305,12 +348,21 @@ const PANEL: React.CSSProperties = {
   fontSize: 12,
 };
 
-/** 面板头：标题 + 「管理」动作。 */
+/** 面板头：标题 + 动作组（草稿存为提示词 / 管理）；窄面板下动作组换行，不挤掉标题。 */
 const PANEL_HEADER: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
+  flexWrap: "wrap",
   gap: 6,
+};
+
+/** 面板头右侧的动作组（沉淀入口 C 与「管理」）。 */
+const PANEL_ACTIONS: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 4,
+  flex: "0 0 auto",
 };
 
 const HEADER: React.CSSProperties = { color: TOKEN.muted, fontSize: 11, fontWeight: 600 };

@@ -23,6 +23,7 @@ import {
 } from "../../types.ts";
 import { canToggle } from "../utils/ai-flow.ts";
 import { ApiError, api } from "../utils/api.ts";
+import { createFromCapture } from "../utils/capture.ts";
 import { notifyDataChanged, useDataChanged } from "../utils/data-sync.ts";
 import {
   actions,
@@ -492,7 +493,10 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
 
   const blankBody = body.trim() === "";
 
-  /** 保存：新建走 `createPrompt`，编辑走 `updatePrompt`；成功后广播数据变更。 */
+  /**
+   * 保存：新建走 `createFromCapture`（R28 的唯一落库入口，内部已广播数据变更），
+   * 编辑走 `updatePrompt`（直连 PUT，故由本组件广播）；两者成功后其它组件都会重拉。
+   */
   const save = (): void => {
     if (busy !== "idle" || blankBody) return;
     const editing = current;
@@ -509,7 +513,8 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     void (async () => {
       try {
         if (editing === null) {
-          const created = await api.createPrompt(input);
+          // 入口 A 的创建路径（R28）：与入口 B/C 同一落库入口，T4 的淘汰预检插在那里。
+          const created = await createFromCapture(input);
           if (!aliveRef.current) return;
           setCurrent(created.prompt);
           setTitle(created.prompt.title);
@@ -523,8 +528,9 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
           setTagsText((updated.tags ?? []).join(", "));
           setSummary(updated.summary ?? "");
           setNotice(t("manager.edit.saved"));
+          // 编辑路径直连 PUT，广播由本组件负责（创建路径的广播在 createFromCapture 内）。
+          notifyDataChanged();
         }
-        notifyDataChanged();
       } catch (err) {
         console.warn("[prompt-enhancer] 提示词保存失败", err);
         if (!aliveRef.current) return;
