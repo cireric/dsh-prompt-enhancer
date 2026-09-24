@@ -643,13 +643,13 @@ git commit -m "feat(client): add insert semantics and HTTP api client"
 - 依赖输入：任务 1 的 i18n / 主题、任务 4 的 `composeDraft` / `promptSummary` / `api`、任务 2 的 `parseVariables` / `fillTemplate` / `pickRemembered` / `memoryKey`
 - 对外产出：
   - 组件 `PromptLibraryButton`，props 为 `PropsRuntime<"conversation.input.left"> & PropsLocale<"prompt-enhancer">`（session 标准 props 已内含，**不再手写** `SessionStandardProps`）
-  - 组件 `TemplateVariablesDialog`，props 为 `{ body: string; onCancel: () => void; onFilled: (filledBody: string) => void }`（**本任务创建，任务 6 的 `#` 浮层复用**——它是第一个消费者，先建在这里才能保证任务 5 结束时构建是绿的）
+  - 组件 `TemplateVariablesDialog`，props 为 `{ body: string; onCancel: () => void; onFilled: (filledBody: string) => void; t?: (key: PromptEnhancerKey) => string }`——`t` 为**可选**：`ui-slots` 只在插槽边界注入 `t`，而本弹窗由组件内部渲染、不在插槽边界，故缺省时按宿主 `<html lang>` 在 zh/en 间兜底（任务 5 实测结论）（**本任务创建，任务 6 的 `#` 浮层复用**——它是第一个消费者，先建在这里才能保证任务 5 结束时构建是绿的）
 
 - [ ] **步骤 1：写组件**。要求逐条落到代码：
 
 | 要求 | 实现要点 |
 | --- | --- |
-| 有提示词时才渲染按钮 | `settings.showComposerButton` 为 false 时返回 `null`（设置从 `api.getSettings()` 读一次，`useEffect` 里加载） |
+| 按钮显隐由设置控制 | `settings.showComposerButton` 为 false 时返回 `null`（设置从 `api.getSettings()` 读一次，`useEffect` 里加载）；读取失败时**仍渲染按钮**（默认可见优于静默消失） |
 | 打开列表时拉取 | `useEffect` 里 `api.listPrompts({ sort: "default" })`；失败 → `notify("error", t("error.load"))`（用 `inputActions` 不带 notify，改用组件内 `useState` 的错误行显示——**宿主标准 props 无 notify**） |
 | 三动作 | 每行三个按钮；点击先 `composeDraft(draft, body, mode)` → `inputActions.setDraft(next.draft)`；`send` 为真时再 `inputActions.submit()` |
 | 变量提示 | 若 `needsValues(body)`：先开变量弹窗（任务 6），拿到填充后的 body 再走上面流程 |
@@ -741,7 +741,7 @@ git commit -m "feat(client): template variable dialog and hash suggest overlay"
 - `#` 浮层能按 **D2（尾令牌 + 点击选择）** 工作；**不得**出现 document 级键盘监听（D2-b 未获批准）
 - `npm run typecheck` / `test` / `build` / `smoke` 四项全绿；`tests/` 新增三个纯逻辑测试文件
 - 产物断言包含两个插槽名与 i18n 命名空间
-- **零 DOM 注入**：`src/client/**` 里不得出现 `document.querySelector`、`MutationObserver`、`appendChild`；除 D2-b 获批的 keydown 监听外不得有 `document.addEventListener`
+- **零 DOM 注入**：`src/client/**` 里不得出现 `document.querySelector`、`MutationObserver`、`appendChild`；**只读式**的 document 事件监听是允许的（例如「点浮层外关闭」用 `pointerdown`，与官方 `PopupSelectView` 同款——它只观察、不消费输入），但**禁止**任何键盘监听/捕获（D2 裁定）与 DOM 改写/注入（§7.3）；若确需键盘交互，必须先回到用户重议 D2-b
 - 客户端 bundle 仍以 `dsh-prompt-enhancer` 为模块 id
 
 ## 风险
