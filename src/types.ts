@@ -11,8 +11,8 @@ export const TITLE_MAX_LEN = 25;
 /** 提示词最大存储数量（超出时按规格 §4.4 的淘汰策略清理）。 */
 export const DEFAULT_MAX_PROMPT_COUNT = 300;
 
-/** 数据库 schema 版本，写入 meta 表。 */
-export const SCHEMA_VERSION = 1;
+/** 数据库 schema 版本，写入 meta 表。v2：回收站补 `skillName` / `skillExportedAt`（规格 §13.5）。 */
+export const SCHEMA_VERSION = 2;
 
 /** 导入导出信封的版本号（与参考项目同构，见规格 §4.3）。 */
 export const BACKUP_VERSION = 1;

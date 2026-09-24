@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 const home = mkdtempSync(join(tmpdir(), "dpe-store-"));
 process.env.DSH_HOME = home; // ← 必须在 import store 之前
 const store = await import("../src/host/store.ts");
+const { SCHEMA_VERSION } = await import("../src/types.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -60,13 +61,13 @@ test("N7 首启播种：种子提示词落库，且其标签已同步进 tags �
     const t = store.listTags().find((x) => x.name === name);
     assert.ok(t && t.count >= 1, `种子标签「${name}」必须已在 tags 表中（上游「播种先于同步」顺序缺陷的负样本）`);
   }
-  assert.equal(store.getMetaValue("schemaVersion"), "1");
+  assert.equal(store.getMetaValue("schemaVersion"), String(SCHEMA_VERSION), "schemaVersion 必须与 SCHEMA_VERSION 一致");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // schema 形状（逐字对齐规格 §4.1 的 DDL）
 // ─────────────────────────────────────────────────────────────────────────────
-test("schema 形状：4 张表 + 索引 + trash 不含 skill 两列", async () => {
+test("schema 形状：4 张表 + 索引 + trash 含 skill 两列", async () => {
   const { DatabaseSync } = await import("node:sqlite");
   const { dbPath } = await import("../src/host/paths.ts");
   const db = new DatabaseSync(dbPath());
@@ -84,12 +85,13 @@ test("schema 形状：4 张表 + 索引 + trash 不含 skill 两列", async () =
     ]);
     assert.deepEqual(cols("trash"), [
       "id", "title", "body", "tags", "summary", "sourceBody", "aiRefined", "aiRefinedAt",
-      "createdAt", "updatedAt", "usageCount", "lastUsedAt", "deletedAt",
+      "createdAt", "updatedAt", "usageCount", "lastUsedAt",
+      "skillName", "skillExportedAt", "deletedAt",
     ]);
     assert.deepEqual(cols("tags"), ["name", "createdAt"]);
     assert.deepEqual(cols("meta"), ["key", "value"]);
-    assert.ok(!cols("trash").includes("skillName"), "规格的 trash DDL 无 skillName（P2-D7）");
-    assert.ok(!cols("trash").includes("skillExportedAt"), "规格的 trash DDL 无 skillExportedAt（P2-D7）");
+    assert.ok(cols("trash").includes("skillName"), "回收站必须保留 skillName（规格 §13.5 补列）");
+    assert.ok(cols("trash").includes("skillExportedAt"), "回收站必须保留 skillExportedAt（规格 §13.5 补列）");
 
     const idx = db
       .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name")
@@ -226,6 +228,36 @@ test("回收站：软删除 → 可见 → 恢复无损 → 永久删除 → 清
   store.deletePrompt(q.id);
   assert.ok(store.emptyTrash() >= 1, "清空必须报告删除条数");
   assert.equal(store.listTrash().length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 回收站保留技能导出记录（规格 §13.5）
+// ─────────────────────────────────────────────────────────────────────────────
+test("回收站保留技能导出记录：软删除 → 恢复后 skillName/skillExportedAt 不丢", async () => {
+  const p = store.createPrompt({ title: "导出技能的对象", body: "z" });
+  const exportedAt = Date.now();
+  const exported = store.updatePrompt(p.id, { skillName: "weekly-report", skillExportedAt: exportedAt });
+  assert.equal(exported.skillName, "weekly-report");
+  assert.equal(exported.skillExportedAt, exportedAt);
+
+  store.deletePrompt(p.id);
+  const inTrash = store.listTrash().find((t) => t.id === p.id);
+  assert.ok(inTrash);
+  assert.equal(inTrash.skillName, "weekly-report", "回收站必须保留 skillName（规格 §13.5）");
+  assert.equal(inTrash.skillExportedAt, exportedAt, "回收站必须保留 skillExportedAt（规格 §13.5）");
+
+  assert.equal(store.restorePrompts([p.id]), 1);
+  const restored = store.getPrompt(p.id);
+  assert.equal(restored.skillName, "weekly-report", "恢复后必须仍知道自己导出过技能");
+  assert.equal(restored.skillExportedAt, exportedAt);
+
+  // 恢复后的过期判定仍然可用：改动正文后 updatedAt > skillExportedAt
+  await pause();
+  const edited = store.updatePrompt(p.id, { body: "改过了" });
+  assert.ok(
+    edited.updatedAt > edited.skillExportedAt,
+    "改动后必须满足「技能已过期」的判定条件（updatedAt > skillExportedAt）",
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -19,21 +19,27 @@
 7. **`lib/` 纳入版本控制**（与上游一致，使仓库可直接安装）；`*.map` 与 `.build-meta.json` 忽略。
 8. **npm 缓存必须留在工作区内**：`npm install --cache .npm-cache`。缓存落在用户目录会被沙箱拒绝（EPERM），不得为此提权。
 9. **`$DSH_HOME/profiles/**` 对本会话沙箱不可写**：安装插件、重启 `dsh web` 属用户执行步骤，不得绕过。
+10. **`src/**` 必须是「可擦除 TS」**：不得使用 `enum` / `namespace` / 参数属性等需要代码生成的语法（tsconfig 的 `erasableSyntaxOnly` 会在编译期拦住）。原因：测试直接 `import` `.ts` 源码运行。
+11. **`src/` 内部相对导入必须写显式 `.ts` 后缀**（如 `from "./paths.ts"`）：Node 直跑 TS 不做 `.js`→`.ts` 重映射；esbuild 与 tsc（`allowImportingTsExtensions`）都接受。
+12. **`src/host/store.ts` 不得 import 宿主能力**（cordis / 任何服务）：存储层必须能脱离 `dsh` 单测，宿主能力一律留在别的模块。
+13. **存储层的测试隔离靠环境变量，不得加 test-only API**：测试在自己的进程里把 `DSH_HOME` 指向临时目录；`paths.ts` 全部为调用期求值。
+14. **db 结构变更必须走 `MIGRATIONS` + 升 `SCHEMA_VERSION`**：迁移要幂等（先探测再 `ALTER`，不要「执行失败就吞掉」）。
 
 ## 命令与完成标准
 
 ```sh
 npm run typecheck   # tsc --noEmit
+npm test            # node --test（存储层单测，P2 起）
 npm run build       # lib/index.js + lib/client.js
 npm run smoke       # 真实执行 client bundle，校验注册 id 与导出形状
 ```
 
-- 每个任务结束时 `typecheck` / `build` / `smoke` 必须全绿；`npm test` 从 P2 起纳入。
+- 每个任务结束时四项必须全绿；新增的负样本必须先用变异验证「它真的能抓到对应缺陷」（临时改坏实现 → 用例必须失败 → 复原）。
 - 提交粒度：一个任务一次提交，message 用 `<type>: <scope> <what>`。
 
 ## 测试
 
-测试框架为 Node 内置 `node --test`（无第三方 runner），用例放 `tests/*.test.mjs`。P1 尚无 `test` 脚本；P2 建 `tests/` 时同步加入 `"test": "node --test"`。
+测试框架为 Node 内置 `node --test`（无第三方 runner），用例放 `tests/*.test.mjs`。测试直接 `import` `src/**/*.ts` 源码运行（Node 24 类型擦除），因此硬约束 10/11 必须遵守。
 
 ## 本机环境
 

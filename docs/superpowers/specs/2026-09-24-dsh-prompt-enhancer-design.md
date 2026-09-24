@@ -257,6 +257,7 @@ CREATE TABLE IF NOT EXISTS trash (
   aiRefined INTEGER NOT NULL DEFAULT 0, aiRefinedAt INTEGER NOT NULL DEFAULT 0,
   createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
   usageCount INTEGER NOT NULL DEFAULT 0, lastUsedAt INTEGER NOT NULL DEFAULT 0,
+  skillName TEXT, skillExportedAt INTEGER NOT NULL DEFAULT 0,   -- §13.5 补列：恢复不丢导出记录
   deletedAt INTEGER NOT NULL
 );
 
@@ -688,3 +689,18 @@ frontmatter：name（必填）/ description（必填）/ whenToUse（可选）
 - **git 仓库**：用户批准在 M1 初始化 `dsh-prompt-enhancer/` 的 git 仓库，并将本规格作为第一个 commit。
 
 修正结果：插槽注册由 4 处增至 **6 处**（新增 `sidebar.footer.action` 与 `shell.overlay`），入口与参考项目**数量一致**（输入框旁 + 左侧下方 + 设置页），且**零 DOM 注入**；同时新增设置项 `showSidebarButton`。弹窗宿主从「挂在 session 作用域的 dock」改为「root 作用域的 overlay」，顺带消除了参考项目「无会话时无法开面板」的隐性约束。
+
+### 13.5 回收站补 `skillName` / `skillExportedAt` 两列（2026-09-24，用户决定）
+
+**问题**：§4.1 原 DDL 的 `trash` 表没有 skill 两列，于是「软删除 → 恢复」会丢掉「已导出的技能」记录——恢复后徽标变成「从未导出」，用户再次导出会**再建一个技能目录**，而旧技能仍留在 `~/.dsh/skills/` 被聊天触发，同一件事变成两个重复技能且无从判断该删哪个。这直接破坏 D8「过期提示」在「删除后恢复」这条正常路径上的可用性。
+
+**决定（用户）**：补列。P2 当初按 §4.1 原文实现（并在计划里标为风险 R3），用户确认后改为补列。
+
+**落地**：
+
+- `trash` 表加 `skillName TEXT` 与 `skillExportedAt INTEGER NOT NULL DEFAULT 0`（§4.1 的 DDL 已就地更新）
+- `SCHEMA_VERSION` 由 1 升到 **2**；`store.ts` 的迁移接缝（P2 预留）承担首个真实迁移：先探测 `PRAGMA table_info(trash)` 再 `ALTER TABLE`，保证幂等
+- `deletePrompt` 把两列一并搬进回收站，`restorePrompts` 原样搬回
+- 测试：`tests/store-migration.test.mjs`（v1 库自动补列 + 老数据无损 + 二次启动幂等）与 `tests/store.test.mjs` 的「回收站保留技能导出记录」用例
+
+**未改动**：`prompts` 表的两列（§4.1 原本就有）、导出格式（§4.3，与参考项目同构不变）。

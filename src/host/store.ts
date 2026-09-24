@@ -65,11 +65,33 @@ interface TagRow {
 let db: DatabaseSync | undefined;
 
 /**
- * v2 的迁移接缝：在建表之后、播种之前**同步**执行。
+ * 迁移接缝：在建表之后、播种之前**同步**执行（顺序固定，见 P2-D5）。
+ *
  * v1 不需要任何迁移——规格 §4.3 明确不做旧库/旧 JSON 自动迁移（老用户走「旧插件导出 → 新插件导入」），
- * 因此上游那个「迁移 fire-and-forget + 播种在前」的顺序缺陷在本项目结构上不可能发生（P2-D5）。
+ * 因此上游那个「迁移 fire-and-forget + 播种在前」的顺序缺陷在本项目结构上不可能发生。
+ * v2 起承担真实迁移：见 `migrateTrashSkillColumns`。
  */
-const MIGRATIONS: Array<(cur: DatabaseSync) => void> = [];
+const MIGRATIONS: Array<(cur: DatabaseSync) => void> = [migrateTrashSkillColumns];
+
+/**
+ * v1 → v2：回收站补 `skillName` / `skillExportedAt` 两列。
+ *
+ * 规格 §4.1 的 trash DDL 原本没有这两列，于是「软删除 → 恢复」会丢掉「已导出的技能」记录：
+ * 恢复后徽标变成「从未导出」，再次导出会留下一个重复的技能目录，而旧技能仍在聊天里被触发。
+ * 经用户 2026-09-24 决定补列（见规格 §13.5）。
+ *
+ * 先探测再 ALTER（幂等）：SQLite 的 `ADD COLUMN` 没有 `IF NOT EXISTS`，而「执行失败就吞掉」
+ * 会把真实的迁移失败一并掩盖——所以这里只容忍「列已存在」这一种情况。
+ */
+function migrateTrashSkillColumns(cur: DatabaseSync): void {
+  const existing = new Set(
+    (cur.prepare("PRAGMA table_info(trash)").all() as unknown as Array<{ name: string }>).map((r) => r.name),
+  );
+  if (!existing.has("skillName")) cur.exec("ALTER TABLE trash ADD COLUMN skillName TEXT;");
+  if (!existing.has("skillExportedAt")) {
+    cur.exec("ALTER TABLE trash ADD COLUMN skillExportedAt INTEGER NOT NULL DEFAULT 0;");
+  }
+}
 
 /** 新建提示词「置顶」的新鲜度窗口（默认排序用）。 */
 const FRESH_MS = 7 * 24 * 60 * 60 * 1000;
@@ -117,6 +139,7 @@ function initDb(cur: DatabaseSync): void {
       aiRefined INTEGER NOT NULL DEFAULT 0, aiRefinedAt INTEGER NOT NULL DEFAULT 0,
       createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
       usageCount INTEGER NOT NULL DEFAULT 0, lastUsedAt INTEGER NOT NULL DEFAULT 0,
+      skillName TEXT, skillExportedAt INTEGER NOT NULL DEFAULT 0,
       deletedAt INTEGER NOT NULL
     );
 
@@ -500,7 +523,7 @@ export function recordUsage(id: string): Prompt | undefined {
   return { ...existing, usageCount: existing.usageCount + 1, lastUsedAt: now };
 }
 
-/** 软删除：整行搬进回收站（规格的 trash DDL 不含 skill 两列，P2-D7）。 */
+/** 软删除：整行搬进回收站，**含** skill 两列（规格 §13.5 补列后，恢复不再丢导出记录）。 */
 export function deletePrompt(id: string): boolean {
   const cur = getDb();
   const existing = selectPrompt(id);
@@ -510,13 +533,14 @@ export function deletePrompt(id: string): boolean {
   inTransaction(cur, () => {
     cur.prepare(
       `INSERT OR REPLACE INTO trash
-         (id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, deletedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, skillName, skillExportedAt, deletedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       existing.id, existing.title, existing.body, tagsToJson(existing.tags),
       existing.summary ?? null, existing.sourceBody ?? null,
       existing.aiRefined ? 1 : 0, existing.aiRefinedAt,
-      existing.createdAt, existing.updatedAt, existing.usageCount, existing.lastUsedAt, deletedAt,
+      existing.createdAt, existing.updatedAt, existing.usageCount, existing.lastUsedAt,
+      existing.skillName ?? null, existing.skillExportedAt, deletedAt,
     );
     cur.prepare("DELETE FROM prompts WHERE id = ?").run(id);
   });
@@ -589,7 +613,7 @@ export function deleteTag(name: string): { deleted: boolean; inUse: number } {
 export function listTrash(): TrashItem[] {
   const rows = getDb()
     .prepare(
-      `SELECT id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, deletedAt
+      `SELECT id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, skillName, skillExportedAt, deletedAt
          FROM trash ORDER BY deletedAt DESC`,
     )
     .all() as unknown as TrashRow[];
