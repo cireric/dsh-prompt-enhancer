@@ -362,7 +362,7 @@ git commit -m "feat(client): register composer button and hash overlay slots wit
 
 修复要求：在原有「逐个 symlink」之后增加**自愈**——每个链接 `existsSync` 检查，悬空者按**包名**在 DSH checkout 的 `packages/**/package.json` 中查找同名包，找到则改指该目录并打印 `healed <name> → <path>`；找不到打印 `unresolved <name>`（可见，不静默）。checkout 根目录取 `process.env.DSH_CHECKOUT`，缺失时回退 `$DSH_HOME/dsh-harness` 的 realpath（该符号链接确实存在）。
 
-验收：`node scripts/link-dsh-deps.mjs` 后 `npm run typecheck` 仍为 0，输出中 P4 用到的包不得出现 `unresolved`。提交 message：`fix(scripts): heal dangling @deepseek-ai type links in the linker`。
+验收：`node scripts/link-dsh-deps.mjs` 后 `npm run typecheck` 仍为 0；输出中**`src/` 实际 import 的包**不得出现 `unresolved`。注意口径（任务 2 评审确认）：`dsh.client.inject` 里的**运行时**模块不由类型链接器负责——例如 `@deepseek-ai/dsh-client-runtime` 在当前 checkout 中已不存在，其 `unresolved` 属**预期**，由任务 7 的「宿主加载无 unresolved require 报错」验收项覆盖。提交 message：`fix(scripts): heal dangling @deepseek-ai type links in the linker`。
 
 - [ ] **步骤 1：写失败的测试**
 
