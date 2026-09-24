@@ -174,6 +174,19 @@ if (clientSrc === null) {
           if (unregistered.length > 0) fail("有 inject 未配对到任何 register：" + JSON.stringify(unregistered));
           else if (injects.length > 0) ok("每条 inject 的座位名都有对应 register");
 
+          // 3c) 目录能力走**条件注入**（P6 裁决 R2 / 硬约束「inject 导出数组不扩张」）：
+          //     根 ctx 的 inject 调用逐条记录在此——必须恰好是 ["slots"] 与 ["uiWorkspace"]。
+          //     假 scope 没有 uiWorkspace，故这条同时覆盖「服务缺席时安全降级」的路径。
+          const injectDeps = records.filter((rec) => rec[0] === "injectDeps").map((rec) => rec[1]);
+          const EXPECTED_INJECT_DEPS = [["slots"], ["uiWorkspace"]];
+          if (!same(injectDeps, EXPECTED_INJECT_DEPS)) {
+            fail(
+              "ctx.inject 依赖记录不符（期望按调用顺序）\n" +
+                "      期望 " + JSON.stringify(EXPECTED_INJECT_DEPS) + "\n" +
+                "      实为 " + JSON.stringify(injectDeps),
+            );
+          } else ok('ctx.inject 记录 deep-equal [["slots"],["uiWorkspace"]]（导出数组仍为 ["slots","locale"]）');
+
           // 4) 字典注册恰好 1 次，且 zh / en 键集相等且非空
           const locale = records.filter((rec) => rec[0] === "locale");
           if (locale.length !== 1) {

@@ -1,4 +1,12 @@
-import { API_PREFIX, type PluginSettings, type Prompt, type PromptSort, type PromptWritablePatch } from "../../types.ts";
+import {
+  API_PREFIX,
+  type ImportResult,
+  type PluginSettings,
+  type Prompt,
+  type PromptSort,
+  type PromptWritablePatch,
+  type TrashItem,
+} from "../../types.ts";
 
 /** 前端 AI 路由超时（120s，用户裁定）；超时由 AbortSignal.timeout 触发，分类见 ai-flow.ts#aiErrorKey。 */
 export const AI_TIMEOUT_MS = 120_000;
@@ -91,4 +99,39 @@ export const api = {
       AI_TIMEOUT_MS,
     ),
   refinePrompt: (body: string) => call<AiRefineResult>("POST", "/ai/refine", { body }, AI_TIMEOUT_MS),
+
+  // ── 提示词：单条读写（P6）──────────────────────────────────────────────
+  /** 单条读取；不存在时宿主回 404（信封失败 → ApiError.status === 404）。 */
+  getPrompt: (id: string) => call<Prompt>("GET", "/prompts/" + encodeURIComponent(id)),
+  /** 软删除：进回收站（规格 §4.4），故返回的是「已删除」而不是被删实体。 */
+  deletePrompt: (id: string) => call<{ deleted: true }>("DELETE", "/prompts/" + encodeURIComponent(id)),
+
+  // ── 标签（P6）──────────────────────────────────────────────────────────
+  listTags: () => call<Array<{ name: string; count: number }>>("GET", "/tags"),
+  createTag: (name: string) => call<{ name: string }>("POST", "/tags", { name }),
+  /** 改名：旧名是路径段，新名在新体（宿主 PUT 只读 body.to）。 */
+  renameTag: (from: string, to: string) =>
+    call<{ affected: number }>("PUT", "/tags/" + encodeURIComponent(from), { to }),
+  /** 在用标签宿主回 400 并带用量（信封失败 → ApiError.status === 400），调用方按状态分类。 */
+  deleteTag: (name: string) =>
+    call<{ deleted: boolean; inUse: number }>("DELETE", "/tags/" + encodeURIComponent(name)),
+
+  // ── 回收站（P6）────────────────────────────────────────────────────────
+  listTrash: () => call<TrashItem[]>("GET", "/trash"),
+  restoreTrash: (id: string) =>
+    call<{ restored: number }>("POST", "/trash/" + encodeURIComponent(id) + "/restore"),
+  deleteTrash: (id: string) => call<{ removed: number }>("DELETE", "/trash/" + encodeURIComponent(id)),
+  emptyTrash: () => call<{ removed: number }>("DELETE", "/trash"),
+
+  // ── 导入导出（P6）──────────────────────────────────────────────────────
+  /**
+   * 导入备份。**只是信封封装，语义照宿主**（P6-4 裁定）：confirm 不为 true 时宿主只回预览
+   * （applied: false + stats），且**不**自动淘汰超限条目（「导入不淘汰」是用户裁定）。
+   * confirm 缺省时不发该键（宿主同判为未确认），调用方显式传 true 才落库。
+   */
+  importBackup: (backup: unknown, confirm?: boolean) =>
+    call<ImportResult>("POST", "/import", { backup, confirm }),
+  /** 把备份写到宿主可写的绝对路径目录；文件名由服务端生成（客户端不能指定任意文件名）。 */
+  exportBackup: (dir: string) =>
+    call<{ path: string; prompts: number; tags: number }>("POST", "/export/save", { dir }),
 };

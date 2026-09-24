@@ -9,8 +9,9 @@
  *   conversation.input.left（词库按钮，order 10）
  *   conversation.input.overlay（`#` 候选浮层，order 20）
  *   conversation.input.left（AI 优化按钮，order 11）
- * 其余座位按路线图属 P5/P7/P8。i18n 字典随本 fiber 注册，卸载即撤。
+ * 其余座位按路线图属 P6/P7/P8。i18n 字典随本 fiber 注册，卸载即撤。
  * 注册顺序即产物内注册顺序，也是 scripts/smoke.mjs 行为断言的账本顺序。
+ * P6 追加：目录选择能力（ctx.uiWorkspace）经**条件注入**持有，inject 导出数组不扩张。
  */
 
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
@@ -19,10 +20,13 @@ import type {} from "@deepseek-ai/dsh-client-locale/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 // ctx.slots 的 Context 增强由 ui-renderer 的 client 半声明（官方 ui-commands 同样引它）
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
+// ctx.uiWorkspace 的 Context 增强（目录选择能力）由 ui-workspace 的 client 半声明
+import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import { AIPolishButton } from "./components/AIPolishButton.tsx";
 import { HashSuggestOverlay } from "./components/HashSuggestOverlay.tsx";
 import { PromptLibraryButton } from "./components/PromptLibraryButton.tsx";
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
+import { setDirectoryCapability } from "./utils/workspace-dir.ts";
 
 declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface LocaleNamespaceMap {
@@ -54,6 +58,14 @@ export function apply(ctx: ClientContext): void {
         AIPolishButton,
       ),
     );
+  });
+
+  // 目录选择能力走**条件注入**（P6-7 / R2）：inject 导出数组保持 ["slots","locale"] 不扩张。
+  // 服务缺席时（无该客户端的部署、smoke 的假 ctx）能力为 null —— 导出按钮据此渲染禁用 +
+  // 可读原因，其余功能不受影响（D-P6-4）。卸载即复位，不留悬挂能力。
+  ctx.inject(["uiWorkspace"], (scope: ClientContext) => {
+    setDirectoryCapability(scope.uiWorkspace ?? null);
+    return () => setDirectoryCapability(null);
   });
 
   ctx.effect(() => {
