@@ -295,7 +295,7 @@ export function skillTargetPath(name: string): string;                   // $DSH
 2. `GET /ai/providers` 的返回形状由 P4/P8 的设置页下拉直接消费。
 3. 技能过期判定字段（`updatedAt` vs `skillExportedAt`）已就绪，P7 只做 UI。
 4. P6 的导入导出 UI：导入走「客户端读文件 → 解析成对象 → `POST /import`」；导出走「选目录 → `POST /export/save`」（**不需要** `/fs/*` 路由）。
-5. **AI 路由的耗时特征（实测）**：`POST /ai/polish` 一次真实调用耗时 **42.7s**——首个候选约 30s 超时后自动回退到下一个候选才成功。故 P5 的 AI 按钮前端超时必须远大于 30s（建议 ≥120s），并给出「正在调用」的状态提示，否则用户会以为按钮坏了。
+5. **AI 路由的耗时与回退特征（实测，有诊断日志为证）**：一次 `POST /ai/polish` 实测 32s——首候选 `commandcode/deepseek/deepseek-v4.1-flash` 在 ~11s 处 **错误中止**（`collect abort error`），自动回退到 `modelscope/deepseek-ai/DeepSeek-V4-Pro-0813` 后成功（~21s）。**注意这不是超时**：`collect abort` 记的是流异常结束；真正的超时上限是每候选 30s。故 P5 的 AI 按钮前端超时必须 ≥120s（最坏情况＝候选数 × 30s 超时 + 模型枚举），并给出「正在调用」状态提示。
 6. `POST /skills/export` 同名冲突返回 **409**（不是 400），P7 据此弹确认框，再带 `conflictConfirmed: true` 重试。
 
 ---
@@ -312,7 +312,7 @@ export function skillTargetPath(name: string): string;                   // $DSH
 | --- | --- | --- |
 | 26 条路由逐条可用 | 通过 | 40/40 断言 PASS（每条含正样本与负样本：404 / 400 / 409 / 503 分支都走到） |
 | 设置只动自己的命名空间 | 通过 | `PUT /settings` 前后，`settings.yaml` 除新增 `prompt-enhancer:` 段外**其余顶层键内容逐行完全一致**（3144 字节 vs 3144 字节，差异行 0） |
-| AI 链路端到端 | 通过 | `GET /ai/providers` 列出 3 个 provider / 10 个模型；`POST /ai/polish` 一次真实调用返回结果（42.7s，含首候选超时后的自动回退） |
+| AI 链路端到端 | 通过 | `GET /ai/providers` 列出 3 个 provider / 10 个模型；`POST /ai/polish` 真实调用返回结果。诊断日志（`$DSH_HOME/prompt-enhancer/log/ai-2026-09-24.log`）完整记录了候选回退：`fallback try commandcode/… → collect abort error → fallback try modelscope/DeepSeek-V4-Pro-0813 → collect done stop 60` |
 | 技能导出真实写盘 | 通过 | `POST /skills/export` → `$DSH_HOME/skills/m3-acceptance-temp/SKILL.md`，**被 DSH 技能系统即时发现**并出现在可用技能列表中（frontmatter 的 name/description 均解析成功，description 走了「正文首行」兜底） |
 | 清理与复原 | 通过 | 临时提示词与回收站已清空（`/prompts` 只剩种子）、临时技能目录已删除、`/tmp` 备份已删、验收改动的两个设置值已复原为默认 |
 
