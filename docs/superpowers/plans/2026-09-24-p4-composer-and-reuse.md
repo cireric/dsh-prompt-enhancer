@@ -110,7 +110,7 @@ export type TriggerChar = '/' | '@'
 | --- | --- | --- |
 | `src/client/index.ts` | 改写 | 客户端入口：注册 i18n 字典 + 2 个插槽；`inject = ["slots", "locale"]` |
 | `src/client/utils/i18n.ts` | 新写 | `zh` / `en` 两份字典（`en: Record<keyof typeof zh, string>` 做编译期键集校验）+ `PromptEnhancerKey` 类型 |
-| `src/client/utils/api.ts` | 新写 | 26 条路由的客户端封装 + 信封解析 |
+| `src/client/utils/api.ts` | 新写 | **按需**封装主机路由 + 信封解析（P4 只消费 5 个：`listPrompts` / `recordUsage` / `getSettings` / `getMeta` / `setMeta`；其余 21 条由 P5–P8 各自按需追加，不提前实现） |
 | `src/client/utils/template.ts` | 新写（纯逻辑） | `{{变量}}` 解析、填充、记忆键读取 |
 | `src/client/utils/hash-token.ts` | 新写（纯逻辑） | 尾令牌 `#查询` 检测与替换、候选过滤打分 |
 | `src/client/utils/insert.ts` | 新写（纯逻辑） | 追加 / 覆盖 / 发送三态语义（纯函数，输入 draft，输出新 draft + 是否发送） |
