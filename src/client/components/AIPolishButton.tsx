@@ -60,6 +60,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const rootRef = React.useRef<HTMLSpanElement | null>(null);
   /** 可用性探测缓存（D-P5-7）：null = 未探测；组件重挂载才重探，失败不落缓存。 */
   const providersRef = React.useRef<AiSelectable[] | null>(null);
+  /** 调用闸门：ref 同步生效（state 的 disabled 要等渲染），覆盖「探测 → polish」整段。 */
+  const busyRef = React.useRef(false);
 
   // 设置只读一次；读失败退回默认值（按钮照常可用），原因留在 console。
   React.useEffect(() => {
@@ -115,41 +117,55 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setCopied(false);
   };
 
-  /** 点击那一刻的草稿快照 → 探测 → 调用 → 结果/错误。 */
+  /**
+   * 点击那一刻的草稿快照 → 探测 → 调用 → 结果/错误。
+   *
+   * 重入闸门覆盖**整段**（含探测期）：`busyRef` 在第一个 await 之前同步置位
+   * （state 的 disabled 要等渲染，ref 不用），状态也在同一拍切到 `polishing`，
+   * 因此探测期间按钮已 disabled、aria-busy、状态行可见——双击不会重发 GET，
+   * 也不会让两个 run 去争同一个 LLM 锁。
+   */
   const run = (snapshot: string): void => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setErrorKey(null);
+    setOriginal(snapshot);
+    setShowOriginal(false);
+    setCopied(false);
+    setStatus("polishing");
     void (async () => {
-      let providers = providersRef.current;
-      if (providers === null) {
-        try {
-          providers = await api.listAiProviders();
-        } catch (err) {
-          // 探测失败不落缓存：可能是瞬时故障，下次点击值得重试。
-          console.warn("[prompt-enhancer] AI 可用性探测失败", err);
-          setErrorKey(aiErrorKey(err));
+      try {
+        let providers = providersRef.current;
+        if (providers === null) {
+          try {
+            providers = await api.listAiProviders();
+          } catch (err) {
+            // 探测失败不落缓存：可能是瞬时故障，下次点击值得重试（闸门由 finally 打开）。
+            console.warn("[prompt-enhancer] AI 可用性探测失败", err);
+            setErrorKey(aiErrorKey(err));
+            setStatus("error");
+            return;
+          }
+          providersRef.current = providers;
+        }
+        if (providers.length === 0) {
+          // 未配置任何可用模型：只出这一行，不调 AI（验收 13）。
+          setErrorKey("ai.unavailable");
           setStatus("error");
           return;
         }
-        providersRef.current = providers;
-      }
-      if (providers.length === 0) {
-        // 未配置任何可用模型：只出这一行，不调 AI（验收 13）。
-        setErrorKey("ai.unavailable");
-        setStatus("error");
-        return;
-      }
-      setErrorKey(null);
-      setOriginal(snapshot);
-      setShowOriginal(false);
-      setCopied(false);
-      setStatus("polishing");
-      try {
-        const result = await api.polishPrompt(snapshot, { keepVariables: keepVariablesFor(snapshot) });
-        setPolished(result.polished);
-        setStatus("done");
-      } catch (err) {
-        console.warn("[prompt-enhancer] AI 优化失败", err);
-        setErrorKey(aiErrorKey(err));
-        setStatus("error");
+        try {
+          const result = await api.polishPrompt(snapshot, { keepVariables: keepVariablesFor(snapshot) });
+          setPolished(result.polished);
+          setStatus("done");
+        } catch (err) {
+          console.warn("[prompt-enhancer] AI 优化失败", err);
+          setErrorKey(aiErrorKey(err));
+          setStatus("error");
+        }
+      } finally {
+        // 三条出口（探测失败 / 不可用 / 调用成功或失败）都必须开闸，否则一次失败就再也点不动。
+        busyRef.current = false;
       }
     })();
   };
