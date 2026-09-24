@@ -767,3 +767,32 @@ frontmatter：name（必填）/ description（必填）/ whenToUse（可选）
 
 **影响范围**：§4.4（写回缝与切换语义）、§7.1（座位表不变，仅 M5 期临时入口位置）、§9.3（超时与忙态口径）；P5 计划的任务 1/2/4。
 
+### 13.9 宿主契约订正与 P6 口径固化（2026-09-24，用户批准）
+
+P6 计划撰写期现核实宿主（checkout `/Users/eric/Project/tests/deepseek-harness`，DSH Local Build `0.1.5-rc.2-c291`：读源码 + 活体只读探针）发现本规格 3 处与宿主事实不符，另需固化 1 条口径。用户逐条批准后就地订正。
+
+**一、`inject` 服务名订正：`workspaces` → `uiWorkspace`。**
+
+§7.1 原写 `inject = [..., "workspaces", ...]`，用途标注「导出目录选择（D5）」。实测该名对应的客户端服务**没有目录能力**：
+
+| 服务 | 面 | 证据 |
+| ---- | -- | ---- |
+| `ctx.workspaces`（`IWorkspaces`） | `list / create / rename / delete / insertBefore / archiveSession / insertSessionBefore` —— 无任何目录方法 | `packages/api/workspace-controller/src/client/service.ts:33-77,88` |
+| `ctx.uiWorkspace`（`UiWorkspace`） | 含 `pickDirectory(): Promise<string \| null>`、`listDirectory`、`createDirectory` | `packages/client/ui-workspace/src/client/navigation.ts:16-70,106,179-183` |
+
+⇒ 正确注入名是 **`uiWorkspace`**（服务名），`package.json` 的 `dsh.client.inject` 相应加 **`@deepseek-ai/dsh-client-ui-workspace`**（包名）。D5 的实现路径（`pickDirectory()` + `POST /export/save`）**不变**；§12 风险 1 的 `/fs/*` 降级预案**不需要**（宿主能力存在）。
+
+**二、`shell.overlay` 在 P6 引入（原路线图把它放 P7）。**
+
+§7.1 已把该宿主定为承载管理/导出/导入弹窗的座位，且 §7.3 的动机（去掉「必须先有会话才能开面板」）只有在该宿主落地后才成立。路线图第 42 行的 P7 分期与本节冲突，**以规格为准**：P6 引入，P7 复用。同理 P6 一并落地 `sidebar.footer.action` 入口，验收 18 归 P6。
+
+**三、`POST /import` 与上限的关系（口径固化）。**
+
+`POST /prompts` 会调 `enforceMaxCount`（`src/host/routes.ts:126`），而 `POST /import` **不会**（`:310-314`）。固化：导入**不**自动淘汰（淘汰是物理删除且不进回收站，用户刚导入即被删不可接受），但导入结果必须**显式提示**当前条数与上限的关系。
+
+**四、淘汰二次确认与选区捕获口径（明文化）。**
+
+- **淘汰二次确认**：宿主 API 不含 dry-run 路由，故确认落在**客户端预检**——读 `GET /prompts` 与 `GET /settings.maxPromptCount`，按 §4.4 的同源排序键（`aiRefined` 升序、`lastUsedAt` 升序）预演受害者并二次确认；实际删除仍由 `POST /prompts` 执行，**结果提示以响应里的 `evicted` 为准**。客户端预演与 `store.enforceMaxCount` 的一致性由「双跑对照」单测保证。
+- **选区捕获的零 DOM 注入边界（正例清单）**：**允许**只读 `window.getSelection()` / `Node.closest('[data-conversation-scroll]')` / `Node.closest('[data-composer-seat]')`（宿主自身客户端代码即用此读到这两个 `data-*` 标记，见 `packages/client/ui-conversation/src/client/skeleton/InputBar.tsx:159-177,213`，且标记由 `ConversationRoot.tsx:367,376` 渲染）；**禁止**任何 DOM 写入（`appendChild` / `remove` / `setAttribute` 于宿主节点）与任何 `keydown|keyup|keypress` 监听。§7.1 的监听集合因此确定为 `selectionchange` + 捕获阶段 `pointerdown`/`pointerup` + `scroll`。
+
+
