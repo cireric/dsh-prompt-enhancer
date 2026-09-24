@@ -239,6 +239,12 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
   const [notice, setNotice] = React.useState<string | null>(null);
   /** 正在删除的那一行（整表禁删，避免并发删同一批）。 */
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  /**
+   * 删除失败：**按行的行内错误**，与 `loadError`（只表示「列表拉取失败」）严格分开。
+   * 删除失败时列表必须仍在屏上——数据还在库里，用 loadError 会把整张列表和空态一起 gate 掉，
+   * 让用户误以为东西没了（修复轮 1 的重要级发现）。
+   */
+  const [deleteError, setDeleteError] = React.useState<{ id: string; detail: string } | null>(null);
   /** 数据变更事件的计数器：`useDataChanged` → 这里自增 → 触发重拉。 */
   const [reloadSeq, setReloadSeq] = React.useState(0);
   const aliveRef = React.useRef(true);
@@ -306,7 +312,7 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
     if (busyId !== null) return;
     setBusyId(prompt.id);
     setNotice(null);
-    setLoadError(null);
+    setDeleteError(null);
     api.deletePrompt(prompt.id).then(
       () => {
         if (!aliveRef.current) return;
@@ -315,10 +321,11 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
         notifyDataChanged();
       },
       (err: unknown) => {
+        // 失败**只**写行内错误：不碰 loadError（见 deleteError 的注释）。
         console.warn("[prompt-enhancer] 删除提示词失败", err);
         if (!aliveRef.current) return;
         setBusyId(null);
-        setLoadError(reasonOf(err));
+        setDeleteError({ id: prompt.id, detail: reasonOf(err) });
       },
     );
   };
@@ -411,6 +418,14 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
                     {t("manager.list.usage")} {prompt.usageCount}
                   </span>
                 </span>
+                {deleteError !== null && deleteError.id === prompt.id && (
+                  <span role="alert" style={errorText}>
+                    <span>{t("error.delete")}</span>
+                    <span style={errorDetail} title={deleteError.detail}>
+                      {deleteError.detail}
+                    </span>
+                  </span>
+                )}
               </span>
               <span style={actions}>
                 <button type="button" style={button} onClick={() => onEdit(prompt)}>
