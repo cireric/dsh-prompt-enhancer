@@ -842,6 +842,26 @@ git commit -m "chore: record M1 profile-load acceptance"
 - `dsh web` 重启无报错，且**未注入任何 systemPrompt section**
 - 上游 MIT 署名就位（`LICENSE` 含 `master1Sun` 一行）
 
+---
+
+## M1 验收记录（2026-09-24）
+
+**路线偏离（已获用户批准）**：本机为 macOS，`$DSH_HOME/profiles/web` 对会话沙箱不可写（实测 `touch` 返回 `Operation not permitted`），且重启 `dsh web` 会终止验收会话本身。故任务 10 的「profile 安装 → 重启 → 观察日志」改用 **super-injector 运行时注入**等价执行（junction + `loader.create` + client-modules 注册，全程不碰 profile）。
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| host 半加载 | 通过 | loader entry `74a6674c`（`name=dsh-prompt-enhancer`）fiber=`active`、`fiber.ctx` 已建立；注入器返回 `host ✓` |
+| client 半注册 | 通过 | clientModules 模块表 72 条中含 `dsh-prompt-enhancer`，`clientPath` 指向本项目 `lib/client.js`；注入器返回 `client ✓ (lib/client.js)` |
+| 浏览器端实际执行 | 通过 | 真实 GUI 页面控制台 `[LOG] [prompt-enhancer] client loaded v0.1.0`，插件图含 `dsh-prompt-enhancer/client.js`，Errors: 0 / Warnings: 0 |
+| 热重载可用（P4 开发回路） | 通过 | `dev_reload_package` 前后均 `active`，且 `client ✓` |
+| 无 systemPrompt section（§2.2 硬约束） | 通过 | `apply()` 仅注册一个 `ctx.effect`，无任何 section 注册点 |
+| `--dump-config` 可见插件层 | 未验 | 需写 profile（`dsh plugin add`），属用户执行步骤 |
+| profile `bundles` 装配路径 | 未验 | 运行时注入验证的是 junction + `loader.create` 路径；`cordis.patch.yml` 的 insert 层未实测 |
+
+**环境复原**：`npm run typecheck` / `build` / `smoke` 三项退出码均为 0；`git status` 干净；profile 的 `cordis.patch.yml` 与 `package.json` 未被改动；验收用临时 staging 探针已 demote。插件**保留在注入态**（registry + junction，重启自动恢复），便于 P2/P4 直接联调。
+
+**顺带修复注入器自身两处误判**（其仓库 `src/index.ts` 已改、`lib/` 为 gitignore 的手工同步产物）：①client 骨架门由「无条件合取」改为「蕴含式」——不注册插槽的 client 半（生命周期骨架 / host-only 插件）曾被误判为坏骨架而阻断注入；②slot 白名单只有 11 项而本版本 catalog 声明 61 项，导致 50 个真实 slot 被判非法，现改为从 live `slot-catalog.ts` 现场派生。两处修法均以负样本验证安全网未削弱。
+
 
 
 
