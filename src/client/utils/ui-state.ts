@@ -3,8 +3,9 @@
  *
  * 规格 §7.1 / §13.4：输入框按钮与左栏入口都只调 openManager()，开合与页签选择经本模块共享，
  * 不通过组件耦合。本模块**不 import 任何宿主服务**，故 tests/ui-state.test.mjs 可直接 import 它
- * 跑 store 面（react 也不在模块顶层静态 import，理由见下方 ReactHooks 处）。
+ * 跑 store 面（react 由 react-hooks.ts 惰性解析，不在模块顶层静态 import——本仓库不装 react）。
  */
+import { hooks } from "./react-hooks.ts";
 
 /** 管理面板的四个页签（T2 建外壳、T4 填内容）。 */
 export type ManagerPanel = "list" | "tags" | "trash" | "transfer";
@@ -80,42 +81,6 @@ export function takeCapture(): CapturePayload | null {
   capture = null;
   if (pending) emit();
   return pending;
-}
-
-/**
- * React 运行时（与 data-sync.ts 的同名私有块保持一致）。
- *
- * react 是宿主 external：scripts/build.mjs 的 external 清单与 smoke 的 fakeRequire 桩都只为
- * react / react/jsx-runtime 留位，由 bundle 工厂作用域的 require 在运行时解析。此处刻意**不**
- * 静态 import from "react"：本仓库按上游形态不安装 react（飞行前 R1 已记录「checkout 里
- * node_modules/react 不存在」），静态 import 会让 node --test 直接 import 本模块时解析失败，
- * 而 tests/ui-state.test.mjs 必须能直接跑 store 面。
- */
-interface ReactHooks {
-  useState<T>(initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void];
-  useEffect(effect: () => void | (() => void), deps?: unknown[]): void;
-}
-
-let reactHooks: ReactHooks | null | undefined;
-
-/** 首次调用 hook 时解析一次 react；拿不到就抛可读错误，不静默降级成「不响应变化」。 */
-function hooks(): ReactHooks {
-  if (reactHooks === undefined) {
-    reactHooks = null;
-    if (typeof require === "function") {
-      try {
-        reactHooks = require("react") as ReactHooks;
-      } catch (e) {
-        console.warn("[prompt-enhancer] 无法解析 react，面板状态 hook 不可用：", e);
-      }
-    } else {
-      console.warn("[prompt-enhancer] 当前环境没有 require，无法解析 react（hook 只能在宿主里调用）");
-    }
-  }
-  if (!reactHooks) {
-    throw new Error("prompt-enhancer: react 运行时不可用（管理面板 hook 只能在宿主里调用）");
-  }
-  return reactHooks;
 }
 
 /** 订阅面板状态。用 useState + useEffect(subscribe)（R1）：宿主 react 版本未证实，不用 useSyncExternalStore。 */

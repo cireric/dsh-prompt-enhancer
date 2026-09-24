@@ -13,6 +13,8 @@ const {
   useCapture,
   useManagerState,
 } = await import("../src/client/utils/ui-state.ts");
+// 抽取后的共用解析口（R24 修复轮 1）：直接覆盖它自己，而不是只覆盖两个消费者。
+const reactHooks = await import("../src/client/utils/react-hooks.ts");
 
 function settle() {
   closeManager();
@@ -108,12 +110,13 @@ test("subscribe 快照引用：状态未变不换引用（useSyncExternalStore �
 
 // R1 的形态落地在客户端：本模块在 Node 下**必须可 import**（上面所有用例即是证明）。
 // React 只能在宿主里解析（react 是 external，Node 侧没有安装），拿不到时必须抛可读错误，
-// 不得静默返回一个永不更新的死快照。
-test("useManagerState / useCapture：Node 侧无 react 时抛可读错误（不静默降级）", () => {
+// 不得静默返回一个永不更新的死快照。抽取共用解析口后，这条同时覆盖 react-hooks.ts 本身。
+test("useManagerState / useCapture / react-hooks：Node 侧无 react 时抛可读错误（不静默降级）", () => {
   const original = console.warn;
   const warnings = [];
   console.warn = (...args) => warnings.push(args.map(String).join(" "));
   try {
+    assert.throws(() => reactHooks.hooks(), /react 运行时不可用/, "共用解析口自己要抛可读错误");
     assert.throws(() => useManagerState(), /react 运行时不可用/);
     assert.throws(() => useCapture(), /react 运行时不可用/);
   } finally {

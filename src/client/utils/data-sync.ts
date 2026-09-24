@@ -8,7 +8,10 @@
  *   · Node：实测 globalThis **没有** addEventListener / dispatchEvent（只有 EventTarget 类），
  *     故退化成模块内的 EventTarget 实例——订阅口是本模块导出的 subscribeDataChanged，
  *     测试与运行时看到的是同一个对象，无需伪造 window（D-P6-2 的「Node 测试可直接跑」）。
+ *
+ * react 由 react-hooks.ts 惰性解析（本模块不静态 import react——本仓库不装 react）。
  */
+import { hooks } from "./react-hooks.ts";
 
 /** 数据变更事件名（规格 §3.3；改名即破坏同页同步契约）。 */
 export const DATA_CHANGED = "prompt-enhancer:data-changed";
@@ -42,40 +45,6 @@ export function subscribeDataChanged(fn: () => void): () => void {
 /** 通知所有提示词组件：数据已增删改，应重新加载。 */
 export function notifyDataChanged(): void {
   bus.dispatchEvent(new Event(DATA_CHANGED));
-}
-
-/**
- * React 运行时（与 ui-state.ts 的同名私有块保持一致；两处都必须在 Node 下可 import，故不共享）。
- *
- * react 是宿主 external：scripts/build.mjs 的 external 清单与 smoke 的 fakeRequire 桩都只为
- * react / react/jsx-runtime 留位，由 bundle 工厂作用域的 require 在运行时解析。此处刻意**不**
- * 静态 import from "react"：本仓库按上游形态不安装 react（飞行前 R1），静态 import 会让
- * node --test 直接 import 本模块时解析失败，而 tests/data-sync.test.mjs 必须能直接跑事件面。
- */
-interface ReactHooks {
-  useEffect(effect: () => void | (() => void), deps?: unknown[]): void;
-}
-
-let reactHooks: ReactHooks | null | undefined;
-
-/** 首次调用 hook 时解析一次 react；拿不到就抛可读错误，不静默降级成「不刷新」。 */
-function hooks(): ReactHooks {
-  if (reactHooks === undefined) {
-    reactHooks = null;
-    if (typeof require === "function") {
-      try {
-        reactHooks = require("react") as ReactHooks;
-      } catch (e) {
-        console.warn("[prompt-enhancer] 无法解析 react，数据变更 hook 不可用：", e);
-      }
-    } else {
-      console.warn("[prompt-enhancer] 当前环境没有 require，无法解析 react（hook 只能在宿主里调用）");
-    }
-  }
-  if (!reactHooks) {
-    throw new Error("prompt-enhancer: react 运行时不可用（数据变更 hook 只能在宿主里调用）");
-  }
-  return reactHooks;
 }
 
 /**
