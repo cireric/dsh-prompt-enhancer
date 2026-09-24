@@ -14,7 +14,7 @@ import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { GenerateOptions, LlmModelInfo, LlmRuntime } from "@deepseek-ai/dsh-llm";
 import { logDir } from "./paths.ts";
 import { parseRefineResult, type AiRefineResult } from "./refine.ts";
-import { extractVariables, parseSummaryJson, stripAiFiller } from "./text.ts";
+import { extractVariables, parseSummaryJson, stripAiFillerDetailed } from "./text.ts";
 import type { PluginSettings } from "../types.ts";
 
 /** 一条候选路由（provider + model）。 */
@@ -364,7 +364,15 @@ export async function polishPromptBody(
       : `请润色以下提示词内容：\n\n${body}`;
 
   const text = await collectTextWithFallback(llm, candidates, polishSystemPrompt(keepVariables), content);
-  return text ? stripAiFiller(text) : undefined;
+  if (!text) return undefined;
+
+  // 剥离套话并**把被剥的行写进诊断日志**：这样「模型吐不吐套话」「有没有误剥正文」
+  // 两件事都有原始行可查（仅在 __DEV__ 构建下落盘），不必再靠抽样猜。
+  const { text: cleaned, stripped } = stripAiFillerDetailed(text);
+  if (stripped.length > 0) {
+    logAI(`polish stripped ${stripped.length} 行: ${stripped.join(" ⏐ ")}`);
+  }
+  return cleaned;
 }
 
 /** 润色 + 用途摘要（摘要失败时只返回正文，不视为整体失败）。 */

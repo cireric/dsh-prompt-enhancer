@@ -45,10 +45,17 @@ test("stripAiFiller：剥掉中英文开场套话", () => {
   assert.equal(text.stripAiFiller("以下是优化后的结果\n正文"), "正文");
 });
 
-test("stripAiFiller：剥掉中英文收尾套话", () => {
-  assert.equal(text.stripAiFiller("正文内容\n希望这对你有帮助"), "正文内容");
-  assert.equal(text.stripAiFiller("正文内容\nLet me know if you need anything else"), "正文内容");
+test("stripAiFiller：短的收尾寒暄会被剥掉；较长的收尾句保留（刻意的安全侧残噪）", () => {
   assert.equal(text.stripAiFiller("正文内容\n谢谢"), "正文内容");
+  assert.equal(text.stripAiFiller("正文内容\nThanks"), "正文内容");
+  assert.equal(text.stripAiFiller("正文内容\n谢谢"), "正文内容");
+  // C′ 的已知取舍：无元话语收尾信号、且不短的收尾句**不剥**。
+  // 代价是留一行可见噪音（用户能删），换取「绝不静默丢正文」——这是刻意选择，不是遗漏。
+  assert.equal(text.stripAiFiller("正文内容\n希望这对你有帮助"), "正文内容\n希望这对你有帮助");
+  assert.equal(
+    text.stripAiFiller("正文内容\nLet me know if you need anything else"),
+    "正文内容\nLet me know if you need anything else",
+  );
 });
 
 test("stripAiFiller：正文内部的围栏与空行绝不能被改动", () => {
@@ -69,17 +76,65 @@ test("stripAiFiller：空串/纯空白安全返回", () => {
 });
 
 /**
- * ⚠️ 已知局限（上游既有行为，本版按规格「搬运」保留，见 P3 计划风险 R-P3-7）：
- * 两个套话正则只有行首锚定、没有行尾锚定，因此正文**首行以「好的」开头**时，
- * 即使后面是正常内容也会被整行剥掉。此用例把该行为**显式钉住**，
- * 以便将来决定修它时（例如给正则补 `$` 锚定）能立刻看到行为变化。
+ * C′ 判据的回归网（两组夹具，逐条钉住行为）。
+ *
+ * 判据 = 行首命中套话模式 **且**（行尾是元话语信号 **或** 该行很短）。
+ * 上游只有「行首命中」一个条件，于是 F 组全剥（8/8）但 C 组全灭（0/7，静默丢正文）；
+ * 本判据 7/8 剥对真套话、7/7 保留正文——把失败赶到「可见残噪」那一侧。
  */
-test("stripAiFiller（已知局限）：首行以套话词开头但其实是正文时会被误剥", () => {
-  assert.equal(
-    text.stripAiFiller("好的提示词应该包含明确的约束\n第二行"),
-    "第二行",
-    "上游行为即如此：行首命中即剥。若要改成不误剥，需给正则补行尾锚定并同步改本用例",
-  );
+const FILLER_LINES = [
+  "好的，以下是优化后的提示词：",
+  "好的",
+  "以下是优化后的结果：",
+  "Here is the optimized prompt:",
+  "Sure, here is the polished version:",
+  "谢谢",
+  "以下是整理后的正文",
+  "希望这对你有帮助", // ← 已知漏剥（无元话语收尾且超过 6 字），见下方断言
+];
+
+const CONTENT_LINES = [
+  "好的提示词应该包含明确的约束",
+  "可以这样理解：把任务拆成三步",
+  "谢谢配合，请按上述 JSON 格式输出",
+  "如果有任何疑问，请查阅随附文档",
+  "需要说明的是，输出必须是 JSON",
+  "希望工程能在本季度上线",
+  "以下是本文的三个要点，请逐条核对",
+];
+
+test("stripAiFiller：真套话行应被剥掉（7/8，唯一例外是已知漏剥）", () => {
+  for (const line of FILLER_LINES) {
+    const got = text.stripAiFiller(`${line}\n正文第一行`);
+    if (line === "希望这对你有帮助") {
+      assert.equal(got, `${line}\n正文第一行`, "已知漏剥：留在安全侧（可见噪音）优于冒险误剥正文");
+    } else {
+      assert.equal(got, "正文第一行", `「${line}」应被剥掉`);
+    }
+  }
+});
+
+test("stripAiFiller：正文行必须一行不剥（7/7，即使首行以套话词开头）", () => {
+  for (const line of CONTENT_LINES) {
+    assert.equal(
+      text.stripAiFiller(`${line}\n第二行正文`),
+      `${line}\n第二行正文`,
+      `「${line}」是正文，被剥掉就是静默丢内容`,
+    );
+  }
+});
+
+test("stripAiFillerDetailed：回报被剥掉的行，供诊断日志留痕", () => {
+  const detail = text.stripAiFillerDetailed("好的，以下是优化后的提示词：\n正文\n谢谢");
+  assert.equal(detail.text, "正文");
+  assert.deepEqual(detail.stripped, ["好的，以下是优化后的提示词：", "谢谢"], "被剥的行必须原样回报");
+
+  const fenced = text.stripAiFillerDetailed("```\n正文\n```");
+  assert.equal(fenced.text, "正文");
+  assert.deepEqual(fenced.stripped, ["（整体代码围栏已剥离）"]);
+
+  assert.deepEqual(text.stripAiFillerDetailed("").stripped, []);
+  assert.deepEqual(text.stripAiFillerDetailed("正文").stripped, [], "没剥任何东西时明细必须为空");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
