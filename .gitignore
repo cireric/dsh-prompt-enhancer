@@ -1,0 +1,9 @@
+node_modules/
+.npm-cache/
+*.map
+.build-meta.json
+debug.log
+*.tmp.*
+
+# 本地临时区：上游参考项目 clone（.tmp/dsh-prompt-library，自带 .git）
+.tmp/
