@@ -2,24 +2,46 @@ import type { PluginSettings, Prompt, PromptSort } from "../../types.ts";
 
 const PREFIX = "/api/prompt-enhancer";
 
+/** 前端 AI 路由超时（120s，用户裁定）；超时由 AbortSignal.timeout 触发，分类见 ai-flow.ts#aiErrorKey。 */
+export const AI_TIMEOUT_MS = 120_000;
+
+/** 信封失败与响应解析失败统一抛出的错误：带 HTTP status，供调用方按状态分类（不匹配 message 文本）。 */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/** `/ai/providers` 返回的可选清单（宿主按已配置的 provider 给出模型）。 */
+export interface AiSelectable { provider: string; name: string; models: Array<{ id: string; name: string }> }
+
+/** `/ai/refine` 的返回：小标题、标签（最多 1 个）、摘要、正文。 */
+export interface AiRefineResult { title: string; tags: string[]; summary: string; body: string }
+
 /** 响应信封（规格 §5）：客户端以 data === undefined 判失败。 */
 interface Envelope<T> { ok: boolean; data?: T; error?: string }
 
-/** 失败一律抛出带可读原因的 Error——调用方 catch 后出 toast（不得静默吞掉）。 */
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+/**
+ * 失败一律抛出带可读原因的 ApiError——调用方 catch 后出 toast（不得静默吞掉）。
+ * `timeoutMs` 传了才挂 AbortSignal.timeout：AI 路由用 AI_TIMEOUT_MS，其余路由不设超时（保持 P4 行为）。
+ */
+async function call<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
   const res = await fetch(PREFIX + path, {
     method,
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
   });
   let parsed: Envelope<T>;
   try {
     parsed = (await res.json()) as Envelope<T>;
   } catch (e) {
-    throw new Error(`响应不是合法 JSON（HTTP ${res.status}）：${String(e)}`);
+    throw new ApiError(`响应不是合法 JSON（HTTP ${res.status}）：${String(e)}`, res.status);
   }
   if (parsed.data === undefined) {
-    throw new Error(parsed.error ?? `请求失败（HTTP ${res.status}）`);
+    throw new ApiError(parsed.error ?? `请求失败（HTTP ${res.status}）`, res.status);
   }
   return parsed.data;
 }
@@ -38,4 +60,19 @@ export const api = {
   getMeta: (key: string) => call<{ key: string; value: string }>("GET", `/meta/${encodeURIComponent(key)}`).then((r) => r.value),
   setMeta: (key: string, value: string) =>
     call<{ key: string; value: string }>("PUT", `/meta/${encodeURIComponent(key)}`, { value }),
+
+  createPrompt: (input: { title: string; body: string; tags?: string[]; summary?: string }) =>
+    call<{ prompt: Prompt; evicted: string[] }>("POST", "/prompts", input),
+  updatePrompt: (id: string, patch: Record<string, unknown>) =>
+    call<Prompt>("PUT", "/prompts/" + encodeURIComponent(id), patch),
+  rollbackPrompt: (id: string) => call<Prompt>("POST", "/prompts/" + encodeURIComponent(id) + "/rollback"),
+  listAiProviders: () => call<AiSelectable[]>("GET", "/ai/providers"),
+  polishPrompt: (body: string, opts: { keepVariables?: boolean } = {}) =>
+    call<{ polished: string; summary?: string }>(
+      "POST",
+      "/ai/polish",
+      { body, keepVariables: opts.keepVariables !== false, withSummary: false },
+      AI_TIMEOUT_MS,
+    ),
+  refinePrompt: (body: string) => call<AiRefineResult>("POST", "/ai/refine", { body }, AI_TIMEOUT_MS),
 };
