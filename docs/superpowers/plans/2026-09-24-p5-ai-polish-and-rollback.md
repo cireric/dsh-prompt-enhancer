@@ -520,5 +520,69 @@ bash "$SKILL/review-package" "$PLAN" "$BASE" "$HEAD" "$WS/review-$BASE..$HEAD.di
 
 **分发纪律（SDD）：** 一个实现者一个任务，绝不并行分发多个实现者；每个任务分发前记 `BASE`，评审用 `BASE..HEAD`（**不要**用 `HEAD~1`）；子代理**不分发子代理**；子代理无法向人提问（harness 限制）——简报里必须写明「遇歧义按最强证据自定 + 在报告里显式列假设；若假设会改变验收结果，直接以 NEEDS_CONTEXT 汇报」。**收尾前**把有保留价值的内容（执行记录、裁决、遗留项）落进仓库内的持久文档，再删工作区（工作区不进 git）。
 
+---
+
+## P5 执行记录（2026-09-24，子代理驱动）
+
+**状态：** M5 达成。5 个任务全部完成 → 逐任务评审（2 轮修复：任务 2 的探测期重入缺陷、任务 5 发现的超时文案错配）→ 最终全分支评审（判「修复后可合并」）→ 一轮修复波 → 范围化复审（4 项全 ADDRESSED、无新增破坏）。
+
+| 证据 | 结果 |
+| --- | --- |
+| 单元测试 | 64（P4 期末）→ 85（任务 1 +21）→ 95（任务 4 +10）→ **96/96**（收尾 +1）；全程既有断言一条未删改（最终评审用 `git diff --numstat ... tests/` 逐条核对） |
+| 四项检查 | `typecheck` 0 / `test` 96 / `build` 0 / `smoke` PASSED |
+| smoke 强度 | 由正则文本扫描升级为**行为断言**（假 ctx 真跑 `apply()`：3 座位账本、i18n 键集、`inject` 深等值）；收尾补「接线成对」按注册顺序配对——最终评审先用变异证明原同名集合判定**漏网**（同座位跨接线），修复后同一变异必红 |
+| 活 GUI 验收 | `docs/superpowers/plans/2026-09-24-p5-m5-acceptance.md`：**PASS 24/24 / FAIL 0**、清单内 NOT RUN 0。含前端 120s 超时活体 **120801ms**、探测 15s 实测 **15702ms** 恢复、同 tick 双击 → `providers=1/polish=1`、两面板**互斥**（`dialogCount` 恒 1）、环境复原（不可逆变化 0） |
+| 产物一致性 | 每次提交都含 `lib/`；最终评审在**独立 clone** 重跑 build 后 `git status` 干净（逐字节可复现）；活体下发 bundle 与 `lib/client.js` 前 56037/56073 字节逐字节相同 |
+| 零 DOM 注入 | `src/client/` 中 `querySelector`/`MutationObserver`/`appendChild`/`keydown|keyup|keypress` 命中 **0**；仅 2 处只读捕获阶段 `pointerdown`（P4 起的既有例外） |
+| 硬约束 | systemPrompt section 数 **0**；`inject` 未扩张（smoke 深等值断言）；零新依赖；三座位同现于 `conversation.input.left`(10/11) 与 `conversation.input.overlay`(20) |
+
+### 控制者裁决（本里程碑；工作区删除后以此为准）
+
+| # | 裁决 | 若错的代价 |
+| --- | --- | --- |
+| 1 | T1 不允许伪造 120s 真超时：超时路径用 `DOMException("TimeoutError")` 映射单测覆盖 | 真实 timeout 无端到端实测，靠三层近似 |
+| 2 | AIPolishButton 不引 `@deepseek-ai/dsh-client-ui-primitives`（上游用它） | 与宿主 Button 有细微视觉差异，P6/P8 统一 |
+| 3 | 中断的子代理不丢弃其已落盘测试，恢复原实现者继续 | 后续实现可能与那两个测试不自洽（评审以 diff 为准可抓） |
+| 4 | 任务 1 的 4 条轻微项折进任务 4/3（不启修复轮次） | 任务 3/4 diff 稍大，回退成本几行 |
+| 5 | `promptSummary` 不压内部空白（P4 既有实现不动） | AI 摘要含内部换行时列表行略长（观感） |
+| 6 | AbortError（用户取消）暂不单独映射文案（P5 无取消 UI） | P6 若加取消按钮需补 key + 用例 |
+| 7 | 接受「120s 真超时不端到端验证」（与用户裁定 TBD-P5-6 一致） | 同上 |
+| 8 | `lib/ai-flow` 被 tree-shake 属预期；接线后必须重建提交 `lib` | 产物与源码漂移（已用「重建后 git status 空」口径守住） |
+| 9 | 任务 2「组件零测试」不启代码修复，证据责任归任务 5 | 任务 5 若漏验任一行为＝该行为零证据（任务 5 已逐项覆盖） |
+| 10 | 任务 2 修复轮 3 条顾虑：重入真机复核并入任务 5 / 探测与调用共用文案接受 / commit message 自拟接受 | 闸门失效要等任务 5 才暴露 |
+| 11 | 任务 2 评审 8 条轻微项：4 条折任务 3、2 条折任务 4、3 条接受现状 | 多一次注定 503 的请求、关闭入口延后一个任务、剪贴板失败无面内文案 |
+| 12 | 任务 3 评审「base 的 lib 是过期产物」判断有误——属 esbuild tree-shaking | 无（仅验证口径：用「重建后 git status 空」而非「某标识符是否在产物里」） |
+| 13 | 任务 3 的 2 条 Minor 折进任务 4（hint/aria-busy 三态、淘汰提示覆盖写回失败面） | 观感与 a11y 不准确 |
+| 14 | D-1（15s 探测超时套 120s 文案）只改文案、不给探测单立 key | 超时文案少一个数字；分别措辞需 api 打标记 → 分类 → 新键（已记 §13.8 交接） |
+| 15 | D-1 修复拆成「代码提交 + 文档标注」两次提交 | 多一个提交 |
+| 16 | **纠正裁决 14 的口径**：时长信息不能由 `ai.polishing` 承担（探测 8.2s 时该标题已宣称「约 2 分钟」）→ 收尾波删去 `ai.polishing` 的时长、预期移到 `ai.tip` | 用户被误导的预期（15s 路径宣称 2 分钟） |
+| 17 | 收尾波范围：只做 2 条重要项 + 2 条轻微项 + 文档一致性；评审「改进建议」（状态机 reducer、RESET 常量）不做 | 组件行为仍靠活体验收而非单测（M6 可回收） |
+
+### 延期项（最终评审逐条判「可延后」，归 M6/M8）
+
+1. UI 组件无单测（本仓库无 jsdom/react-dom，硬约束禁加依赖）→ 证据由活 GUI 验收承担；残余风险仅在 `ai.saveFail` / `ai.sameAsOriginal` 两个渲染分支未跑。**最低成本补法**：复用验收记录里已有的页面内 `fetch` 包装给 `POST /prompts` 注入 503。
+2. `ai-flow.libraryCreateInput` 取首个非空行但**不 trim**（`"\n  标题"` → 带前导空格的 title）。
+3. 切换按钮无进行中状态（`busyRef` 静默拦截双击，无损害）。
+4. `copy()` 失败只有 `console.warn`（P4 对非阻塞副作用的先例）。
+5. `run()` 是部分重置（不清 `saved/refined/evicted`），当前靠「不同 status 渲染不同分支」使陈旧值不可见——**P6 若在面板里加跨态控件必须改成整表重置**。
+6. 回滚失败（400/404）显示 `ai.fail`「AI 调用失败」——这是一次词库操作；**404 可达**（另一页签删掉该提示词后回来点切换）。建议改走 `error.*` 系文案。
+7. 探测超时与调用超时共用 `ai.timeout`（分别措辞需给探测路径单立错误分类）。
+8. `tests/i18n.test.mjs` 键名正则只接受恰两级键（未来三级键需同步改）。
+9. `polishPrompt` 的 `keepVariables` 默认 `true`：漏传的调用方会静默落回被否决的常量（UI 永远显式传值）。P6 复用时应改必填。
+10. 淘汰（`enforceMaxCount`）物理删行但**不同步 tags** → 留下 `count=0` 孤儿标签；与 §4.4 淘汰二次确认同批处理。
+11. AI 结果面板几何上覆盖 composer（P4 对词库面板同源）。
+12. 验收记录 `:72` 的 zh 源引文（`ai.polishing` 含时长）在收尾波后已过期——记录已加元信息行说明其对应 `4742397`，M6 刷新即可。
+
+### 清单外 NOT RUN（4 项，不阻塞 M5）
+
+zh 渲染（活 GUI=en）、`ai.saveFail`（未注入 `POST /prompts` 503）、`ai.sameAsOriginal`（需模型原样返回，6 次 polish 均不同）、Turn 计数交叉证据。
+
+### 交接
+
+- **M6**：复用 `api.createPrompt`（双层信封 `{prompt, evicted}`）/ `updatePrompt`（`PromptWritablePatch`）/ `rollbackPrompt` / `canToggle`；编辑详情页按 §4.4 提供并排对比与切换入口（§13.8-②）；淘汰二次确认 + 孤儿标签清理；草稿存为提示词的入口。
+- **M8**：设置页即时生效（`showComposerButton` / `showAIPolishButton` / `hashTriggerEnabled` 同批）与两个 `*IconOnly` 键语义统一。
+- **规格**：§13.8 已落笔（4 条口径）。
+
+
 
 
