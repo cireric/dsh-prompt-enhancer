@@ -33,10 +33,13 @@ test("libraryCreateInput：AI title 为空串时取原文首行（第一个换�
   assert.equal(flow.libraryCreateInput(refined, longFirstLine).title, "甲".repeat(TITLE_MAX_LEN));
 });
 
-test("libraryCreateInput：原文以空行开头时取首个非空行（否则落库 title 为空）", () => {
+test("libraryCreateInput：原文以空行开头时取首个非空行并 trim（否则落库 title 为空 / 带前导空白）", () => {
   const refined = { title: "", tags: [], summary: "", body: "完善稿" };
   assert.equal(flow.libraryCreateInput(refined, "\n标题").title, "标题");
   assert.equal(flow.libraryCreateInput(refined, "\n\n标题\n正文").title, "标题");
+  // 首个非空行自带前导空白时必须 trim（P5 延期 #2 / A4）；把实现里的 trim 去掉，下面两条必红。
+  assert.equal(flow.libraryCreateInput(refined, "\n  标题").title, "标题");
+  assert.equal(flow.libraryCreateInput(refined, "\t 标题\n正文").title, "标题");
   const blank = flow.libraryCreateInput(refined, "   \n\t\n  ");
   assert.equal(blank.title, "", "全空白草稿 → 空 title，且不抛");
   assert.equal(blank.body, "   \n\t\n  ", "body 永远是原文，一字不改");

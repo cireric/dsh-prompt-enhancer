@@ -9,6 +9,7 @@
 
 - 被验收提交：**HEAD `474239725dfcd883aa33e1624b488beecf92fee2`**（= `4742397`），工作区开始与结束均 `git status --porcelain` 为空。
 - **元信息（后续补记）**：本记录对应提交 `4742397`；其后 `d8ca9b0` / `ee4056a` / 本次修复仅改文案、文档与 smoke 断言，未改变任何已记录断言的结论。
+- **元信息（P6 任务 6 / A6 补记，2026-09-24）**：「未完整验证」表 `:72` 行引用的一处 zh 源引文已过期——那里写的 `ai.polishing="正在调用 AI…（最长约 2 分钟）"` 是收尾波**之前**的值；P5 收尾波按裁决 16 把时长信息从 `ai.polishing` 移到 `ai.tip`，现值为 `ai.polishing="正在调用 AI…"`（`src/client/utils/i18n.ts:27`）、`ai.tip="用 AI 优化当前输入框内容（可能需要一两分钟）"`（`:24`）。**该行的结论与归属不变**（zh 文案未在活 GUI 渲染验证 = NOT RUN，归属「可选补充，不阻塞 P5」），本文件不改动任何结论行。
 - 宿主：`http://127.0.0.1:3080`（DSH Local Build 0.1.5-rc.2-c291；viewport 1280×720；`document.documentElement.lang === "en"`）。
 - 驱动方式：Playwright（`browser_navigate` / `browser_find` / `browser_click` / `browser_type` / `browser_press_key` / `browser_evaluate` / `browser_console_messages` / `browser_network_requests`）+ 只读或受控 `curl` HTTP。
 - **证据分层（明确区分，不混用）**：

@@ -115,7 +115,7 @@
 
 - `src/client/utils/` 现有：`ai-flow / api / hash-token / i18n / insert / template / theme`。**没有** `data-sync.ts`、`ui-state.ts`、`workspace-dir.ts`、`dialog-style.ts`、`common/*`、`data-formats.ts`。
 - `api.ts` **缺** P6 需要的全部面：tags CRUD、trash 三个动作、import/export、`deletePrompt`、`getPrompt`。
-- i18n 现为 **98 键 ×2**（`src/client/utils/i18n.ts`），`tests/i18n.test.mjs` 的键名正则**只接受恰好两级** `a.b`（P5 延期项 #8）→ P6 若新增三级键必须同步改该正则。
+- i18n 现为 **49 键 ×2**（`src/client/utils/i18n.ts`；**A12 订正**：原文写的「98 键」有误，当时实测 49 键。口径与后值：P6 各任务填充后、T6 收口前为 **165 键 ×2**，T6 删除三个死键后为 **162 键 ×2**），`tests/i18n.test.mjs` 的键名正则**只接受恰好两级** `a.b`（P5 延期项 #8）→ P6 若新增三级键必须同步改该正则。
 - 类型包齐备：`node_modules/@deepseek-ai/` 下 `dsh-client-ui-slots / ui-layout / ui-sidebar / ui-workspace / ui-renderer / ui-conversation / ui-primitives / dsh-client-locale` 均 present（`scripts/link-dsh-deps.mjs` 全量链接 profile 的 251 个包）。
 - SDD 脚本存在但**无可执行位**：`$DSH_HOME/profiles/web/node_modules/@wenaixi/dsh-superpower/skills/superpower-subagent-driven-development/scripts/{sdd-workspace,task-brief,review-package}`（`-rw-r--r--`）→ 一律 `bash <script>`。
 
@@ -302,7 +302,7 @@ export function pickExportDirectory(): Promise<string | null>   // 不可用时�
 **步骤：**
 - [ ] 步骤 1：**入口 A（管理面板新建/编辑）**——已由任务 2 提供；补一条空的「新建」路径（面板内「新建」按钮 → 详情页 blank 态 → `api.createPrompt`）
 - [ ] 步骤 2：**入口 B（选中文字浮出「存为提示词」）**：按 D-P6-3 实现
-  - 只读 `window.getSelection()`；空/折叠/超长（上限 `TITLE_MAX_LEN` 之外的正文不限）不浮出
+  - 只读 `window.getSelection()`；空/折叠不浮出（**A12 订正**：原文的「超长不浮出」已按 **R33 作废**——R13 明示**不设长度上限**，正文多长都浮出；标题长度仍走既有的 `clampTitle`）
   - 位置判定按 TBD-P6-3 裁定的分支（允许只读 `closest('[data-conversation-scroll]')` 时，排除 `[data-composer-seat]` 与我方根节点）
   - 监听：`selectionchange` + `pointerdown/pointerup`（capture）+ `scroll`；**不注册 keydown/keyup/keypress**
   - 浮出按钮渲染在**我方根节点内**（`position: fixed` + `getBoundingClientRect()` 换算）；点击 → `pushCapture({ body })` → `openManager("list")` → 面板新建态预填

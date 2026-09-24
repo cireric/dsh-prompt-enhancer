@@ -110,22 +110,34 @@ test("未超限：length + incoming <= maxCount 时预演为空，真实淘汰�
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 稳定性（同 aiRefined 且同 lastUsedAt）
+// 并列兜底（aiRefined / lastUsedAt / createdAt 全并列，只剩 id 裁决）
+//
+// A7（R38）：本用例原先声称「并列键时取**输入数组**的第一个」——那是补 id 兜底键**之前**的行为。
+// 比较器现已全序化（见 eviction.ts 顶部：… → createdAt 升序 → id 升序），而旧夹具恰好是
+// 「id 次序 = 输入次序」（输入 [a,b,c]），于是用例**只靠巧合**通过：同样三条数据以 [c,b,a]
+// 传入时实现返回 a，而不是输入首元素 c。现改为如实描述规则（并列由 id 升序兜底），并把夹具
+// 顺序**反向**（输入首元素是 id 最大的 c），使它不再依赖巧合。
 // ─────────────────────────────────────────────────────────────────────────────
-test("稳定性：并列键按输入次序取前 N；同输入 → 逐 id 相等（两端依赖的同一个不变量）", () => {
-  const tied = [mk("a", false, 0), mk("b", false, 0), mk("c", false, 0), mk("p", true, 0)];
+test("稳定性：并列键由 id 升序裁决（与输入次序无关）；同输入 → 逐 id 相等", () => {
+  // 夹具顺序刻意与预期反向：输入首元素是 id 最大的 "c"，而受害者是末元素 "a"。
+  const tied = [mk("c", false, 0), mk("b", false, 0), mk("a", false, 0), mk("p", true, 0)];
 
   const first = previewEvictions(tied, 4, 1).map((p) => p.id);
-  assert.deepEqual(first, ["a"], "并列键时取输入数组的第一个（ES2019 起 Array.prototype.sort 稳定）");
+  assert.deepEqual(first, ["a"], "并列键由 id 升序裁决——不是输入数组的第一个（那是 c）");
   assert.deepEqual(
     previewEvictions(tied, 4, 1).map((p) => p.id),
     first,
     "同输入必须给出逐 id 相同的结果（可重复，不是随机挑一个）",
   );
   assert.deepEqual(
+    previewEvictions([...tied].reverse(), 4, 1).map((p) => p.id),
+    first,
+    "把输入数组倒过来，受害者不变——结果只由键决定，与输入次序无关",
+  );
+  assert.deepEqual(
     previewEvictions(tied, 3, 1).map((p) => p.id),
     ["a", "b"],
-    "同一次预演的多名受害者同样保持输入次序",
+    "同一次预演的多名受害者同样按 id 升序",
   );
   assert.deepEqual(
     previewEvictions(tied, 0, 1).map((p) => p.id),
@@ -133,11 +145,12 @@ test("稳定性：并列键按输入次序取前 N；同输入 → 逐 id 相等
     "aiRefined=true 的行排在全部候选之后（即使 lastUsedAt 完全并列也不得越位）",
   );
 
-  const dup = [mk("x", false, 0), mk("y", false, 0), mk("z", false, 0)];
+  // 另一组全并列夹具（输入序 z/y/x ≠ id 次序）：受害者必须是 id 升序的前 N 个。
+  const dup = [mk("z", false, 0), mk("y", false, 0), mk("x", false, 0)];
   assert.deepEqual(
     previewEvictions(dup, 1, 0).map((p) => p.id),
     ["x", "y"],
-    "全部并列时受害者即输入数组的前 N 个",
+    "全部并列时受害者 = id 升序的前 N 个（不是输入数组的前 N 个：那是 z、y）",
   );
 });
 

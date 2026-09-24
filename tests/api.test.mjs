@@ -55,7 +55,7 @@ test("非 JSON 响应（HTML）→ 抛可读 ApiError 且 message 含 HTTP 状�
 test("polishPrompt：请求体 {body,keepVariables,withSummary:false} 且带未中断的 AbortSignal，返回 polished", async () => {
   const s = stubFetch(() => jsonRes({ ok: true, data: { polished: "AI 完善稿" } }));
   try {
-    const out = await api.polishPrompt("原文草稿");
+    const out = await api.polishPrompt("原文草稿", { keepVariables: true });
     assert.deepEqual(out, { polished: "AI 完善稿" });
     assert.equal(s.calls.length, 1);
     const { url, init } = s.calls[0];
@@ -170,7 +170,7 @@ test("polishPrompt：超时异常原样穿过 call() 抵达分类器（TimeoutEr
     throw new DOMException("signal timed out", "TimeoutError");
   });
   try {
-    await assert.rejects(api.polishPrompt("原文草稿"), (err) => {
+    await assert.rejects(api.polishPrompt("原文草稿", { keepVariables: true }), (err) => {
       assert.equal(err.name, "TimeoutError", "不得被包装成 ApiError");
       assert.equal(err instanceof ApiError, false, "超时不走 ApiError 信封路径");
       assert.equal(aiErrorKey(err), "ai.timeout");
@@ -233,7 +233,7 @@ const ROUTES = [
   { route: "DELETE /trash/:id", client: "deleteTrash", call: (a) => a.deleteTrash("a/b"), method: "DELETE", url: "/api/prompt-enhancer/trash/a%2Fb", data: { removed: 1 } },
   // AI
   { route: "GET /ai/providers", client: "listAiProviders", call: (a) => a.listAiProviders(), method: "GET", url: "/api/prompt-enhancer/ai/providers", data: [] },
-  { route: "POST /ai/polish", client: "polishPrompt", call: (a) => a.polishPrompt("草稿"), method: "POST", url: "/api/prompt-enhancer/ai/polish", body: { body: "草稿", keepVariables: true, withSummary: false }, data: { polished: "x" } },
+  { route: "POST /ai/polish", client: "polishPrompt", call: (a) => a.polishPrompt("草稿", { keepVariables: true }), method: "POST", url: "/api/prompt-enhancer/ai/polish", body: { body: "草稿", keepVariables: true, withSummary: false }, data: { polished: "x" } },
   { route: "POST /ai/refine", client: "refinePrompt", call: (a) => a.refinePrompt("草稿"), method: "POST", url: "/api/prompt-enhancer/ai/refine", body: { body: "草稿" }, data: { title: "t", tags: [], summary: "", body: "b" } },
   { route: "POST /ai/skill-descriptor", client: null },
   // 设置

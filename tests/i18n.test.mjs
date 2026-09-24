@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 const i18n = await import("../src/client/utils/i18n.ts");
 
 /**
@@ -48,4 +51,39 @@ test("i18n：键名正则拒绝空段、首尾点与首字母大写的段（a..b
   for (const bad of ["a..b", ".a", "a.", "a.b.", "a..b.c", "A.b", "a.B"]) {
     assert.doesNotMatch(bad, KEY_RE, bad + " 不是合法键名");
   }
+});
+
+// ── A11 / R42：无死键检查 ─────────────────────────────────────────────────
+//
+// 每个键都必须在 src/** （排除字典自身 i18n.ts）里作为**字符串字面量**出现——含联合类型里的
+// 字面量（如 transfer.ts 的 errorKey）。P6 期间死键出现 ≥3 次（T2 一次、T4/T5 各一次），
+// 人眼找不回来，故立此检查。
+//
+// 判定用「带引号的整键字面量」精确匹配（"a.b.c" / 'a.b.c'），不做宽泛正则：
+//   · 注释里的反引号写法（一个键名加反引号）**不算**引用——否则删掉键、只在注释里留个名字
+//     就能骗过检查（本次 T6 的三个死键正是这种形态：只剩 PromptManagerModal 的注释提到它们）；
+//   · 键名拼接等动态引用同样不算，必须在下面的显式豁免清单里逐条声明理由。
+//
+// 显式豁免清单当前**为空**：实测 src/** 里没有任何键只靠动态引用而从不以字面量出现。
+// 将来若出现合法动态引用，在这里加 { key, why } 并写明理由——不得把本检查放宽成宽泛正则。
+const DYNAMIC_KEY_EXEMPTIONS = [];
+
+/** 把 src/** （排除字典自身）的全部源码拼成一段文本，供字面量精确匹配。 */
+function collectSourceText() {
+  const srcDir = fileURLToPath(new URL("../src", import.meta.url));
+  const files = readdirSync(srcDir, { recursive: true })
+    .map(String)
+    .filter((rel) => (rel.endsWith(".ts") || rel.endsWith(".tsx")) && !rel.endsWith("i18n.ts"));
+  assert.ok(files.length > 0, "必须真的扫到 src/** 的源码（0 个文件 = 本检查是空转）");
+  return files.map((rel) => readFileSync(join(srcDir, rel), "utf8")).join("\n");
+}
+
+test("i18n：无死键——每个键都在 src/** 里作为字符串字面量被引用（A11 / R42）", () => {
+  const text = collectSourceText();
+  for (const e of DYNAMIC_KEY_EXEMPTIONS) assert.ok(e.why.trim() !== "", e.key + " 的豁免理由不得为空");
+  const exempt = new Set(DYNAMIC_KEY_EXEMPTIONS.map((e) => e.key));
+  const dead = Object.keys(i18n.zh).filter(
+    (key) => !exempt.has(key) && !text.includes('"' + key + '"') && !text.includes("'" + key + "'"),
+  );
+  assert.deepEqual(dead, [], "以下键在 src/** 里没有任何字符串字面量引用（死键：删除，或在豁免清单里写明理由）：" + dead.join(", "));
 });

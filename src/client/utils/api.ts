@@ -91,7 +91,11 @@ export const api = {
     call<Prompt>("PUT", "/prompts/" + encodeURIComponent(id), patch),
   rollbackPrompt: (id: string) => call<Prompt>("POST", "/prompts/" + encodeURIComponent(id) + "/rollback"),
   listAiProviders: () => call<AiSelectable[]>("GET", "/ai/providers", undefined, AI_PROBE_TIMEOUT_MS),
-  polishPrompt: (body: string, opts: { keepVariables?: boolean } = {}) =>
+  /**
+   * `keepVariables` **必填**（P5 延期 #9 / T6-A3）：缺省 `true` 会让漏传的调用方静默落回被否决的
+   * 常量，改成必填即由编译期拦住漏传。运行期仍按 `!== false` 判定，JS 调用方缺省时的旧行为不变。
+   */
+  polishPrompt: (body: string, opts: { keepVariables: boolean }) =>
     call<{ polished: string; summary?: string }>(
       "POST",
       "/ai/polish",

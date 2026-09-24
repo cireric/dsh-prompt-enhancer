@@ -84,9 +84,10 @@ const PANEL_LABEL: Record<ManagerPanel, PromptEnhancerKey> = {
 };
 
 /**
- * 四个页签在本任务后全部有真实内容（T5 收口）：字典里遗留的 `manager.tags.pending` /
- * `manager.trash.pending` / `manager.transfer.pending` 三个占位键按 T4 的同一处置**保持不动**
- * （不顺手删别人的键集，也不新增未被引用的键）。
+ * 四个页签在 T5 收口后全部有真实内容（T2 立外壳、T4 填标签/回收站、T5 填导入导出）。
+ * 原先的三个占位键（`manager.tags.pending` / `manager.trash.pending` / `manager.transfer.pending`）
+ * 已成无引用死键，已由 T6（A8 / R39）连同这段注释一并清除——`tests/i18n.test.mjs` 的无死键检查
+ * （A11 / R42）此后会拦住任何无人引用的新键。
  */
 
 /** 排序下拉项：值与宿主 `GET /prompts?sort` 的枚举逐字一致（routes.ts 的白名单）。 */

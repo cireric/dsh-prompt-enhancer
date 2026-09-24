@@ -13,6 +13,8 @@
  * 纯模块（无 React、无 DOM、无 fetch）：`node --test` 直接删 import 源码即可测。
  */
 
+import type { ImportResult } from "../../types.ts";
+
 /** 备份文件体积上限（5 MiB，字节）。与 `File.size` 同单位（字节，不是字符数）。 */
 export const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
 
@@ -20,7 +22,9 @@ export const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
  * 两道闸的判定结果：
  *   · 放行 → `{ ok: true, backup }`，`backup` 就是 `JSON.parse` 的原样产物（不重塑、不校验）；
  *   · 拒绝 → `{ ok: false, errorKey, detail }`。`errorKey` 是 i18n 键（由渲染点翻译），
- *     `detail` 给人看的**补充事实**（体积闸给实际值与上限，解析闸给解析器原文）。
+ *     `detail` **只承载纯数据**（体积闸给 `实际值/上限` 的字节数，解析闸给解析器原文）——
+ *     不得写中文措辞：`detail` 会原样出现在面内，en 语言下就成了中英混排（A10）；
+ *     一切措辞由 `errorKey` 对应的 i18n 键承担。
  */
 export type BackupParse =
   | { ok: true; backup: unknown }
@@ -35,7 +39,8 @@ export function parseBackupFile(text: string, byteLength: number): BackupParse {
     return {
       ok: false,
       errorKey: "transfer.tooLarge",
-      detail: `文件 ${byteLength} 字节，超过上限 ${MAX_BACKUP_BYTES} 字节`,
+      // 纯数据（实际值/上限），措辞在 i18n 的 transfer.tooLarge（A10）。
+      detail: `${byteLength}/${MAX_BACKUP_BYTES}`,
     };
   }
   try {
@@ -47,4 +52,22 @@ export function parseBackupFile(text: string, byteLength: number): BackupParse {
       detail: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/**
+ * 确认导入后的**回执分类**（A9 / R40，T5 评审轻微 5 的收口）。
+ *
+ * 为什么必须判 `applied`：宿主 `POST /import` 的成功信封有两种——`{ok:true, applied:false, stats}`
+ * 是**预览**（只算了条数，没落库），`{ok:true, applied:true, stats}` 才是落库。只看 `ok`
+ * （或只看「信封里有 data」）会把「宿主只回预览」渲染成「导入完成」= **静默假成功**。
+ * 故成功判据只有一个：`applied === true`（严格相等：`"true"` / `1` 都不算）。
+ *
+ * 做成纯函数（无 React / 无 fetch / 不引宿主）是为了让这条防御能被 `node --test` 直接钉住——
+ * 否则它只能靠活体验收证明自己存在，无法变异验证（T5 评审把这一点记为缺陷）。
+ */
+export type ImportVerdict = { ok: true } | { ok: false; errorKey: "manager.transfer.importFailed" };
+
+/** 回执分类：`applied === true` 才算落库成功（见上文）。 */
+export function classifyImportResult(result: ImportResult): ImportVerdict {
+  return result.applied === true ? { ok: true } : { ok: false, errorKey: "manager.transfer.importFailed" };
 }

@@ -13,7 +13,8 @@
  *     `appendChild` 那种 DOM 注入）→ `file.text()` → `parseBackupFile`（客户端独有的两道闸：
  *     体积 / JSON 解析，见 utils/transfer.ts）→ `api.importBackup(backup, false)` 取**宿主**预览
  *     → 展示 `{added, overwritten, total}` + 一行「同 id 覆盖且不可撤销」→ 确认按钮
- *     → `api.importBackup(backup, true)` → `notifyDataChanged()`。
+ *     → `api.importBackup(backup, true)` → `classifyImportResult` 判 `applied === true`
+ *     （A9：宿主只回预览时**不得**渲染成「导入完成」）→ `notifyDataChanged()`。
  *
  * **信封校验一律委托宿主**：`version !== 1` / `prompts` 非数组 / 元素缺 `id`|`body` 都由宿主
  * `store.ts#validateBackup` 判，客户端**不复制**一份（第二处真源会漂移）；宿主 400 时把它返回的
@@ -30,7 +31,7 @@ import { api } from "../utils/api.ts";
 import { notifyDataChanged } from "../utils/data-sync.ts";
 import { actions, button, errorDetail, errorText, muted, primaryButton, toolbar } from "../utils/dialog-style.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
-import { parseBackupFile } from "../utils/transfer.ts";
+import { classifyImportResult, parseBackupFile } from "../utils/transfer.ts";
 import { isDirectoryPickerAvailable, pickExportDirectory } from "../utils/workspace-dir.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
 
@@ -132,7 +133,8 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
           if (!aliveRef.current) return;
           if (result.stats === undefined) {
             // 宿主契约漂移（预览必带 stats）：可见地报出来，不静默当作空预览。
-            setFailure({ key: "manager.transfer.noStats", detail: reasonOf(new Error("宿主预览响应缺少 stats")) });
+            // detail 只给纯数据（收到的回执键集），措辞在 manager.transfer.noStats（A10）。
+            setFailure({ key: "manager.transfer.noStats", detail: "keys=" + Object.keys(result).sort().join(",") });
             return;
           }
           setPreview({ backup: parsed.backup, stats: result.stats });
@@ -162,6 +164,13 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
       try {
         const result = await api.importBackup(backup, true);
         if (!aliveRef.current) return;
+        // A9：落库与否由纯函数判定（applied === true）。宿主没落库（只回预览）时**不得**渲染成
+        // 「导入完成」——那是静默假成功。此时保留预览与确认按钮，用户可以再确认一次。
+        const verdict = classifyImportResult(result);
+        if (!verdict.ok) {
+          setFailure({ key: verdict.errorKey, detail: "applied=" + String(result.applied) });
+          return;
+        }
         const done = result.stats ?? stats;
         setPreview(null);
         setApplied(done);
