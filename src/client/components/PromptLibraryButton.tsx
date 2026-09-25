@@ -13,6 +13,7 @@ import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots
 import { canRender } from "../../overlay-claim.ts";
 import type { Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
+import { showsLabel } from "../utils/icon-only.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
@@ -48,6 +49,23 @@ const ACTIONS: ReadonlyArray<{ mode: InsertMode; label: PromptEnhancerKey }> = [
 
 /** 「该提示词已不存在」的停留时长（自动消失，不打断输入）。 */
 const NOTICE_MS = 4000;
+
+/**
+ * 词库图标：内联四角星，与 `AIPolishButton` 的 `SparkleIcon` 同形——只图标模式（`composerButtonIconOnly`）
+ * 下它是按钮唯一可见物，名字由 `aria-label` / `title` 承担（无障碍面不丢名字）。不引任何图标依赖。
+ */
+function PromptLibraryIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={ICON}>
+      <path
+        d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 export function PromptLibraryButton({
   t,
@@ -290,7 +308,13 @@ export function PromptLibraryButton({
           }
         }}
       >
-        {t("button.title")}
+        <PromptLibraryIcon />
+        {/*
+         * P8 T2：与 AI 优化按钮共用 `showsLabel` 一个判定（两处 `*IconOnly` 语义统一）。
+         * 只改**可见文字**：`aria-label` / `title` / `aria-haspopup` / `aria-expanded` 全不动，
+         * 故活体定位（R-P8-4）与无障碍名不受影响。
+         */}
+        {showsLabel(settings.composerButtonIconOnly) && <span>{t("button.title")}</span>}
       </button>
       {/* 沉淀入口 B：选中聊天文字浮出的「存为提示词」（不新增座位：渲染在本组件根节点内）。 */}
       <SelectionAddPrompt
@@ -413,9 +437,12 @@ const WRAP: React.CSSProperties = {
   gap: 6,
 };
 
+const ICON: React.CSSProperties = { display: "block", flex: "0 0 auto" };
+
 const BUTTON: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
+  gap: 4,
   height: 24,
   padding: "0 8px",
   fontSize: 12,

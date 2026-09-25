@@ -27,6 +27,7 @@ import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots
 import { canRender } from "../../overlay-claim.ts";
 import type { Prompt } from "../../types.ts";
 import { aiErrorKey, canToggle, keepVariablesFor, libraryCreateInput, needsWriteBack, writeBackRefined } from "../utils/ai-flow.ts";
+import { showsLabel } from "../utils/icon-only.ts";
 import { api, type AiRefineResult, type AiSelectable } from "../utils/api.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import { createFromCapture, type CaptureOutcome } from "../utils/capture.ts";
@@ -471,7 +472,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
         }}
       >
         <SparkleIcon />
-        {settings.aiPolishButtonIconOnly === false && <span>{t("ai.button")}</span>}
+        {showsLabel(settings.aiPolishButtonIconOnly) && <span>{t("ai.button")}</span>}
       </button>
       {aiVisible && (
         <span style={ANCHOR}>
