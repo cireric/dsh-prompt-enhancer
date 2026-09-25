@@ -104,3 +104,46 @@ test("schema：空输入给出全部 13 个默认值，越界值被拦下", () =
   assert.throws(() => settings.PromptEnhancerSettingsSchema({ panelWidth: 99999 }), /expected number/);
   assert.throws(() => settings.PromptEnhancerSettingsSchema({ maxPromptCount: 0 }), /expected number/);
 });
+/**
+ * 承重不变量的判据（P8 T1 修复轮 1 / D-P8-3）：清路由缓存**上移到权威层 `scope.watch`** 后，
+ * 没有用例就只剩类型层保证，回归不可见。正负成对：挂上必须真的触发、注销必须真的不再触发。
+ */
+function watchingScope() {
+  const watchers = new Set();
+  return {
+    watchers,
+    fire() {
+      for (const w of [...watchers]) w({ panelWidth: 500 }, { panelWidth: 420 });
+    },
+    scope: {
+      get: () => ({ panelWidth: 500 }),
+      update: () => {},
+      watch(cb) {
+        watchers.add(cb);
+        return () => watchers.delete(cb);
+      },
+    },
+  };
+}
+
+test("registerSettings：含 watch 的 scope ⇒ 注册即挂上观察，宿主提交一次变更触发一次 onChange", () => {
+  const f = watchingScope();
+  let n = 0;
+  settings.registerSettings(f.scope, { onChange: () => { n++; } });
+  assert.equal(f.watchers.size, 1, "注册时必须真的挂上观察");
+  assert.equal(n, 0, "挂观察本身不得触发");
+  f.fire();
+  assert.equal(n, 1, "宿主每次已提交变更触发一次");
+});
+
+test("registerSettings：注销后必须释放观察——再提交变更不得触发 onChange（退订真的生效）", () => {
+  const f = watchingScope();
+  let n = 0;
+  settings.registerSettings(f.scope, { onChange: () => { n++; } });
+  f.fire();
+  assert.equal(n, 1);
+  settings.registerSettings(undefined);
+  assert.equal(f.watchers.size, 0, "注销必须真的退订，不留悬挂观察者");
+  f.fire();
+  assert.equal(n, 1, "注销后不得再触发");
+});

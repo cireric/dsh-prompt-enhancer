@@ -29,6 +29,7 @@ import * as React from "react";
 import type { ImportStats } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import { notifyDataChanged } from "../utils/data-sync.ts";
+import { getSettingsSnapshot } from "../utils/settings-store.ts";
 import { actions, button, errorDetail, errorText, muted, primaryButton, toolbar } from "../utils/dialog-style.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import {
@@ -214,8 +215,12 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
         // 约束 D3：成功导入后读一次「当前总数」与上限，超出则**显式提示**条数与上限的关系。
         // 读数失败不得把「导入成功」变成失败——单列一条可见提示（不静默吞掉）。
         try {
-          const [list, settings] = await Promise.all([api.listPrompts(), api.getSettings()]);
+          // 上限改读**唯一真源**（D-P8-2 / P8 T1 修复轮 1）：同一个值不再有第二条读路径，
+          // 也省掉一次无谓的往返（listPrompts 本身就是网络读）。命令式读取即此处正确的形状
+          // ——它要的是「此刻生效的上限」，而不是一份需要跟随重渲染的快照。
+          const list = await api.listPrompts();
           if (!aliveRef.current) return;
+          const settings = getSettingsSnapshot();
           if (list.length > settings.maxPromptCount) {
             setOverflow({ imported: done.total, total: list.length, max: settings.maxPromptCount });
           }

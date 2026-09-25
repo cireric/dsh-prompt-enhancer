@@ -56,3 +56,44 @@ test("settings-store：updateSettings 逐字段调 scope.set（一次写 13 键�
   assert.deepEqual(f.sets, [["hashTriggerEnabled", false], ["panelWidth", 600]]);
   store.setSettingsScope(null);
 });
+const { api } = await import("../src/client/utils/api.ts");
+
+/** 让降级读的 promise 落定（只让出事件循环，不引入定时器语义）。 */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("settings-store：无 scope ⇒ 降级读一次 HTTP GET 并采纳（只广播一次，未给的字段回落默认）", async () => {
+  const real = api.getSettings;
+  api.getSettings = () => Promise.resolve({ panelWidth: 733, showSidebarButton: false });
+  try {
+    store.setSettingsScope(null); // 触发降级读（同步先把快照落回默认值）
+    let n = 0;
+    const off = store.subscribeSettings(() => { n++; });
+    await tick();
+    const snap = store.getSettingsSnapshot();
+    assert.equal(snap.panelWidth, 733, "HTTP 结果必须被采纳");
+    assert.equal(snap.showSidebarButton, false);
+    assert.equal(snap.aiModel, DEFAULT_SETTINGS.aiModel, "未给的字段回落默认");
+    assert.equal(n, 1, "采纳恰好广播一次");
+    off();
+  } finally {
+    api.getSettings = real;
+    store.setSettingsScope(null);
+  }
+});
+
+test("settings-store：无 scope 且降级读失败 ⇒ 快照仍为默认值、无人收到通知、无未捕获 rejection", async () => {
+  const real = api.getSettings;
+  api.getSettings = () => Promise.reject(new Error("模拟降级读取失败"));
+  try {
+    store.setSettingsScope(null);
+    let n = 0;
+    const off = store.subscribeSettings(() => { n++; });
+    await tick();
+    assert.deepEqual(store.getSettingsSnapshot(), { ...DEFAULT_SETTINGS });
+    assert.equal(n, 0, "失败不得广播");
+    off();
+  } finally {
+    api.getSettings = real;
+    store.setSettingsScope(null);
+  }
+});
