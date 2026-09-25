@@ -89,8 +89,12 @@ export function classifyImportResult(result: ImportResult): ImportVerdict {
  * **导入新 id（库里没有）⇒ 一把键都不清**（反面对照）：没有覆盖就没有失效。
  *
  * `existingIds` 必须是**导入前**读到的现库 id 集合——导入后再读就晚了（那时备份里的 id 全都存在，
- * 交集等于全部）。它对应宿主算 `stats.overwritten` 的**同一个集合**（`selectAllPrompts()` = 活跃
- * 提示词表；回收站是另一张表，同 id 落进活跃表时并不构成覆盖）。
+ * 交集等于全部）。
+ *
+ * **覆盖集 = 活跃提示词表 ∪ 回收站**（`readExistingPromptIds`，去重）：软删除**刻意不清键**，且回收站
+ * 与活跃表**共用同一 id**（`INSERT OR REPLACE` 恢复回活跃表），故「备份含 X → 软删 X → 导入该备份」
+ * 同样构成覆盖 ⇒ 必须把回收站那一侧也算进来，否则那份旧方向记录会**继承给恢复后的 X**。
+ * （旧文档曾写「只对应 `selectAllPrompts()`，回收站不算覆盖」——那是被本修复波改掉的假话，别改回去。）
  *
  * `clear` 由调用方注入（真实现 = `ai-flow.ts#deletePrompts` 的收尾编排）：本模块是纯模块
  * （无 React / 无 DOM / 无 fetch，见文件头），不 import HTTP 层。返回被清键的 id（供调用方与用例断言）；
@@ -160,9 +164,16 @@ async function readIdsSafely(
  *   · **(c) 代价真实**：`api.ts#call` 对**非 AI 路由不设超时** ⇒ 一条挂住的 `DELETE /meta` 会让
  *     `allSettled` **永不 settle** ⇒ 面板**永久停在 applying**（外层 catch 只接拒绝）。
  *
- * 返回 `void`（不是一个可以 await 的 promise）——**这就是「不阻塞」的机制**：调用方无从 await 它，
- * 也就无法把反馈押在清键上。失败仍只 `console.warn`（绝不把一次已经成功的导入报成失败），
- * 且拒绝被就地接住 ⇒ 不会变成 unhandled rejection。
+ * **不阻塞的机制在 body，不在返回类型**：本函数**不返回**清键的 promise，调用方拿不到它的完成信号
+ * （`.then/.catch` 直接类型报错 `TS2339`；`await` 它只会 await 到 `undefined`，**等不到清键完成**）。
+ * ⇒ **两层闸合起来才完整**：类型标注 `: void`（挡再耦合）+ `npm run typecheck`（把标注改成
+ * `Promise<void>` 而不改 body ⇒ `TS2355`）。
+ * 失败仍只 `console.warn`（绝不把一次已经成功的导入报成失败），且拒绝被就地接住 ⇒ 不会变成
+ * unhandled rejection。
+ *
+ * ⚠️ 已知边界（P8）：`api.ts#call` 对非 AI 路由不设超时 ⇒ 清键**挂住**（非拒绝）时既无 warn 也无 UI
+ * 信号。该形态在 purge / 清空回收站路径上本就存在；修法应是「给清键请求加超时 ⇒ 超时即 abort
+ * ⇒ catch 的 warn 得以触发」。
  */
 export function clearOverwrittenMetaDetached(
   backup: unknown,
