@@ -200,6 +200,7 @@
 
 - **(a) 鼠标路径**：草稿带令牌 + 浮层可见（`hash=true`、`lib=false`）→ **真实鼠标点击**词库按钮 → **面板正常渲染**（不能被吞）`[632,379,338,246]`、`aria-expanded="true"`，且 `#` 浮层已收起（`hashVisible=false`）⇒ PASS。
   > **⚠️ 已过期（修复波 `88e11c9` 起，F-1 活体检查实测）**：该波次把 `onClick` 的首句改成 `if (hashVisible) return;`，而 **pointerdown 与 click 间隔 ≤10ms 时该闭包仍是陈旧的 `true`** ⇒ 这类点击被整口吞掉（面板 0/65 帧、`aria-expanded` 恒 `false`、`open` 都不置位，须再点一次）。实测阈值：**0/5/10ms 全吞（0ms 复现 2/2）、≥20ms 全开（4/4，首个面板样本 61–283ms）**；Playwright 默认 `locator.click()` 落在被吞侧。人类常规点击（60–150ms）不受影响，**自动化与 AT 合成点击必命中**。本条原 PASS 是**波次前**的产物（当时首句是 `if (open) close();`，陈旧闭包读到 `open=false` 反而走 `setOpen(true)` 放行）——故**当前产物上本条不成立**，已由控制者裁决 R60 修复。
+  > **✅ R60 复检通过（`9b06624`，产物 rev `45684695d989`）**：闸门改为按**激活通道**分叉（`if (event.detail === 0 && hashVisible) return;`），**指针点击一律放行** ⇒ 真实指针点击 **0/5/10/20/100ms 七档全部打开**（0 同屏帧、浮层均收起、草稿均保留、通道记录均 `detail=1` / `isTrusted=true` / `pointerType=mouse`），上一轮被吞的 0/5/10 三档全部恢复；键盘路径仍为 no-op 且**不延后兑现**（清空令牌后仍不出现，79 样本 0 面板帧）；面板在屏时点击仍收起；R54 在 **0ms 短间隔**下 pending 仍保住（变量填窗值原样保留）。**合成激活**（`element.click()`，`detail=0`）浮层在屏时**仍被拦**（与键盘同语义），对照组可正常打开 ⇒ 已作为 Fact 写入规格 §13.10-五-1。
 - **(b) 键盘敲令牌**：面板开着、草稿无令牌（真实 `Meta+a` + `Backspace`；实测 `lib=true`、`hash=false`、草稿为单个换行）→ 用真实 `Shift+Tab` 把焦点送回输入框 → 真实按键 `#` → 10ms 采样 72 个 keydown 后样本：**`panelSamplesAfterKey=0`、`sameScreenSamples=0`**，首个「浮层在而面板不在」的采样点距 keydown **19ms**，**从未出现在 keydown 之后仍渲染面板的样本**（`lastLibAt=null`）⇒ 允许 1–2 帧的口径下**实测 0 帧**，PASS。
 
 ### C-4 A4 卸载清除 —— **NOT RUN — 无法构造真实卸载 — 归属 P6**
