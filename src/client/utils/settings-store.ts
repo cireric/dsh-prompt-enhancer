@@ -13,6 +13,14 @@ export interface ClientSettingsScope {
 let scope: ClientSettingsScope | null = null;
 /** 当前 scope 的退订器：换 scope / 注销时释放上一个，不留悬挂观察者。 */
 let unsubscribeScope: (() => void) | undefined;
+/**
+ * 本次「无 scope」缺失期是否已试过降级读。
+ *
+ * 保证**每期至多一次**：反复消费（`getSettingsSnapshot` / `subscribeSettings` / `updateSettings`）
+ * 不会重发，失败也不重试、不轮询。显式的 `setSettingsScope(null)` 是一次状态跃迁（进入新的缺失期），
+ * 故它重新武装——否则该触发点在首次尝试之后就永远是死代码。
+ */
+let fallbackAttempted = false;
 let snapshot: PluginSettings = { ...DEFAULT_SETTINGS };
 const listeners = new Set<() => void>();
 
@@ -28,12 +36,12 @@ function derive(): void {
 /**
  * 无宿主 scope 时的**降级读**（R-P8-1）：发一次尽力而为的 `GET /settings`，成功则经归一化落地并广播。
  *
- * 触发点只有两个——**模块初始化**与 `setSettingsScope(null)`：有 scope 时读一律走宿主镜像
- * （D-P8-2），换 scope 不再发请求。失败静默回落默认值（只留一条可读 warn），**不重试、不轮询**；
- * 且必被 `then` 的拒绝分支接住——绝不产生未捕获的 rejection。
+ * 触发点是**首次消费**与 `setSettingsScope(null)`——**不是模块初始化**：导入期做 I/O 会让任何
+ * 只是 import 本模块的进程（单测、smoke 的假 ctx）继承一次网络副作用；而在有 `settingsScope`
+ * 的部署里这次请求还会被 `if (scope !== null)` 直接丢弃（白跑一趟）。故改成惰性 + 至多一次。
  *
- * 为什么必须有它：无 ui-settings 的部署里没有任何 scope 注入时机，不在这里读就永远读不到，
- * 界面会一直显示默认值——那是相对「消费点 mount 时各读一次」的**回归**。
+ * 失败静默回落默认值（只留一条可读 warn），**不重试、不轮询**；且必被 `then` 的拒绝分支接住
+ * ——绝不产生未捕获的 rejection。
  */
 function readSettingsFallback(): void {
   api.getSettings().then(
@@ -47,6 +55,13 @@ function readSettingsFallback(): void {
       console.warn("[prompt-enhancer] 无 settingsScope，降级读取设置失败，已按默认值显示：", err);
     },
   );
+}
+
+/** 惰性降级读入口：无 scope 且本期尚未试过才发那一次（各消费点与 scope 注销共用）。 */
+function tryFallbackRead(): void {
+  if (scope !== null || fallbackAttempted) return;
+  fallbackAttempted = true;
+  readSettingsFallback();
 }
 
 /**
@@ -65,16 +80,22 @@ export function setSettingsScope(next: ClientSettingsScope | null): void {
   scope = next;
   if (next !== null) unsubscribeScope = next.subscribe(derive);
   derive();
-  if (next === null) readSettingsFallback();
+  if (next === null) {
+    // 显式进入「无 scope」缺失期：重新武装一次降级读（无 settingsScope 的部署兜底入口）。
+    fallbackAttempted = false;
+    tryFallbackRead();
+  }
 }
 
-/** 当前快照（副本语义：调用方改它不影响 store）。 */
+/** 当前快照（副本语义：调用方改它不影响 store）。**首次消费**即触发那一次降级读。 */
 export function getSettingsSnapshot(): PluginSettings {
+  tryFallbackRead();
   return { ...snapshot };
 }
 
-/** 订阅快照替换（返回退订函数；重复退订安全）。 */
+/** 订阅快照替换（返回退订函数；重复退订安全）。**首次消费**即触发那一次降级读。 */
 export function subscribeSettings(listener: () => void): () => void {
+  tryFallbackRead();
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
@@ -93,6 +114,7 @@ export function useSettings(): PluginSettings {
  * 失败一律**抛出**（调用方出可读错误）：设置改了却什么都没发生，比报错更糟。
  */
 export async function updateSettings(patch: Partial<PluginSettings>): Promise<void> {
+  tryFallbackRead(); // **首次消费**即触发那一次降级读（与读路径同一入口）
   const entries = Object.entries(patch) as [keyof PluginSettings, unknown][];
   if (entries.length === 0) return;
   if (scope !== null) {
@@ -103,5 +125,3 @@ export async function updateSettings(patch: Partial<PluginSettings>): Promise<vo
   snapshot = normalizeSettings(next);
   emit();
 }
-// 模块初始化即降级读一次：无 ui-settings 的部署里没有任何 scope 注入时机（R-P8-1）。
-readSettingsFallback();
