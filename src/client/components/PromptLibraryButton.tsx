@@ -156,8 +156,10 @@ export function PromptLibraryButton({
   /**
    * R53：`#` 候选浮层**此刻真实可见**时收起词库面板（R47 只覆盖「点词库按钮」这一个指针入口，
    * 反向入口——输入框仍持焦点时敲 `#`、或浮层在同一令牌内被改写查询词后重现——会让两浮层同屏）。
-   * R59 起「点词库按钮」这一入口的判定在**动作侧**（按钮 onClick 的 `if (hashVisible) return;`）：
-   * 它让本组件不再产生「open 为真而面板不可见」的状态，本 effect 仍是把 open 收回 false 的那条。
+   * R59 起「点词库按钮」这一入口的判定在**动作侧**（按钮 onClick），R60 后只对**非指针**激活生效
+   * （`event.detail === 0`）：它让本组件不再产生「open 为真而面板不可见」的状态，而指针点击一律
+   * 放行（否则 pointerdown→click 间隔过短时陈旧闭包会吞掉整次点击，F1-1）。本 effect 仍是把
+   * `open` 收回 false 的那条。
    *
    * 订阅的是浮层自己发布的可见性（取代 R49 的 `hashOpen` 边沿：**一个门而不是两个**），
    * 且只观察 **false→true 边沿**（effect 依赖该布尔值，同值不重跑）：
@@ -231,21 +233,29 @@ export function PromptLibraryButton({
         aria-label={t("button.tip")}
         aria-haspopup="dialog"
         aria-expanded={panelOpen}
-        onClick={() => {
-          // R59（F-1 / I-3）：**动作侧闸门**，消除「open 为真而面板不可见」这个状态本身。
+        onClick={(event) => {
+          // R59（F-1 / I-3）+ R60（F1-1）：**动作侧闸门**，且按「激活通道」而非「时刻」分叉。
           //
-          // 必须在最前：键盘 Enter/Space 激活这一拍**没有 pointerdown**（R57 路径），此时
-          // `hashVisible` 仍为 true——若这里不拦，Enter 就会置位一个渲染不出来的 open；
-          // 随后用户改用鼠标点同一按钮 → 那时 `panelOpen` 已随 pointerdown 转真 → 走 close()，
-          // 一次点击既没开面板、又**连带清掉 pending**（绕过 R54 对「已点动作、正等回填」的保护）。
-          // 这里直接 return，连 open 都不置位，背离状态无从产生。
+          // 为什么只拦**非指针**激活（`detail === 0`：键盘 Enter/空格、AT 合成激活）：
+          // 指针点击时 `hashVisible` 可能是**陈旧的 true**——真实鼠标在浮层可见时点本按钮，
+          // pointerdown 收起浮层（信号转 false）与 click 派发之间若间隔过短（F1-1 活体实测：
+          // 0/5/10ms **全吞**、≥20ms 全开），React 尚未重渲染，onClick 拿到的仍是旧闭包；
+          // 无条件闸门于是把这次点击**整口吞掉**（面板 0 帧、`open` 连置位都没有，用户须再点一次）。
+          // 非指针激活没有 pointerdown，那一拍的 `hashVisible` 必是当前值（浮层在场 ⇒ 本组件必然
+          // 已按 true 渲染过 ⇒ 闭包不陈旧），闸门在那里才是安全的。
+          // `detail` 判据与宿主同口径：`packages/client/ui-primitives/src/user-text.tsx:145` 用
+          // `event.detail !== 0` 区分是否指针交互。
           //
-          // 鼠标路径不经此分支：按钮上的 pointerdown 已先让浮层收起 → hashVisible=false →
-          // panelOpen===open===false → 下面 setOpen(true) 正常打开。
+          // 键盘路径保留闸门（R57 的初衷）：若不拦，Enter 会置位一个渲染不出来的 `open`（浮层在场
+          // 时面板不渲染）；随后用户改用鼠标点同一按钮——那时浮层已被 pointerdown 收起、`panelOpen`
+          // 转真 → 走 close()，一次点击既没开面板、又**连带清掉 pending**（绕过 R54 的保护）。
           //
-          // 不判 open 的原因（控制者原修法已被评审者否掉）：pointerdown 收起浮层后 React 会在
-          // click 派发**之前**重渲染，onClick 拿到的是新闭包——两种判定在鼠标路径下都会读到「真」。
-          if (hashVisible) return;
+          // 放行后的判定只经 `panelOpen`（不再用 `open`）：面板真的在屏上 ⇒ 本次渲染必然是最新的 ⇒
+          // 闭包不陈旧 → close()；面板不在屏上（浮层刚被这次 pointerdown 收起、或从未打开）→
+          // setOpen(true)。控制者最初给的 `panelOpen ? close() : setOpen(true)` 当初被否，是因为它
+          // **没有消除背离状态本身**（Enter 造出的 `open=true` 会让 pointerdown 之后的新闭包读到
+          // `panelOpen=true` 而 close()）；R59 从源头掐掉了那个状态，R60 再把闸门收窄到非指针通道。
+          if (event.detail === 0 && hashVisible) return;
           if (panelOpen) close();
           else setOpen(true);
         }}
