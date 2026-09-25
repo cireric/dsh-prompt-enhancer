@@ -10,13 +10,21 @@
  */
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
+import { canRender } from "../../overlay-claim.ts";
 import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { openManager, pushCapture, shouldShowLibraryPanel, useHashSuggestVisible } from "../utils/ui-state.ts";
+import {
+  claimOverlay,
+  openManager,
+  pushCapture,
+  releaseOverlay,
+  useHashSuggestVisible,
+  useOverlayClaim,
+} from "../utils/ui-state.ts";
 import { SelectionAddPrompt } from "./SelectionAddPrompt.tsx";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 
@@ -70,13 +78,23 @@ export function PromptLibraryButton({
   const rootRef = React.useRef<HTMLSpanElement | null>(null);
 
   /**
-   * R55：面板此刻是否真的渲染 = 「用户打开了它」**且**「`#` 浮层没在屏上」（不变式走渲染门，
-   * 见 `ui-state.ts#shouldShowLibraryPanel`）。两处渲染门与 `aria-expanded` **共用**它，
-   * 避免「面板没渲染但 aria 说展开了」。下方订阅边沿（`hashVisible` 上升沿那条）是**互补**的一条：
-   * 它把 `open` 也收回 false：按钮的「再点一次收起」由此自洽，而**浮层消失时面板不会自动重现**
-   * （R58 ② 订正：这条 effect 是 `setOpen(false)`，恰恰**阻止**自动重现；用户须再点一次按钮）。
+   * 共享 claim（T1 的接线）：`claimed` 是**当前占屏的那个面**，与另外两面读同一帧的同一个值。
    */
-  const panelOpen = shouldShowLibraryPanel({ open, hashSuggestVisible: hashVisible });
+  const claimed = useOverlayClaim();
+  /**
+   * R55 的渲染不变式（T1 起**升级为 claim 读法**）：面板此刻是否真的渲染 = 「用户打开了它」**且**
+   * 「共享 claim 此刻持有 `library`」。两处渲染门与 `aria-expanded` **共用这一个派生值**，
+   * 不会出现「面板没渲染但 aria 说展开了」。
+   *
+   * **判定仍在渲染期求值**（不是边沿动作）：边沿动作只覆盖订阅得到的那几次跳变，盖不住「面板已开时
+   * 条件如何变化」的全部入口——键盘把焦点移到词库按钮后按 Enter/Space 激活，**没有任何 pointerdown**，
+   * R47 不触发、信号不产生下降沿，边沿动作盖不住它。条件放进渲染门后，同屏在**结构上**不可能。
+   *
+   * 与 P6 的 `shouldShowLibraryPanel({open, hashSuggestVisible})` 逐格同值：R55 说的「浮层可见时词库
+   * 面板根本不渲染」现在由 claim 覆盖——`#` 浮层可见时它必然抢到屏（见 `HashSuggestOverlay` 的
+   * claim 接线），故「浮层可见」⇔「claim 在 `hash` 手里」。
+   */
+  const panelOpen = open && canRender("library", claimed);
   // 设置只读一次；读失败退回默认值（按钮照常可用），原因留在 console。
   React.useEffect(() => {
     let alive = true;
@@ -145,8 +163,8 @@ export function PromptLibraryButton({
 
   /**
    * **用户显式关闭**面板（点按钮/点浮层外/取消/已插入/存为提示词/去管理）：连未提交的变量填窗
-   * 选择一起丢弃。R54：浮层抢屏的那条收起路径走下面信号边沿的 `setOpen(false)`，**不**经过这里，
-   * 故「已点动作、正等回填」的选择不会被静默丢弃。
+   * 选择一起丢弃。R54：浮层抢屏的那条收起路径走下面「位移即收回意图」的 `setOpen(false)`，**不**经过
+   * 这里（它刻意不清 `pending`），故「已点动作、正等回填」的选择不会被静默丢弃。
    */
   const close = (): void => {
     setOpen(false);
@@ -154,32 +172,41 @@ export function PromptLibraryButton({
   };
 
   /**
-   * R53：`#` 候选浮层**此刻真实可见**时收起词库面板（R47 只覆盖「点词库按钮」这一个指针入口，
-   * 反向入口——输入框仍持焦点时敲 `#`、或浮层在同一令牌内被改写查询词后重现——会让两浮层同屏）。
-   * R59 起「点词库按钮」这一入口的判定在**动作侧**（按钮 onClick），R60 后只对**非指针**激活生效
-   * （`event.detail === 0`）：它让本组件不再产生「open 为真而面板不可见」的状态，而指针点击一律
-   * 放行（否则 pointerdown→click 间隔过短时陈旧闭包会吞掉整次点击，F1-1）。本 effect 仍是把
-   * `open` 收回 false 的那条。
+   * 位移即收回意图（R58 ② 的**一般化**；R49 的效果保住）：`open` 为真但屏**不在本面手里** ⇒ 收回
+   * `open`。为什么必须收回：留着就造出「`open` 为真而面板不可见」的背离——用户再点一次按钮时
+   * `setOpen(true)` 与旧值相同，React 不重渲染、下面的 effect 也不重跑，面板**再也打不开**；
+   * R60 的通道分叉当初正是为了从源头掐掉这个状态。
    *
-   * 订阅的是浮层自己发布的可见性（取代 R49 的 `hashOpen` 边沿：**一个门而不是两个**），
-   * 且只观察 **false→true 边沿**（effect 依赖该布尔值，同值不重跑）：
-   * - 草稿里本就有 `#令牌` 时点词库按钮：浮层在自己的捕获阶段 pointerdown 里先收起自己 →
-   *   信号 true→**false**（下降沿）→ 面板打开时没有上升沿，**不得**被当场收掉（P4 既有行为）；
-   * - 面板开着、草稿无令牌时敲出 `#`：信号 false→**true**（上升沿）→ 面板收起（R49 的效果保住）；
-   * - 浮层已被收起（令牌仍在）时：信号恒 false，库侧无需关，也不存在上升沿。
+   * 覆盖范围（以 claim 为准，而不是只看 `#` 浮层这一个对手）：
+   * - 「面板已开、草稿无令牌时敲出 `#`」：浮层抢屏 ⇒ `claimed === "hash"` ⇒ 面板收起（R49 保住）；
+   * - 将来任何新面抢屏：同一行就覆盖了（P7 的收口意义正在这里——不再为每一对补一条局部规则）；
+   * - AI 面板**不抢屏**（它的前置条件是长驻状态、只取空屏），故它不会触发本行；它的那一路由动作侧的
+   *   R60 闸门挡在源头（非指针激活 + 浮层在场 ⇒ 直接 return，不置位 `open`）。
    *
-   * R55 起这条是**互补**的：同屏已由渲染门 `panelOpen = open && !hashVisible` 在结构上挡死，
-   * 本 effect 负责把 `open` 也收回 false。R58 ②（措辞订正）：收回 `open` 的后果恰恰是**浮层消失时
-   * 面板不会自动重现**——用户须再点一次按钮（这正是「一个门、一个派生值」的自洽形态，不是漏做）。
-   *
-   * R54：这里**只关面板、不清 pending**——浮层抢屏不是用户放弃变量填窗，清掉会让「已点动作、
-   * 正等回填」的填窗选择静默消失。显式关闭路径（`close()`：点按钮/点浮层外/取消/已插入）才连
-   * `pending` 一起丢弃。
+   * **R57：不延后兑现**——`open` 在这里已被收回，浮层消失后**不会自动重现**，用户须**再激活一次**；
+   * 而键盘路径（浮层在场时 Enter/Space）连 `open` 都不会被置位（R60 的闸门），所以也不存在「排队的
+   * 意图被兑现」这回事。收回 `open` 时**不清 `pending`**（R54）：浮层抢屏不是用户放弃变量填窗，
+   * 清掉会让「已点动作、正等回填」的填窗选择静默消失——显式关闭路径（`close()`）才连它一起丢弃。
    */
   React.useEffect(() => {
-    if (!hashVisible) return;
+    if (!open) return;
+    if (claimed === "library") return;
     setOpen(false);
-  }, [hashVisible]);
+  }, [open, claimed]);
+
+  /**
+   * 隐藏即释放：`open` 收回/关闭后，claim 不得停在 `library` 上（P6 的教训——留成占位会把别的面
+   * 压住：`claimed === "library"` 而面板已关 ⇒ 另外两面都渲染不出来，且 `claimOverlay` 的幂等守卫
+   * 会连带吞掉下一次真实边沿）。释放是**条件式**的：`#` 浮层在自己的收尾里 release 时，若屏已经在
+   * 别面手里就不会被连带清掉。
+   */
+  React.useEffect(() => {
+    if (open) return;
+    releaseOverlay("library");
+  }, [open]);
+
+  /** 卸载即释放（宿主收走插槽时；此时组件不再渲染，`open` 那条 effect 不会跑）。 */
+  React.useEffect(() => () => releaseOverlay("library"), []);
 
   /**
    * 沉淀入口 B 的落库前段（R4：pushCapture 由本组件调用）：选中正文推进 store，再打开管理面板。
@@ -225,7 +252,14 @@ export function PromptLibraryButton({
   if (settings === null || !settings.showComposerButton) return null;
 
   return (
-    <span ref={rootRef} style={WRAP}>
+    <span
+      ref={rootRef}
+      style={WRAP}
+      // T5 活体验收的**单源读数**（T1 的判定表判据）：本行是 composer 工具行里常驻的根节点，
+      // 逐帧读它即可知道「此刻谁占屏」，不必从三处几何反推。照 P6 的 data-prompt-enhancer-manager /
+      // -confirm 口径：声明式渲染，不是 DOM 注入（零 DOM 写入/零 querySelector）。
+      data-prompt-enhancer-claim={claimed}
+    >
       <button
         type="button"
         style={BUTTON}
@@ -257,7 +291,15 @@ export function PromptLibraryButton({
           // `panelOpen=true` 而 close()）；R59 从源头掐掉了那个状态，R60 再把闸门收窄到非指针通道。
           if (event.detail === 0 && hashVisible) return;
           if (panelOpen) close();
-          else setOpen(true);
+          else {
+            // **激活即抢屏**（T1 的 claim 接线）：在**动作侧同步**取，不放 effect。
+            // 理由是可实测的时序（F1-1）：指针点击时 `panelOpen` / `hashVisible` 可能是**陈旧闭包**
+            // （0/5/10ms 全吞），而 `claimOverlay` 同步写寄存器并同步通知订阅者 ⇒ 本次点击引发的**这一次**
+            // 渲染读到的就是新值，面板在同一次提交里出现（不需要「先渲染一遍、下一帧再补上」）。
+            // `#` 浮层随后收尾时调 `releaseOverlay("hash")`，因「只释放自己持有的」而不会连带清掉我们。
+            claimOverlay("library");
+            setOpen(true);
+          }
         }}
       >
         {t("button.title")}

@@ -22,7 +22,7 @@ import { resolveConfirm, useConfirmRequest, type ConfirmRequest } from "../utils
 import { actions, backdrop, button, dialogTitle, muted, primaryButton } from "../utils/dialog-style.ts";
 import { zh, type PromptEnhancerKey } from "../utils/i18n.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { closeManager, useManagerState } from "../utils/ui-state.ts";
+import { closeManager, useManagerState, useOverlayClaim } from "../utils/ui-state.ts";
 import { PromptManagerModal } from "./PromptManagerModal.tsx";
 
 /** shell.overlay 的 props：无 owner props（B1），只用 locale 面的 `t`。 */
@@ -80,11 +80,31 @@ export function PromptSurfaceHost({ t }: PromptSurfaceHostProps): React.ReactEle
   const { open, panel } = useManagerState();
   // 在途确认也可能在管理面板关闭时发生（AI 面板的「存入词库」）→ 它单独也要能渲染。
   const confirmRequest = useConfirmRequest();
+  /**
+   * **T1 的 claim 接线（R-P7-A）**：本宿主是 P7 唯一的 root 弹窗宿主（D-P7-1），T2 的新面板值
+   * （`'skill'`）只在此扩展、不重排接线。这里读的是与三面**同一个**派生值，但**不据它做门控**——
+   * 三层理由，逐条有裁决/实测依据：
+   *
+   * 1. `OverlayKind` 的四值由 T1 约束 B.1 固定为 `none | hash | library | ai`：共享 claim 管的是
+   *    **会话输入区**的三张浮层/面板（词库 / `#` / AI）；弹窗栈与它们分属两层（P6 的 D-P6-1）。
+   * 2. P6 已验收的**预期**形态里就有「AI 面板 × 确认层同屏」：AI 面板「存入词库」在触发淘汰时弹出嵌套
+   *    确认层（M6 的 C14 与 A 行记录）。若本宿主改读 claim 才渲染（或反向去压会话内的面），那条已验收
+   *    路径会当场坏掉——`confirm.ts` 的 promise 驱动确认层不渲染 = 那次创建永远悬挂。
+   * 3. 弹窗自带**铺满 frame 的 backdrop**（`z-index` 100，确认层 120，压住会话面的 30/31），几何上已经
+   *    完全接管点击；P6 的「关闭态零遮挡」探针（C1）只要求弹窗**关闭**时零盒子——故本组件的门仍是
+   *    `open || 确认层在途`、关闭态仍 `return null`（两处都不得改）。
+   *
+   * 于是这里的接线是「读同一派生值 + 给 T5 一个独立探针锚点」（照 P6 的 `data-prompt-enhancer-manager`
+   * / `-confirm` 口径，声明式渲染、非 DOM 注入），**不改任何渲染门**。
+   */
+  const claimed = useOverlayClaim();
   // hook 全部在此之前调用，故「开 → 关」分支切换不违反 hook 规则。
   if (!open && confirmRequest === null) return null;
   return (
     <div
-      // 本节点只是「遮罩层」：它铺 backdrop 并接管「点外面关」。**不带任何探针锚点**——
+      // T1：弹窗在场时的 claim 读数（**不是**管理面板锚点，两者语义不同；T5 用它判「弹窗栈不改寄存器归属」）。
+      data-prompt-enhancer-claim={claimed}
+      // 本节点只是「遮罩层」：它铺 backdrop 并接管「点外面关」。**不带管理面板的探针锚点**——
       // 管理面板的锚点挂在管理面板自己的对话框元素上（见 PromptManagerModal 根节点），
       // 于是「只有确认层在场」时不存在 data-prompt-enhancer-manager，
       // T7 的「关闭态零盒子」探针不会被误判成「管理面板开着」（修复轮 1 评审要求 6）。

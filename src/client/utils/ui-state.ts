@@ -6,6 +6,7 @@
  * 不通过组件耦合。本模块**不 import 任何宿主服务**，故 tests/ui-state.test.mjs 可直接 import 它
  * 跑 store 面（react 由 react-hooks.ts 惰性解析，不在模块顶层静态 import——本仓库不装 react）。
  */
+import { canRender, type OverlayKind, type OverlaySurface } from "../../overlay-claim.ts";
 import { hooks } from "./react-hooks.ts";
 
 /** 管理面板的四个页签（T2 建外壳、T4 填内容）。 */
@@ -147,7 +148,79 @@ export function useHashSuggestVisible(): boolean {
 }
 
 /**
- * 词库面板此刻是否该渲染（R55 的**渲染不变式**）：用户打开了它 **且** `#` 候选浮层没在屏上。
+ * 共享浮层 claim（TBD-P7-1 的 (a) / D-P7-1）：「任一时刻最多一张浮层/面板在场」的**单一真源**。
+ *
+ * 三个面（词库面板 / `#` 浮层 / AI 面板）各自订阅它，渲染门与 `aria-expanded` 共用同一个派生值
+ * （`canRender(kind, claimed)` 与自己的前置条件相与）。为什么不各自判断：P7 §1.4 的实测证明
+ * 「指针边沿 + 各自为政的局部规则」挡不住不产生 pointerdown 的激活（真实 `Shift+Tab` 回输入框后真实
+ * 键入、真实 `Tab`+真实 `Enter`），同屏因此在结构上可达。收进一个寄存器后，同屏在结构上不可能：
+ * 两个面的门读的是**同一帧的同一个值**。
+ *
+ * 取/放纪律（`canRender` 只管判定，纪律在接线处）：
+ *  - **激活即抢屏**：面被用户真正激活的那一刻（词库按钮的点击、`#` 令牌出现）直接抢——最新意图胜出。
+ *    这也让 R60 的陈旧闭包拦不住它：判定读的是**渲染期的当前值**，而不是回调闭包里那一拍的旧值。
+ *  - **长驻状态只取空屏**：AI 面板的前置条件是「有结果」这种**长驻状态**而非一次激活，故它只在寄存器
+ *    空着时取、被占着就让位，屏一空出来再取（面板自身不因此关闭）——若它也抢，被它压住的 `#` 浮层
+ *    会在令牌仍在草稿里时**永久静默**（浮层的可见性是令牌派生的，被抢后没有重新取屏的时机）。
+ *  - **位移即收回意图**：被位移的面若持有「打开」这种**意图位**，必须收回（词库面板收回 `open`），
+ *    否则会留下「`open` 为真而面板不可见」的背离——再点一次按钮时 `setOpen(true)` 与旧值相同，
+ *    React 不重渲染、effect 不重跑，面板**再也打不开**（R60 当初正是为了从源头掐掉这个状态）。
+ *  - **只释放自己持有的**：`releaseOverlay(kind)` 只清 `claimed === kind`。否则被位移的一方在收尾时会
+ *    把新持有者的 claim 连带清掉——真实时序：pointerdown 收起 `#` 浮层与 click 打开词库面板可以落在
+ *    同一拍上（F1-1 的 0/5/10ms），浮层的收尾晚于词库的取屏。
+ *  - **隐藏/卸载即释放**（P6 的教训）：留成占位会把别的面压住（claim 停在某一面 ⇒ 另外两面都渲染不出来），
+ *    且幂等守卫会连带吞掉下一次真实边沿。
+ *
+ * 与 `setHashSuggestVisible` 的关系：`#` 浮层仍发布 P6 的**可见性信号**（R53），该信号现在同时是浮层
+ * claim 的**输入**；库侧仍订阅它（R60 的通道分叉要按「浮层在场」分叉）。R53/R55 不推翻。
+ */
+let claimedOverlay: OverlayKind = "none";
+const overlayClaimListeners = new Set<() => void>();
+
+/** claim 快照（useSyncExternalStore 兼容形态）。 */
+export function getOverlayClaimSnapshot(): OverlayKind {
+  return claimedOverlay;
+}
+
+/** 订阅 claim 变化（与 `subscribe` 同形：返回退订函数，重复退订安全；**独立 listener set**）。 */
+export function subscribeOverlayClaim(listener: () => void): () => void {
+  overlayClaimListeners.add(listener);
+  return () => {
+    overlayClaimListeners.delete(listener);
+  };
+}
+
+/**
+ * 取屏：把寄存器设为 `kind`（**后到的激活胜出**，同一时刻仍只有一个持有者）。
+ * **幂等**：同值重复设置不派发（与 `openManager` / `setHashSuggestVisible` 同约定）。
+ */
+export function claimOverlay(kind: OverlaySurface): void {
+  if (claimedOverlay === kind) return;
+  claimedOverlay = kind;
+  // 先复制再遍历：监听器里退订或再订阅都不会打乱本次派发（与 emit 同约定）。
+  for (const listener of [...overlayClaimListeners]) listener();
+}
+
+/**
+ * 释放自己持有的 claim。**只释放自己持有的**：`claimed !== kind` 时是安全的空操作（不派发）——
+ * 被位移的一方收尾时不得把新持有者的 claim 连带清掉。
+ */
+export function releaseOverlay(kind: OverlaySurface): void {
+  if (claimedOverlay !== kind) return;
+  claimedOverlay = "none";
+  for (const listener of [...overlayClaimListeners]) listener();
+}
+
+/** 订阅 claim（与 useManagerState 同形态：useState + useEffect(subscribe)）。 */
+export function useOverlayClaim(): OverlayKind {
+  const { useState, useEffect } = hooks();
+  const [snapshot, setSnapshot] = useState<OverlayKind>(getOverlayClaimSnapshot);
+  useEffect(() => subscribeOverlayClaim(() => setSnapshot(getOverlayClaimSnapshot())), []);
+  return snapshot;
+}
+
+/**
+ * 词库面板此刻是否该渲染（R55 的**渲染不变式**的**历史形态**；T1 起组件改读共享 claim）。
  *
  * 为什么是「渲染门」而不是「边沿动作」：边沿动作只覆盖订阅得到的那几次跳变，盖不住「面板已开时
  * 条件如何变化」的全部入口——键盘把焦点移到词库按钮后按 Enter/Space 激活，**没有任何 pointerdown**，
@@ -156,7 +229,13 @@ export function useHashSuggestVisible(): boolean {
  *
  * 抽成纯函数的理由与 `hash-token.ts#shouldShowSuggest` 同：组件面没有渲染测试通道（无 react-dom，
  * 全局硬约束 5），判定留在组件里就只能靠活体验收，变异无从证起。
+ *
+ * **T1 起组件不再消费本函数**（渲染门统一改读 `canRender("library", claimed) && open`，见
+ * `PromptLibraryButton`）；保留它是因为 `tests/ui-state.test.mjs` 用它锁 R55 的行为（不得削弱既有
+ * 断言），而**实现仍然只有一处**：本函数按「`#` 浮层可见 ⇔ `#` 浮层持有 claim」这条映射**折算**
+ * 到 `overlay-claim.ts#canRender` 上（浮层可见时它必然抢到屏，见 `HashSuggestOverlay` 的 claim 接线），
+ * 故两个形态逐格同值、不存在第二份局部规则。`tests/overlay-claim.test.mjs` 另有这条等价性的锁。
  */
 export function shouldShowLibraryPanel(input: { open: boolean; hashSuggestVisible: boolean }): boolean {
-  return input.open && !input.hashSuggestVisible;
+  return input.open && canRender("library", input.hashSuggestVisible ? "hash" : "library");
 }

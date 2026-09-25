@@ -3,6 +3,10 @@
  * 在结果面板里对比原文/优化稿后定稿；面板里还能把**同一份快照**交给 `/ai/refine`
  * 做一键完善，并把完善稿「存入词库」（先存原文、再写回完善稿两步）。
  *
+ * **T1（P7）**：本面板是共享 claim 的三个面之一（`ai`）。渲染门 = `status !== 'idle' && canRender(...)`，
+ * 与词库面板 / `#` 浮层读同一个寄存器 ⇒ 同屏在结构上不可能（修 I2-1 / I2-2）。取/放纪律见
+ * `aiVisible` 与 claim effect 的注释（本面是三者里唯一「只取空屏」的长驻面板）。
+ *
  * 注册在 `conversation.input.left`（order 11，紧跟 P4 的词库按钮）；props 由
  * `PropsRuntime`（session 标准 props 已内含 `useInput` / `inputActions`）与
  * `PropsLocale` 组成。
@@ -19,12 +23,14 @@
  */
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
+import { canRender } from "../../overlay-claim.ts";
 import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
 import { aiErrorKey, canToggle, keepVariablesFor, libraryCreateInput, needsWriteBack } from "../utils/ai-flow.ts";
 import { api, type AiRefineResult, type AiSelectable } from "../utils/api.ts";
 import { createFromCapture, type CaptureOutcome } from "../utils/capture.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
+import { claimOverlay, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
 
 /** 输入框旁「AI 优化」按钮。 */
 export type AIPolishButtonProps =
@@ -116,6 +122,55 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
       aliveRef.current = false;
     };
   }, []);
+
+  /**
+   * 共享 claim（T1 的接线，修 I2-1 / I2-2）：`claimed` 是**当前占屏的那个面**，与词库面板 / `#` 浮层
+   * 读同一帧的同一个值。
+   */
+  const claimed = useOverlayClaim();
+  /** 本面的前置条件：有结果在手上（`status !== 'idle'`）——它是**长驻状态**，不是一次「激活」。 */
+  const aiWanted = status !== "idle";
+  /**
+   * 渲染门（T1 起读共享 claim）：**有面可显示** `aiWanted` **且** 屏**真的在本面手里**。
+   *
+   * P6 的实测（I2-1 / I2-2）就是这条门缺失的后果：原门只有 `status !== 'idle'`（P6 §1.4 的
+   * `AIPolishButton.tsx:413`），而它与另两面没有任何互斥——真实 `Shift+Tab` 回输入框后真实键入 `#`
+   * （无 pointerdown）87 帧里 84 帧同屏；真实 `Tab`+`Enter`（`detail=0`）90/90 帧全程同屏、本面板的
+   * 锚点 `z=31` 压住词库面板 `z=30` 的 79% 面积。门读 claim 后，同屏在**结构上**不可能。
+   */
+  const aiVisible = aiWanted && canRender("ai", claimed);
+
+  /**
+   * claim 接线（T1）：**只取空屏**（`claimed === "none"` 时才取），被别面占着就让位，屏一空出来再取。
+   *
+   * 为什么本面不抢——这与词库面板 / `#` 浮层**刻意不同**：
+   *  - 那两面的前置条件是**一次激活**（点击 / 令牌出现），抢屏＝「最新意图胜出」，抢完不会把谁永久压住
+   *    （词库面板被位移时收回 `open`，浮层被收起时令牌已不在）；
+   *  - 本面的前置条件是**长驻状态**（有结果在手上，直到用户关闭或应用结果）。若它也抢，被它压住的
+   *    `#` 浮层会在令牌仍在草稿里时**永久静默**（浮层的可见性由令牌派生，被抢后**没有**重新取屏的
+   *    时机）——那是比同屏更坏的缺陷（P4 的核心能力看不见了）。
+   *
+   * 「被占着就让位」的后果：本面板在别面在场时不渲染，但**状态一点不动**（`status` 与全部文本保留）——
+   * 屏一空出来就自己取回，用户看到的还是同一份结果（例如「存入词库」在途时面板被 `#` 浮层让位，
+   * 存完的状态回来时仍然在）。这条不构成 R57 的「延后兑现」：R57 管的是**被拦下的激活**不得排队兑现
+   * （那条由库侧 R60 的动作侧闸门保证：非指针激活 + 浮层在场 ⇒ 直接 return，连 `open` 都不置位），
+   * 本面是**已经在场**的面让位又回来，不是一次激活被延后。
+   *
+   * 隐藏（`status` 回 idle ⇒ `close()`）与卸载都必须释放（P6 的教训：留成占位会把别的面压住）。
+   * 释放是**条件式**的：`releaseOverlay` 只清自己持有的，别面收尾时不会连带清掉我们。
+   */
+  React.useEffect(() => {
+    if (!aiWanted) {
+      releaseOverlay("ai");
+      return;
+    }
+    if (claimed === "ai") return;
+    if (claimed !== "none") return;
+    claimOverlay("ai");
+  }, [aiWanted, claimed]);
+
+  /** 卸载即释放（宿主收走插槽时；此时组件不再渲染，上面那条 effect 不会跑）。 */
+  React.useEffect(() => () => releaseOverlay("ai"), []);
 
   // 设置只读一次；读失败退回默认值（按钮照常可用），原因留在 console。
   React.useEffect(() => {
@@ -410,7 +465,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
         <SparkleIcon />
         {settings.aiPolishButtonIconOnly === false && <span>{t("ai.button")}</span>}
       </button>
-      {status !== "idle" && (
+      {aiVisible && (
         <span style={ANCHOR}>
           <span role="dialog" aria-label={dialogLabel} style={PANEL}>
             {busyKey !== null && (

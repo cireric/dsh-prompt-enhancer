@@ -5,6 +5,10 @@
  * `.overlayAnchor` 是 `position: absolute; inset: 0 0 auto; height: 0` 的零高
  * 锚点，故本组件自行绝对定位到锚点上方（与官方 `MenuView` 同款落点）。
  *
+ * **T1（P7）**：本浮层是共享 claim 的三个面之一（`hash`）。`visible`（下面 `shouldShowSuggest` 的判定）
+ * 既是 P6 的**可见性信号**（R53，库侧的 R60 通道分叉要用）的输入，也是**抢屏**的输入；渲染门读
+ * `canRender("hash", claimed)`，故与词库面板 / AI 面板**同屏在结构上不可能**（不再是三处各自的边沿规则）。
+ *
  * **D2（用户 2026-09-24 裁定）**：只做鼠标点击选择，**不接管键盘**——本文件
  * 没有任何 keydown/keyup/keypress 处理、没有 `tabIndex`、不挂任何键盘监听。
  * 关闭路径有两条：① 令牌消失（用户删掉 `#` 或补了空格）；② R47 起，点浮层**外部**收起自己——
@@ -21,6 +25,7 @@
  */
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
+import { canRender } from "../../overlay-claim.ts";
 import type { Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import {
@@ -33,7 +38,7 @@ import {
 import { promptSummary } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { setHashSuggestVisible } from "../utils/ui-state.ts";
+import { claimOverlay, releaseOverlay, setHashSuggestVisible, useOverlayClaim } from "../utils/ui-state.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 
 /** `#` 候选浮层（任务 6 落地完整行为）。 */
@@ -57,7 +62,22 @@ export function HashSuggestOverlay({
   const [dismissedKey, setDismissedKey] = React.useState<string | null>(null);
   // R48：判定抽在 `utils/hash-token.ts`（纯模块），组件只消费——组件面没有渲染测试通道，
   // 判定留在组件里就只能靠活体验收，变异无从证起。
+  /**
+   * 浮层**自己想不想在场**（R47/R48 的判定）：令牌在 **且** 这个令牌没被「点浮层外部」收起过。
+   * 它与下面两件事的关系是 T1 定下的：① 它是 P6 的**可见性信号**（R53）的输入；② 它同时是**抢屏**
+   * （claim）的输入——可见即抢（见下面的 claim 接线）。
+   */
   const visible = shouldShowSuggest({ open, tokenKey, dismissedKey });
+  /** 共享 claim（T1 的接线）：`claimed` 是**当前占屏的那个面**，与另外两面读同一帧的同一个值。 */
+  const claimed = useOverlayClaim();
+  /**
+   * 渲染门（T1 起读共享 claim）：**想在场** `visible` **且** 屏**真的在本面手里**。
+   *
+   * 为什么两个条件都要：`visible` 只说明「草稿末尾有令牌」，不说明「此刻轮到本面上屏」；claim 只说明
+   * 「寄存器归谁」，不说明「令牌还在」。两者相与后，同屏在**结构上**不可能——三面的门读的是同一帧的
+   * 同一个 `claimed`，与 R55 把词库面板的门做成渲染期求值同一个道理。
+   */
+  const onScreen = visible && canRender("hash", claimed);
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   /** null = 本次打开还没加载完。 */
   const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
@@ -97,9 +117,13 @@ export function HashSuggestOverlay({
     };
   }, [open]);
 
-  // R47：与词库面板 / AI 面板同一套互斥约定（P5 起沿用的 document 捕获阶段 pointerdown 纯监听，
+  // R47：与词库面板 / AI 面板同一套「点外面关」约定（P5 起沿用的 document 捕获阶段 pointerdown 纯监听，
   // 不改宿主 DOM）——点浮层外部收起自己。于是「草稿带 `#` 令牌时点词库按钮」这一下先关掉本浮层、
-  // 再打开词库面板；两者 z-index 同级（30）且几何重叠，但不再同屏共存。
+  // 再打开词库面板。
+  //
+  // T1 起这条指针监听**不再承担互斥职责**：它只是本面自己的收起入口（用户意图），把它关掉的后果是
+  // `visible` 转 false ⇒ 下面的 claim effect 释放 `hash` ⇒ 别面可以取屏。互斥由共享 claim 在全通道
+  // 上保证（键盘/AT 激活没有 pointerdown 也挡得住——P6 的实测路径正是那样绕过边沿规则的）。
   React.useEffect(() => {
     if (!visible) return;
     const onPointerDown = (ev: PointerEvent): void => {
@@ -127,8 +151,8 @@ export function HashSuggestOverlay({
   // R53：把「浮层此刻是否真的可见」发布为共享信号（唯一订阅方 = 词库面板）。
   // 依赖 `visible` 而不是 `token`：被点外部收起时令牌仍在，但浮层已不可见，不得再算「可见」。
   // **卸载必须清除**（cleanup 置 false）：令牌消失/被收起时本组件只是 `return null`（仍挂载，
-  // effect 照跑）；真正卸载发生在宿主收走插槽时。信号若停在 true 的后果（R55 后复核）：
-  // 渲染门 `open && !hashVisible` 恒不通过 ⇒ 词库面板**再也渲染不出来**（按钮点了没反应），
+  // effect 照跑）；真正卸载发生在宿主收走插槽时。信号若停在 true 的后果（R55 后复核、T1 的 claim 读法下同理）：
+  // 词库面板的门 `open && canRender("library", claimed)` 恒不通过 ⇒ 它**再也渲染不出来**（按钮点了没反应），
   // 同时 `setHashSuggestVisible` 的幂等守卫会把下一次「可见」的边沿一并吞掉。
   // 注：R55 **之前**面板的渲染只看 `open`，那时残留的后果轻得多（只吞掉一次上升沿、同类重叠
   // 可再复现一次，直到下一次 visible→false 自愈）——评审实测的正是那一版的后果；渲染门落地后，
@@ -140,8 +164,34 @@ export function HashSuggestOverlay({
     };
   }, [visible]);
 
+  /**
+   * claim 接线（T1）：**可见即抢屏**，不可见/卸载即释放。
+   *
+   * 为什么抢：`#` 浮层的前置条件是**草稿末端的令牌**——它只在用户**正在敲字的那一刻**成立，是三者里
+   * 最新鲜的意图；若它不抢，词库面板（或 AI 面板）在场时敲 `#` 就会**什么都不出现**（P4 的核心可用性
+   * 反而被 claim 弄丢）。抢屏后：词库面板由它自己的「位移即收回意图」effect 收回 `open`（R49 的效果
+   * 保住、浮层消失后不自动重现），AI 面板让位并在屏空出来后自行取回（它的面板状态不受影响）。
+   *
+   * 为什么是 effect 而不是渲染期：抢屏是一次**副作用**（写共享寄存器）；而**判定**仍在渲染期
+   * （`onScreen` 在每次渲染时重算）——R55 的纪律针对的是判定，不是这次写入。令牌出现到抢到屏之间
+   * 最多差一次提交，那一提交里本面不渲染（不会与任何面同屏）。
+   *
+   * 释放是**条件式**的（`releaseOverlay` 只清自己持有的）：pointerdown 收起本浮层与「点击词库按钮」
+   * 可能落在同一拍上（F1-1 的 0/5/10ms），本 effect 的 cleanup 晚于词库的取屏时**不得**把它清掉。
+   * 卸载也必须释放（P6 的教训：留成占位会把别的面压住）。
+   */
+  React.useEffect(() => {
+    if (!visible) return;
+    claimOverlay("hash");
+    return () => {
+      releaseOverlay("hash");
+    };
+  }, [visible]);
+
   // R47：被点外部收起之后（仅当前这个令牌）不再渲染；令牌消失或变化即自动复位。
-  if (token === null || !visible) return null;
+  // T1：另一个条件由 claim 提供（想在场 ≠ 屏在本面手里），见上面的 `onScreen`。
+  // `token === null` 那半是给 TS 的收窄（`visible` 为假已覆盖它，P6 的原行同样这么写）——不是第三条判定。
+  if (token === null || !onScreen) return null;
 
   // 含变量的提示词：先开任务 5 的变量填窗，填完再落草稿。
   if (pending !== null) {
@@ -210,8 +260,9 @@ export function HashSuggestOverlay({
  * `overlayBase`（任务 5 的 `TemplateVariablesDialog` 不接 style），把 `overlayBase`
  * 同时放在定位容器上会出现「双层卡片」（两层描边与阴影叠在一起）。故外观一律
  * 由内容自带，与任务 5 的 `PromptLibraryButton` 的 ANCHOR/PANEL 分工一致。
- * `left: 8` 对齐 composer 左缘。`zIndex: 30` 与词库面板同级；**两者不同屏共存**靠的是 R47
- * 的互斥（各自都在「点浮层外」时收起自己，与词库面板 × AI 面板同一约定），z-index 不承担互斥职责。
+ * `left: 8` 对齐 composer 左缘。`zIndex: 30` 与词库面板同级；**同屏互斥与 z-index 无关**，由
+ * `ui-state.ts` 的共享 claim 保证（T1 起三面共用一个寄存器；z-index 只决定「谁压在谁上面」这种
+ * 已经不可能发生的情形）。
  */
 const ANCHOR: React.CSSProperties = {
   position: "absolute",
