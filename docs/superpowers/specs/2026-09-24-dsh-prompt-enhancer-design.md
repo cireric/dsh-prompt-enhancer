@@ -617,7 +617,7 @@ frontmatter：name（必填）/ description（必填）/ whenToUse（可选）
 | **M5 AI + 回滚** | AI 优化按钮 + 完善 + 原文/优化稿切换 | 验收 5/6/13 |
 | **M6 沉淀 + 管理** | 管理面板 + 三入口捕获 + 标签 + 回收站 + 导入导出 | 验收 7/8/9/10 |
 | **M7 技能导出（D8）** | `skills.ts` 导出 + `generateSkillDescriptor` + `SkillExportModal` + 过期徽标 | 验收 15/16/17 |
-| **M8 收尾** | 推荐 + 设置页 + i18n 收口 + 文档 + 许可 | 验收 11/12/14 + `smoke.mjs` 全绿 |
+| **M8 收尾** | 推荐 + 设置页 + i18n 收口 + 文档 + 许可 | 验收 11/12/19 + 14（首落在 P1，P8 再取证）+ `smoke.mjs` 全绿 |
 
 ---
 
