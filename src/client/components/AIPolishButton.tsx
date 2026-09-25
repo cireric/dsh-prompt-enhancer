@@ -13,8 +13,9 @@
  *
  * 副作用只走官方动作面：读草稿 `useInput`，写草稿 `inputActions.setDraft`（规格 §7.2）；
  * 落库走 `capture.ts#createFromCapture`（R31：与其它沉淀入口同一入口，故 §4.4 的淘汰二次确认
- * 同样覆盖这里，不再有「AI 面板静默物理删除」的口子），写回只调 `api.updatePrompt`
- * （`aiWriteBack` 是 §4.4 的唯一写回缝），
+ * 同样覆盖这里，不再有「AI 面板静默物理删除」的口子），写回只走 `ai-flow.ts#writeBackRefined`
+ * （§4.4 的唯一写回缝 = `api.updatePrompt(…, { aiWriteBack: true })`；**成功之后**播种方向记录
+ * `pl:refined-dir:<id>` = `refined`——本功能里方向**真正可知**的唯一一点，见 T4 修复轮 1/R-P7-AC），
  * `api.rollbackPrompt` 已随切换入口一并迁往管理面板详情页（§13.8 决定二）；
  * 不改宿主路由、不直接写 `sourceBody`。落库入参、是否需要写回、能否切换一律交给任务 1 的纯函数
  * （`ai-flow.ts#libraryCreateInput` / `#needsWriteBack` / `#canToggle`），组件不重复判定；
@@ -25,10 +26,11 @@ import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { canRender } from "../../overlay-claim.ts";
 import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
-import { aiErrorKey, canToggle, keepVariablesFor, libraryCreateInput, needsWriteBack } from "../utils/ai-flow.ts";
+import { aiErrorKey, canToggle, keepVariablesFor, libraryCreateInput, needsWriteBack, writeBackRefined } from "../utils/ai-flow.ts";
 import { api, type AiRefineResult, type AiSelectable } from "../utils/api.ts";
 import { createFromCapture, type CaptureOutcome } from "../utils/capture.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
+import { seedRefinedDirection } from "../utils/refined-direction.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 import { claimOverlayIfFree, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
 
@@ -337,7 +339,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   /**
    * 存入词库（严格两步，每步失败都有可见后果）：
    *   1. `createPrompt` 落**原文**（`libraryCreateInput` 的 body 恒为 original）——库里不留半成品；
-   *   2. 完善稿 ≠ 原文时 `updatePrompt(id, { body: 完善稿, aiWriteBack: true })` 触发宿主回填 `sourceBody`。
+   *   2. 完善稿 ≠ 原文时 `writeBackRefined(…)` → `updatePrompt(id, { body: 完善稿, aiWriteBack: true })`
+   *      触发宿主回填 `sourceBody`，**成功之后**播种方向记录（`refined`）。
    * 第 2 步失败**必须明说**：库里那条的 body 是原文（不是损坏数据），但优化稿没写回，
    * 面内给 `ai.writeBackFail` + 原因 + 「重试写回」，不得假装已存好。
    * 完善稿 ≡ 原文则不写回（宿主不回填 `sourceBody`），界面按 `canToggle` 显示 `ai.sameAsOriginal`。
@@ -373,7 +376,12 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
           return;
         }
         try {
-          const updated = await api.updatePrompt(outcome.prompt.id, { body: refined.body, aiWriteBack: true });
+          const updated = await writeBackRefined({
+            promptId: outcome.prompt.id,
+            body: refined.body,
+            update: api.updatePrompt,
+            seed: seedRefinedDirection,
+          });
           if (!aliveRef.current) return;
           setSaved(updated);
           setStatus("saved");
@@ -397,7 +405,12 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setStatus("saving");
     void (async () => {
       try {
-        const updated = await api.updatePrompt(saved.id, { body: refined.body, aiWriteBack: true });
+        const updated = await writeBackRefined({
+          promptId: saved.id,
+          body: refined.body,
+          update: api.updatePrompt,
+          seed: seedRefinedDirection,
+        });
         if (!aliveRef.current) return;
         setSaved(updated);
         setStatus("saved");
