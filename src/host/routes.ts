@@ -353,7 +353,18 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         typeof body.descriptor === "object" && body.descriptor !== null
           ? (body.descriptor as ai.SkillDescriptor)
           : undefined;
-      const name = skills.toKebab(asString(body.name) ?? descriptor?.name ?? prompt.skillName ?? "");
+      /**
+       * 名字候选序（A / 重要-1）：**已导出条目（`skillName` 非空）的目录名只能由 `skillName` 决定**。
+       * 它是这个技能在官方根下的**身份**，`body.name` / `descriptor.name` 只在**首次导出**
+       * （`skillName` 为空）时参与。这条不变量**必须落在权威层**：客户端只是「尽量说对」，
+       * 任何入口（同一次会话里的陈旧列表 / 徽标重导 / 旧版本页面）都可能送来一个与库里不一致的
+       * 名字，只有这里能保证「旧目录不会变成无主孤儿、下次对旧名 409」——与 R55 的教训同形
+       * （承重不变量放权威层，而不是在每个调用点的边沿上）。
+       * 空白串不算名字（与客户端 `exportNameLocked` 同口径）：只判「非 undefined」会把 `"  "`
+       * 当成锁定名，`toKebab` 之后算出空名 ⇒ 400。
+       */
+      const locked = prompt.skillName !== undefined && prompt.skillName.trim() !== "" ? prompt.skillName : undefined;
+      const name = skills.toKebab(locked ?? asString(body.name) ?? descriptor?.name ?? "");
       if (!skills.isValidSkillName(name)) return fail(res, 400, "技能名非法：需要小写 kebab-case");
 
       // 目录归属：查库看这个技能名是否属于本插件的某条提示词（P3-D8）

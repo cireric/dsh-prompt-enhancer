@@ -31,7 +31,8 @@ import { api } from "../utils/api.ts";
 import { notifyDataChanged } from "../utils/data-sync.ts";
 import { actions, button, errorDetail, errorText, muted, primaryButton, toolbar } from "../utils/dialog-style.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
-import { classifyImportResult, parseBackupFile } from "../utils/transfer.ts";
+import { clearOverwrittenMeta, classifyImportResult, parseBackupFile } from "../utils/transfer.ts";
+import { deletePrompts } from "../utils/ai-flow.ts";
 import { isDirectoryPickerAvailable, pickExportDirectory } from "../utils/workspace-dir.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
 
@@ -162,6 +163,19 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
     setBusy("applying");
     void (async () => {
       try {
+        /**
+         * B（重要-2）：**覆盖谁必须在导入前算出来**——导入后再读就晚了（那时备份里的 id 全都存在，
+         * 交集等于全部）。这个集合与宿主算 `stats.overwritten` 的是同一个（活跃提示词表；回收站
+         * 是另一张表，同 id 落进活跃表不算覆盖）。读失败**不得**中止导入（导入才是用户的主操作）：
+         * 只可见地 warn，并按「一把键都不清」落地——两种误判里「少清」只是残留（可再清），
+         * 「多清」会毁掉一条本来正确、用户又无法重建的方向记录。
+         */
+        let existingIds: readonly string[] = [];
+        try {
+          existingIds = (await api.listPrompts()).map((p) => p.id);
+        } catch (err) {
+          console.warn("[prompt-enhancer] 导入前读取现库 id 失败（本次不清 per-prompt meta 键）", err);
+        }
         const result = await api.importBackup(backup, true);
         if (!aliveRef.current) return;
         // A9：落库与否由纯函数判定（applied === true）。宿主没落库（只回预览）时**不得**渲染成
@@ -170,6 +184,27 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
         if (!verdict.ok) {
           setFailure({ key: verdict.errorKey, detail: "applied=" + String(result.applied) });
           return;
+        }
+        /**
+         * B（重要-2）：被本次导入**覆盖**（同 id 已存在）的 id ⇒ 它那两把 per-prompt 键已经不可信
+         * （`sourceBody` 被换掉了，而备份格式里没有 meta）⇒ 清掉：方向回到「不知道」⇒ 中性标注
+         * （**不撒谎**）；descriptor 也回到「不知道」⇒ 徽标重导重新走一次命名（**这是正确的**：
+         * 备份里的 `skillName` 才是权威，meta 里的旧 descriptor 不再可信）。
+         * **导入新 id ⇒ 一把都不清**（`clearOverwrittenMeta` 内部的反面对照）。
+         *
+         * 键名与其清法一律走**既有**入口（`ai-flow.ts#deletePrompts` 的收尾编排）：不新增 API、
+         * 不在这里重抄一遍键名。清键失败**不得**把一次已经成功的导入报成失败（`deletePrompts` 内部
+         * 逐键 warn + 计数），这里再兜一层，且绝不静默。
+         * 为什么这一步 await：导入是**用户已确认的批量主操作**，紧随其后的任何一次详情读取都必须看到
+         * 已经失效的方向（不 await 会留下一个「刚导入就显示旧方向」的窗口）；请求数与**用户自己导入的
+         * 内容**成正比，而不是像 `capture.ts` 那条由上限配置放大的路径。
+         */
+        try {
+          await clearOverwrittenMeta(backup, existingIds, (ids) =>
+            deletePrompts({ ids, irreversible: true, remove: async () => {} }),
+          );
+        } catch (err) {
+          console.warn("[prompt-enhancer] 导入成功，但被覆盖条目的 per-prompt meta 键未能清理", err);
         }
         const done = result.stats ?? stats;
         setPreview(null);

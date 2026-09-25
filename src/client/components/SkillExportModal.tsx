@@ -22,7 +22,7 @@ import * as React from "react";
 import type { Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import { requestConfirm } from "../utils/confirm.ts";
-import { notifyDataChanged } from "../utils/data-sync.ts";
+import { notifyDataChanged, useDataChanged } from "../utils/data-sync.ts";
 import {
   actions,
   button,
@@ -104,9 +104,24 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
     };
   }, []);
 
+  /**
+   * A（重要-1）②：**导出成功后刷新本地列表**。锁定判定（`exportNameLocked` / `precheckExport`）读的是
+   * 本地的 `prompt.skillName`，而列表原先**只在挂载时读一次** ⇒ 同一次技能页会话里
+   * 「导出成功 → 再点 AI 补全（真会换名）→ 再导出」会让行内名字与锁定标注继续按**旧库**撒谎。
+   *
+   * 挂 `useDataChanged`（与 `PromptManagerModal` / `TagManagePanel` / `RecycleManagePanel` 同款）后，
+   * 每次 `notifyDataChanged()`——导出**每条成功**都会广播一次（见下面的 `onExported`）——都会重拉一次
+   * 列表，于是行内名字与「已锁定」标注**立即如实**，不再依赖「下次进页面才刷新」。
+   *
+   * ⚠️ 本地列表只负责**说实话**，不是防线：即使它陈旧（下拉在途 / 页面还没重拉），宿主的候选序也会
+   * 把目录钉在既有 `skillName` 上（`src/host/routes.ts` 的技能导出分支）。
+   */
+  const [reloadSeq, setReloadSeq] = React.useState(0);
+  useDataChanged(() => setReloadSeq((n) => n + 1));
+
   React.useEffect(() => {
     let alive = true;
-    setPrompts(null);
+    // 重拉**不清空**列表（不清成 null / []）：导出过程中列表不该闪一下「加载中」；首帧本来就是 null。
     setLoadError(null);
     // 读整库（技能导出的候选就是**全部**提示词；标签筛选在客户端做，与列表页的服务端筛选是两条独立路径）。
     api.listPrompts().then(
@@ -123,7 +138,7 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
     return () => {
       alive = false;
     };
-  }, []);
+  }, [reloadSeq]);
 
   const list = prompts ?? [];
   const visible = React.useMemo(() => filterByTag(list, tag), [list, tag]);

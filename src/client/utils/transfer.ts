@@ -71,3 +71,67 @@ export type ImportVerdict = { ok: true } | { ok: false; errorKey: "manager.trans
 export function classifyImportResult(result: ImportResult): ImportVerdict {
   return result.applied === true ? { ok: true } : { ok: false, errorKey: "manager.transfer.importFailed" };
 }
+
+/**
+ * **导入覆盖后的方向/描述符失效**（B / 重要-2，跨入口漏洞的另一个入口）。
+ *
+ * 根因链（复审实测）：宿主 `store.importPrompts` 是 `INSERT OR REPLACE` ⇒ 备份里与现库**同 id** 的
+ * 条目会被连 `body`/`sourceBody` 一起换掉；而备份格式**不含 meta**，导入也**不清 meta** ⇒
+ * `readRefinedDirection` 只要 `sourceBody` 非空就采信那条旧记录 ⇒ **恢复旧备份后「原文／优化稿」
+ * 标注自信地反相，且切换修不回来**（翻转的是那条本就错的记录）。同一根因的次生后果：备份里的
+ * `skillName` 可能与 meta 里的旧 `descriptor.name` 不一致 ⇒ 徽标重导改指向。
+ *
+ * 故：**被本次导入覆盖的 id**（备份 ∩ 导入前的现库）清掉那两把 per-prompt 键
+ * （`pl:refined-dir:<id>` / `pl:skill-descriptor:<id>`，键名与其清法归 `ai-flow.ts` 的既有入口）。
+ * 语义：方向回到「不知道」⇒ 中性标注（不撒谎）；descriptor 回到「不知道」⇒ 徽标重导重走一次命名
+ * （**这是正确的**：备份里的 `skillName` 才是权威，meta 里的旧 descriptor 不再可信）。
+ *
+ * **导入新 id（库里没有）⇒ 一把键都不清**（反面对照）：没有覆盖就没有失效。
+ *
+ * `existingIds` 必须是**导入前**读到的现库 id 集合——导入后再读就晚了（那时备份里的 id 全都存在，
+ * 交集等于全部）。它对应宿主算 `stats.overwritten` 的**同一个集合**（`selectAllPrompts()` = 活跃
+ * 提示词表；回收站是另一张表，同 id 落进活跃表时并不构成覆盖）。
+ *
+ * `clear` 由调用方注入（真实现 = `ai-flow.ts#deletePrompts` 的收尾编排）：本模块是纯模块
+ * （无 React / 无 DOM / 无 fetch，见文件头），不 import HTTP 层。返回被清键的 id（供调用方与用例断言）；
+ * 没有被覆盖者时**一个请求都不发**。
+ */
+export async function clearOverwrittenMeta(
+  backup: unknown,
+  existingIds: readonly string[],
+  clear: (ids: readonly string[]) => Promise<unknown>,
+): Promise<string[]> {
+  const ids = backupPromptIds(backup);
+  if (ids.length === 0 || existingIds.length === 0) return [];
+  const existing = new Set(existingIds);
+  const overwritten = ids.filter((id) => existing.has(id));
+  if (overwritten.length === 0) return [];
+  await clear(overwritten);
+  return overwritten;
+}
+
+/**
+ * 备份 payload 里的提示词 id（按出现次序去重）。**只读形状，不校验信封**——信封判定归宿主
+ * `store.ts#validateBackup`（见文件头）：能走到这里说明宿主已经 `applied: true` 收下了它。
+ *
+ * 形状不认识时返回 `[]`（= 不清任何键，方向记录原样留着）并**可见地 warn**：这是契约漂移，
+ * 而两种误判里「少清」只是残留（可再清），「多清」会毁掉一条本来正确、且用户无法重建的记录。
+ */
+function backupPromptIds(backup: unknown): string[] {
+  if (typeof backup !== "object" || backup === null) {
+    console.warn("[prompt-enhancer] 导入回执的备份不是对象（本次不清 per-prompt meta 键）");
+    return [];
+  }
+  const raw = (backup as { prompts?: unknown }).prompts;
+  if (!Array.isArray(raw)) {
+    console.warn("[prompt-enhancer] 导入的备份里 prompts 不是数组（本次不清 per-prompt meta 键）");
+    return [];
+  }
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const id = (item as { id?: unknown }).id;
+    if (typeof id === "string" && id !== "" && !out.includes(id)) out.push(id);
+  }
+  return out;
+}

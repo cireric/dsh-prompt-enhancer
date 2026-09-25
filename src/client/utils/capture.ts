@@ -86,9 +86,22 @@ export async function createFromCapture(input: CaptureInput): Promise<CaptureOut
   //    `remove` 传一个**已完成标记**：淘汰发生在宿主 `POST /prompts` 的同一个事务里，客户端拿到
   //    `created` 时那次物理删除**已经提交** ⇒ T6 的「主删先行」次序在此天然成立，这里既不需要也
   //    不可能再发一次删除。清键失败只 warn（`deletePrompts` 内部），**绝不影响**这次创建的结局。
+  //
+  //    ⑥ **不阻塞保存反馈**（重要-4 / 批一必修）：**不 await**。淘汰条数由**上限配置**决定、不由用户这一
+  //    次操作决定（上限 300 → 50 之后，一次新建会淘汰 ~250 条 ⇒ 2×N = ~500 次 `DELETE /meta`），而
+  //    `AIPolishButton` / `PromptManagerModal` 都 await 本次落库的结果——把它们压在清键 HTTP 上，就是
+  //    把「已保存」的反馈交给一次**与本次操作无关**的批量清理。本项目在 `refined-direction.ts` 里已
+  //    明确避免「把 UI 等在一次库写上」（`done` 不 await），这里与那条口径对齐：**清键照跑，只是不等它**。
+  //    清键本身仍逐键 warn + 计数（`deletePrompts` 内部），它 reject 的唯一途径是 `remove`（此处是
+  //    已完成标记，不会抛）——下面的 catch 是防注入实现把它捅穿时的**可见**兜底，绝不静默吞掉。
   const evicted = created.evicted ?? [];
   if (evicted.length > 0) {
-    await deletePrompts({ ids: evicted, irreversible: true, remove: async () => {} });
+    void deletePrompts({ ids: evicted, irreversible: true, remove: async () => {} }).catch((err: unknown) => {
+      console.warn(
+        "[prompt-enhancer] 淘汰者的 meta 键清理未跑完（提示词已创建，残留键：" + evicted.join(",") + "）",
+        err,
+      );
+    });
   }
   return { ok: true, prompt: created.prompt, evicted };
 }

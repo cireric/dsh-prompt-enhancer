@@ -7,6 +7,13 @@ import { join } from "node:path";
 const { api, ApiError, AI_TIMEOUT_MS, AI_PROBE_TIMEOUT_MS } = await import("../src/client/utils/api.ts");
 
 /**
+ * D（批一第二条）：本文件被加载那一刻的 `DSH_HOME`。下面那条**真分发**用例会在进程里覆盖它，
+ * 故必须按原值形态还原（`undefined` 与「键存在但是空串」是两种状态，不得一律写成 `""`），
+ * 并由文件末尾的回归钉复核「还原到位」。
+ */
+const HOME_BEFORE_API_TEST = process.env.DSH_HOME;
+
+/**
  * 假 IncomingMessage / ServerResponse（与 tests/skill-export-route.test.mjs / meta-delete.test.mjs 同款）：
  * 只够 `routes.ts` 的手写分发层用。**本文件的其它用例都不需要它们**——只有下面那条「真分发」用例
  * 会绕过打桩的 fetch，直接调宿主的 handler。
@@ -413,6 +420,9 @@ test("deleteTag 400（标签在用）：ApiError.status 400，文案里带用量
 // 求值、store 的 db 句柄首次 `getDb()` 才建，故这里（该进程里唯一的 store 调用者）设它是安全的。
 test("DELETE /trash 信封（真分发）：removed 仍是**数字**、被删 id 在 ids、且 ids.length === removed", async () => {
   const home = mkdtempSync(join(tmpdir(), "dpe-trash-envelope-"));
+  // D（批一第二条）：`DSH_HOME` 是**进程级**环境变量 ⇒ 覆盖后必须还原。当下本文件的后续用例都只
+  // 打桩 fetch、从不碰 store/paths，故这个坑暂时不炸；但将来任一条碰 store/paths 就会读到下面
+  // 已经 `rmSync` 掉的临时目录（而 `paths.ts` 是**调用期**求值，正是这种坑最容易踩的形态）。
   process.env.DSH_HOME = home;
   try {
     const store = await import("../src/host/store.ts");
@@ -447,7 +457,19 @@ test("DELETE /trash 信封（真分发）：removed 仍是**数字**、被删 id
     assert.deepEqual(Object.keys(second.envelope.data).sort(), ["ids", "removed"], "键集恒为两项");
   } finally {
     rmSync(home, { recursive: true, force: true });
+    // 还原到位（按原值形态）：见文件头的 HOME_BEFORE_API_TEST。
+    if (HOME_BEFORE_API_TEST === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = HOME_BEFORE_API_TEST;
   }
+});
+
+// D（批一第二条）的**回归钉**：隔离不得泄漏。变异 = 删掉上面 finally 里的那两行还原 ⇒ 本条必红。
+test("D：DELETE /trash 的临时 DSH_HOME 不得泄漏到后续用例（逐字还原）", () => {
+  assert.equal(
+    process.env.DSH_HOME,
+    HOME_BEFORE_API_TEST,
+    "本文件跑到这里时 DSH_HOME 必须与文件被加载时逐字相同（泄漏出去的值是已删除的临时目录）",
+  );
 });
 
 // 404 是「不存在」而不是「参数错」：getPrompt 调用方据此清掉已失效的引用。

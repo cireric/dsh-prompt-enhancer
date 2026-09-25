@@ -106,6 +106,20 @@ function raceTimeout(promise, ms, label) {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
+ * 等到 predicate 为真（轮询宏任务，带上限）。自 C（重要-4）起清键是**后台**的——`capture.ts` 不再
+ * `await deletePrompts`——故断言「发了哪些请求」之前必须先等它落地。上限只是防挂住：
+ * 正常路径在第一个宏任务内就已就位。
+ */
+async function until(predicate, ms = 1000) {
+  const deadline = Date.now() + ms;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return true;
+}
+
+/**
  * 超限夹具：3 条既有（P1/P2 未优化、P3 已优化）+ 上限 3 → 再存一条必然淘汰 lastUsedAt 最旧的 P1。
  * 键序的权威定义在 `src/eviction-order.ts`（F-3 抽出的共享比较器）。
  */
@@ -203,7 +217,9 @@ test("出口 2 超限：弹确认，detail 逐字等于预演出的受害者标�
     assert.deepEqual(outcome.prompt, created, "返回宿主实际创建的那一条");
     assert.deepEqual(outcome.evicted, [prompts[0].id], "淘汰名单以宿主响应里的 evicted（被删 id）为准");
     assert.equal(s.calls.filter(isCreate).length, 1, "确认后恰好创建一次");
-    // 淘汰者的两把键就该在这一刻被清（T7 ① 正是补在这里：被淘汰者不进回收站 ⇒ 没有第二个清理点）。
+    // 淘汰者的两把键就该被清（T7 ① 正是补在这里：被淘汰者不进回收站 ⇒ 没有第二个清理点）。
+    // C（重要-4）后清键**不再压着保存反馈**（后台）⇒ 断言请求形状前先等它落地。
+    assert.ok(await until(() => s.calls.filter(isMetaDelete).length === 2), "清键必须最终发出（非阻塞 ≠ 不做）");
     assert.deepEqual(
       s.calls.filter(isMetaDelete).map((c) => c.url),
       [
@@ -330,12 +346,102 @@ test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清两把**
         API_PREFIX + "/meta/" + encodeURIComponent("pl:skill-descriptor:" + id),
       );
     }
+    // C（重要-4）：清键是**后台**的（`capture.ts` 不再 await）⇒ 先等 4 条请求都发出，再逐条断言形状。
+    assert.ok(
+      await until(() => s.calls.filter(isMetaDelete).length === expected.length),
+      "清键必须最终发出（非阻塞 ≠ 不做）",
+    );
     assert.deepEqual(s.calls.filter(isMetaDelete).map((c) => c.url), expected, "每个被淘汰的 id 各清两把键");
     for (const call of s.calls.filter(isMetaDelete)) {
       assert.equal(call.init.method, "DELETE", "清键走 DELETE（无请求体）");
       assert.equal(call.init.body, undefined);
     }
   } finally {
+    resolveConfirm(false);
+    s.restore();
+  }
+});
+
+// ── C（重要-4 / 批一必修）：清键**不得压在保存反馈上** ─────────────────────────
+//
+// 缺陷形态：`capture.ts` 原来 `await deletePrompts(...)` ⇒ 「已保存」的反馈被压在 2×N 条
+// `DELETE /meta` 上，而 N 由**上限配置**决定（上限 300 → 50 之后一次新建会淘汰 ~250 条 ⇒ ~500 次
+// 串行 HTTP）。下面两条分别钉住「不阻塞」与「并发」，都做过变异验证。
+
+test("出口 6（重要-4）：一条 DELETE 永远挂着，保存反馈照样立刻落地（不阻塞）", async () => {
+  const { prompts, settings } = overLimitFixture();
+  const created = mk("new", "新的一条");
+  const s = stubFetch((url, init) => {
+    const method = init?.method ?? "GET";
+    if (url === API_PREFIX + "/prompts" && method === "GET") return jsonRes({ ok: true, data: prompts });
+    if (url === API_PREFIX + "/prompts" && method === "POST") {
+      return jsonRes({ ok: true, data: { prompt: created, evicted: [prompts[0].id] } });
+    }
+    if (url === API_PREFIX + "/settings" && method === "GET") return jsonRes({ ok: true, data: settings });
+    // 清键：**永不落地**的 promise。反馈一旦 await 它，raceTimeout 必红（变异：把 void 改回 await）。
+    if (url.startsWith(API_PREFIX + "/meta/") && method === "DELETE") return new Promise(() => {});
+    throw new Error("未打桩的请求：" + method + " " + url);
+  });
+  try {
+    const pending = createFromCapture({ body: "新正文" });
+    await tick();
+    assert.ok(getConfirmSnapshot() !== null, "前提：超限先弹确认");
+    resolveConfirm(true);
+    const outcome = await raceTimeout(
+      pending,
+      2000,
+      "保存反馈不得压在清键 HTTP 上（变异：capture.ts 的 void 改回 await ⇒ 本用例必红）",
+    );
+    assert.equal(outcome.ok, true, "清键一条都没回来，创建仍必须如实回成功");
+    assert.deepEqual(outcome.evicted, [prompts[0].id], "淘汰名单照旧如实带回调用方");
+    assert.equal(s.calls.filter(isMetaDelete).length, 2, "清键请求照发（不阻塞 ≠ 不做）");
+  } finally {
+    resolveConfirm(false);
+    s.restore();
+  }
+});
+
+test("出口 6b（重要-4）：多条清键**并发在途**（串行 await ⇒ 至多 1 条在途，本用例必红）", async () => {
+  const { prompts, settings } = overLimitFixture();
+  const created = mk("new", "新的一条");
+  const evicted = [prompts[0].id, prompts[1].id]; // 2 个 id × 2 把键 = 4 条清键请求
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let releaseGate = () => {};
+  const gate = new Promise((resolve) => {
+    releaseGate = resolve;
+  });
+  const s = stubFetch((url, init) => {
+    const method = init?.method ?? "GET";
+    if (url === API_PREFIX + "/prompts" && method === "GET") return jsonRes({ ok: true, data: prompts });
+    if (url === API_PREFIX + "/prompts" && method === "POST") {
+      return jsonRes({ ok: true, data: { prompt: created, evicted } });
+    }
+    if (url === API_PREFIX + "/settings" && method === "GET") return jsonRes({ ok: true, data: settings });
+    if (url.startsWith(API_PREFIX + "/meta/") && method === "DELETE") {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // 全部挂在同一道闸上：串行实现只可能发出第一条（第二条要等第一条回来）。
+      return gate.then(() => {
+        inFlight -= 1;
+        return jsonRes({ ok: true, data: { key: "k", deleted: true } });
+      });
+    }
+    throw new Error("未打桩的请求：" + method + " " + url);
+  });
+  try {
+    const pending = createFromCapture({ body: "新正文" });
+    await tick();
+    resolveConfirm(true);
+    const outcome = await raceTimeout(pending, 2000, "保存必须落地（不阻塞）");
+    assert.deepEqual(outcome.evicted, evicted);
+    assert.ok(
+      await until(() => maxInFlight === 4),
+      "4 条清键必须**同时**在途（实测 maxInFlight=" + maxInFlight + "；串行 await 时恒为 1）",
+    );
+    assert.equal(maxInFlight, 4);
+  } finally {
+    releaseGate();
     resolveConfirm(false);
     s.restore();
   }

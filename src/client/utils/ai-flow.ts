@@ -166,7 +166,7 @@ export interface DeletePromptsResult {
  * 删除提示词的**唯一收尾编排**（T6 / O-1）：先做主删除，再**仅当不可逆时**清 per-prompt meta。
  * 两个删除面板（回收站的「永久删除」/「清空回收站」、列表页的软删除）都只经它收尾。
  *
- * 三条语义（每条都有对应用例，且都做过变异验证）：
+ * 五条语义（每条都有对应用例，且都做过变异验证）：
  *
  *  1. **软删除绝不清键**（`irreversible: false` ⇒ 一次清键请求都不发）。回收站可恢复且**复用同一
  *     id**，清了键，「删除 → 恢复」就会重演 I-1：方向记录消失（详情页退回中性标注）、descriptor
@@ -179,6 +179,10 @@ export interface DeletePromptsResult {
  *     这条专治「清空回收站」的竞态——面板列出的 items 是打开那一刻的快照，窗口内新增的行同样被删，
  *     却不在快照里；按回执清键之后，`ids` 只用来决定「要不要清」的语义（软删除仍然一把都不清），
  *     而**删了谁**只有宿主说了算。`irreversible` 仍是「清键」这件事的**唯一决策点**。
+ *  5. **并发清**（重要-4 / 批一必修）：`2×N` 条 `DELETE /meta` **一次性发出**（`Promise.allSettled`），
+ *     不再串行等待——串行会把 `2×N` 次往返的耗时压在调用方的反馈上（见 `capture.ts` 第 ⑥ 条）。
+ *     前四条语义一条都不受影响：仍先 `await input.remove()`（主删先行）、`irreversible` 仍是唯一
+ *     决策点、失败仍只 warn + 计入 `failed`；发起次序仍是「逐 id、逐键」的既有次序。
  */
 export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePromptsResult> {
   const receipt = await input.remove();
@@ -186,17 +190,20 @@ export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePr
   // ⑦：清**回执说的那些** id（`{ ids }`，清空回收站的竞态窗口），回执说不出才退回调用方给的 ids。
   const ids = receiptIds(receipt) ?? input.ids;
   const deleteMeta = input.deleteMeta ?? ((key: string) => api.deleteMeta(key));
+  // 5. **并发清**（重要-4）：淘汰条数由上限配置决定（上限 300 → 50 时一次新建会淘汰 ~250 条 ⇒ 2×N
+  //    把请求**一次性发出去**（同步 map 发起，顺序仍是「逐 id、逐键」的既有次序），再 allSettled 收结果。
+  const keys: string[] = [];
+  for (const id of ids) for (const key of perPromptMetaKeys(id)) keys.push(key);
+  const settled = await Promise.allSettled(keys.map((key) => deleteMeta(key)));
   let succeeded = 0;
   let failed = 0;
-  for (const id of ids) {
-    for (const key of perPromptMetaKeys(id)) {
-      try {
-        await deleteMeta(key);
-        succeeded++;
-      } catch (err) {
-        failed++;
-        console.warn("[prompt-enhancer] 清理提示词的 meta 键失败（提示词已删除，残留键：" + key + "）", err);
-      }
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i];
+    if (outcome.status === "fulfilled") {
+      succeeded++;
+    } else {
+      failed++;
+      console.warn("[prompt-enhancer] 清理提示词的 meta 键失败（提示词已删除，残留键：" + keys[i] + "）", outcome.reason);
     }
   }
   return { succeeded, failed };
