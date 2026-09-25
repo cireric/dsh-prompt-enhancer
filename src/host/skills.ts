@@ -12,33 +12,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dshHome } from "./paths.ts";
 import type { SkillDescriptor } from "./ai.ts";
+// 技能名规则（SKILL_NAME_RE / SKILL_NAME_MAX_LEN / toKebab / isValidSkillName）的**单一真源**在
+// `src/skill-name.ts`：本模块顶部有 `node:fs`，客户端 bundle 引用不了，故规则必须待在零依赖模块里
+// （P7 T2 的 R-P7-I 修正：计划原先写「客户端复用 skills.ts 的导出」，那条不可执行）。
+// 这里只 import + 原样 re-export——**既有导出面逐字不变**（tests/skills.test.mjs 与 routes.ts 无需改）。
+import { isValidSkillName, toKebab } from "../skill-name.ts";
 
-/** 技能名的严格形态：纯小写 kebab（官方 loader 只接受 [a-z0-9-]，且目录名即触发名）。 */
-export const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-
-/** 技能名长度上限（目录名不宜过长）。 */
-export const SKILL_NAME_MAX_LEN = 64;
-
-/**
- * 把候选名 kebab 化，供 AI 生成的 `"Weekly Report"` 这类输入使用。
- *
- * ⚠️ 含路径分隔符或 `..` 的输入一律返回空串（=拒绝），**不做猜测性修正**：
- * 「`../evil` 被悄悄改成 `evil` 再写盘」虽然路径安全，但会掩盖调用方的结构错误。
- */
-export function toKebab(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return "";
-  if (/[/\\]/.test(trimmed) || trimmed.includes("..")) return "";
-  return trimmed
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-/** 写入前的最后一道闸：只接受严格 kebab（路径穿越在这一步被彻底挡死）。 */
-export function isValidSkillName(name: string): boolean {
-  return name.length > 0 && name.length <= SKILL_NAME_MAX_LEN && SKILL_NAME_RE.test(name);
-}
+export { SKILL_NAME_MAX_LEN, SKILL_NAME_RE, isValidSkillName, toKebab } from "../skill-name.ts";
 
 /** 技能目录：`$DSH_HOME/skills/<name>/`。 */
 export function skillDir(name: string): string {

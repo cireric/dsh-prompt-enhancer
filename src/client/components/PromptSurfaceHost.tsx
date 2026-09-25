@@ -28,6 +28,16 @@ import { PromptManagerModal } from "./PromptManagerModal.tsx";
 /** shell.overlay 的 props：无 owner props（B1），只用 locale 面的 `t`。 */
 export type PromptSurfaceHostProps = PropsRuntime<"shell.overlay"> & PropsLocale<"prompt-enhancer">;
 
+/**
+ * 管理面板栈的**追加面板值**（规格 §7.6 / 计划 D-P7-3）：`null` = 当前页签的内容，
+ * `'skill'` = 技能导出页。值住在弹窗宿主（`shell.overlay` 的唯一挂载点，D-P7-1），
+ * 由管理面板头部的工具栏按钮置位、由技能页的「返回管理面板」清位。
+ *
+ * 为什么不进 `ui-state.ts` 的 `ManagerPanel`：那是 P6 定的四页签枚举（T2 约束 F 段明列
+ * `ui-state.ts` 不得触碰），而规格 §7.6 要的是**工具栏按钮**打开的一个页面，不是第五个页签。
+ */
+export type ManagerPanelValue = "skill" | null;
+
 /** 字典键集：请求里的文案字段要么是键（翻译），要么是调用方直接给的原文（照旧显示）。 */
 const DICT_KEYS = new Set<string>(Object.keys(zh));
 
@@ -98,6 +108,15 @@ export function PromptSurfaceHost({ t }: PromptSurfaceHostProps): React.ReactEle
    * / `-confirm` 口径，声明式渲染、非 DOM 注入），**不改任何渲染门**。
    */
   const claimed = useOverlayClaim();
+  /**
+   * 面板值（T2 新增的**唯一**一处状态）。它不进任何渲染门：管理面板「何时渲染」仍只看
+   * `open` 与在途确认层，claim 读数的接线也不动（R-P7-A 的两条禁令）。关闭面板即复位——
+   * 下次打开回到管理面板本身，不留「重开还停在技能页」的隐式记忆。
+   */
+  const [panelValue, setPanelValue] = React.useState<ManagerPanelValue>(null);
+  React.useEffect(() => {
+    if (!open) setPanelValue(null);
+  }, [open]);
   // hook 全部在此之前调用，故「开 → 关」分支切换不违反 hook 规则。
   if (!open && confirmRequest === null) return null;
   return (
@@ -115,7 +134,7 @@ export function PromptSurfaceHost({ t }: PromptSurfaceHostProps): React.ReactEle
         if (ev.target === ev.currentTarget) closeManager();
       }}
     >
-      {open && <PromptManagerModal t={t} panel={panel} />}
+      {open && <PromptManagerModal t={t} panel={panel} panelValue={panelValue} onPanelValue={setPanelValue} />}
       {confirmRequest !== null && <ConfirmDialog request={confirmRequest} t={t} />}
     </div>
   );

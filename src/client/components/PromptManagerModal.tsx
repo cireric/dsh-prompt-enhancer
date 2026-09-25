@@ -60,7 +60,10 @@ import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
 import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
 import { ImportExportModal } from "./ImportExportModal.tsx";
 import { RecycleManagePanel } from "./RecycleManagePanel.tsx";
+import { SkillExportModal } from "./SkillExportModal.tsx";
 import { TagManagePanel } from "./TagManagePanel.tsx";
+// type-only：面板值住在弹窗宿主（PromptSurfaceHost），本文件只消费它（类型擦除 → 无运行期循环）。
+import type { ManagerPanelValue } from "./PromptSurfaceHost.tsx";
 
 /** 面板文案取值器：即 `PropsLocale<'prompt-enhancer'>` 的 `t`。 */
 export type ManagerTranslate = TranslateNS<"prompt-enhancer">;
@@ -70,6 +73,10 @@ export interface PromptManagerModalProps {
   t: ManagerTranslate;
   /** 当前页签（来自 ui-state 的 store；切换走 `openManager`）。 */
   panel: ManagerPanel;
+  /** 管理面板栈的**追加面板值**（规格 §7.6）：`'skill'` = 技能导出页，`null` = 当前页签内容。 */
+  panelValue: ManagerPanelValue;
+  /** 置位/清位面板值（唯一持有者是 `PromptSurfaceHost`——弹窗宿主的单一真源）。 */
+  onPanelValue: (value: ManagerPanelValue) => void;
 }
 
 /** 头部四页签的**渲染顺序**（R5：外壳在本任务定下，T4/T5 只填内容）。 */
@@ -141,7 +148,7 @@ type EditTarget =
 /**
  * 管理面板本体：头部（标题 + 四页签 + 关闭）恒定，内容区按 `panel` 分发。
  */
-export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React.ReactElement {
+export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: PromptManagerModalProps): React.ReactElement {
   /** 尺寸走设置（规格 §4.2）；读失败留 console 痕迹并沿用默认值，不挡面板打开。 */
   const [settings, setSettings] = React.useState<PluginSettings>(DEFAULT_SETTINGS);
   const [target, setTarget] = React.useState<EditTarget | null>(null);
@@ -203,9 +210,10 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
     setTarget({ kind: "create", prefill: pending });
   }, [capture, panel]);
 
-  /** 换页签：离开详情页，再让 store 换页签（幂等由 store 负责）。 */
+  /** 换页签：离开详情页**与技能导出页**，再让 store 换页签（幂等由 store 负责）。 */
   const openPanel = (next: ManagerPanel): void => {
     setTarget(null);
+    onPanelValue(null);
     openManager(next);
   };
 
@@ -245,26 +253,43 @@ export function PromptManagerModal({ t, panel }: PromptManagerModalProps): React
             </button>
           ))}
         </div>
+        {/* 工具栏的「导出为技能」（规格 §7.6）：打开管理面板栈的 `'skill'` 页。
+            T5 活体探针锚点（声明式渲染，非 DOM 注入）。 */}
+        <button
+          type="button"
+          data-prompt-enhancer-skill-open=""
+          style={button}
+          onClick={() => onPanelValue("skill")}
+        >
+          {t("manager.skill.open")}
+        </button>
         <button type="button" style={button} onClick={closeManager}>
           {t("manager.close")}
         </button>
       </div>
       <div role="tabpanel" aria-label={t(PANEL_LABEL[panel])} style={dialogBody}>
-        {panel === "list" && target === null && (
-          <PromptList t={t} onCreate={startCreate} onEdit={(prompt) => setTarget({ kind: "edit", prompt })} />
+        {panelValue === "skill" ? (
+          /* 技能导出页（规格 §7.6）：管理面板栈里的一页，与详情页同级（都在本卡片的内容区）。 */
+          <SkillExportModal t={t} onBack={() => onPanelValue(null)} />
+        ) : (
+          <>
+            {panel === "list" && target === null && (
+              <PromptList t={t} onCreate={startCreate} onEdit={(prompt) => setTarget({ kind: "edit", prompt })} />
+            )}
+            {panel === "list" && target !== null && (
+              <PromptDetail
+                key={target.kind === "edit" ? target.prompt.id : "create"}
+                t={t}
+                target={target}
+                onBack={() => setTarget(null)}
+              />
+            )}
+            {/* T4 填标签页 / 回收站页，T5 填导入导出页——T2 的四页外壳到此全满。 */}
+            {panel === "tags" && <TagManagePanel t={t} />}
+            {panel === "trash" && <RecycleManagePanel t={t} />}
+            {panel === "transfer" && <ImportExportModal t={t} />}
+          </>
         )}
-        {panel === "list" && target !== null && (
-          <PromptDetail
-            key={target.kind === "edit" ? target.prompt.id : "create"}
-            t={t}
-            target={target}
-            onBack={() => setTarget(null)}
-          />
-        )}
-        {/* T4 填标签页 / 回收站页，T5 填导入导出页——T2 的四页外壳到此全满。 */}
-        {panel === "tags" && <TagManagePanel t={t} />}
-        {panel === "trash" && <RecycleManagePanel t={t} />}
-        {panel === "transfer" && <ImportExportModal t={t} />}
       </div>
     </div>
   );

@@ -36,6 +36,23 @@ export interface AiSelectable { provider: string; name: string; models: Array<{ 
 /** `/ai/refine` 的返回：小标题、标签（最多 1 个）、摘要、正文。 */
 export interface AiRefineResult { title: string; tags: string[]; summary: string; body: string }
 
+/**
+ * `POST /ai/skill-descriptor` 的返回：AI 生成的技能名 / 描述（`whenToUse` 可选）。
+ *
+ * 形状照 `src/host/ai.ts#SkillDescriptor` **在客户端重述**，与 `AiSelectable` / `AiRefineResult`
+ * 同款：客户端不 import 宿主模块（那会拉进 `node:fs` / `@deepseek-ai/dsh-llm`），故响应形状在此声明。
+ */
+export interface SkillDescriptorPayload { name: string; description: string; whenToUse?: string }
+
+/**
+ * `POST /skills/export` 的返回（宿主回执）。
+ *
+ * `path` 是宿主算出来的**目标 SKILL.md 绝对路径**（`$DSH_HOME/skills/<name>/SKILL.md`，
+ * 见 routes.ts 的技能导出分支）。声明为可选是**有意的**：客户端不知道 `DSH_HOME`，
+ * 缺席时只能显式报出契约漂移，**不得**自己拼一个路径出来（规格 §7.6 的目标目录一律取宿主返回值）。
+ */
+export interface SkillExportReceipt { name: string; path?: string; prompt?: Prompt }
+
 /** 响应信封（规格 §5）：客户端以 data === undefined 判失败。 */
 interface Envelope<T> { ok: boolean; data?: T; error?: string }
 
@@ -103,6 +120,32 @@ export const api = {
       AI_TIMEOUT_MS,
     ),
   refinePrompt: (body: string) => call<AiRefineResult>("POST", "/ai/refine", { body }, AI_TIMEOUT_MS),
+  /**
+   * 逐条 AI 补全技能名与描述（`POST /ai/skill-descriptor`；规格 §7.6 的「AI 补全名称与描述」）。
+   *
+   * `body` 必填（宿主空 body 直接 400「缺少 body」）；`title` / `summary` / `tags` 是上下文，
+   * 宿主原样喂给提示词。走 `AI_TIMEOUT_MS`——它真的在等模型（同 /ai/polish、/ai/refine）；
+   * AI 不可用 → 宿主 **503**，经 `call()` 变成带 status 的 ApiError（失败必须可见）。
+   */
+  aiSkillDescriptor: (input: { body: string; title?: string; summary?: string; tags?: string[] }) =>
+    call<SkillDescriptorPayload>("POST", "/ai/skill-descriptor", input, AI_TIMEOUT_MS),
+
+  // ── 技能导出（P7 T2）──────────────────────────────────────────────────
+  /**
+   * 导出为官方 DSH 技能（`POST /skills/export`）。**不设超时**（写盘，同其余非 AI 路由，
+   * 保持 P4 行为）。错误映射全部走 `call()` 的信封路径，调用方**按 status 分类**、不匹配文案：
+   *   · 400 技能名非法 / description 兜底链全空（宿主原文）；
+   *   · 404 提示词不存在；
+   *   · 409 同名目录**不属于本插件**（用户手写的技能）→ 确认后带 `conflictConfirmed: true` 重试。
+   * 缺省不发的键由 `JSON.stringify` 丢弃：只传 `promptId` 时宿主自己按
+   * `body.name ?? descriptor?.name ?? prompt.skillName` 推名字。
+   */
+  exportPromptAsSkill: (input: {
+    promptId: string;
+    name?: string;
+    descriptor?: SkillDescriptorPayload;
+    conflictConfirmed?: boolean;
+  }) => call<SkillExportReceipt>("POST", "/skills/export", input),
 
   // ── 提示词：单条读写（P6）──────────────────────────────────────────────
   /** 单条读取；不存在时宿主回 404（信封失败 → ApiError.status === 404）。 */
