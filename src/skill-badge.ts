@@ -44,12 +44,44 @@ export function skillBadgeState(prompt: SkillStalenessLike): SkillBadgeState {
   if (!prompt.skillName) return "none";
   return isSkillStale(prompt) ? "stale" : "exported";
 }
+/** 徽标三态里**需要渲染**的两态的渲染参数（`none` 不渲染，故不在其中）。 */
+export interface SkillBadgeVisual {
+  /** 语义色名：渲染点映射到 `src/client/utils/theme.ts` 的 `TONE`（`success` = 绿 / `warn` = 警示色）。 */
+  tone: "success" | "warn";
+  /** 文案键（渲染点直接 `t(labelKey)`）。 */
+  labelKey: "manager.skill.badgeExported" | "manager.skill.badgeStale";
+  /** 是否渲染「重新导出」按钮（只有过期态需要重导）。 */
+  action: boolean;
+  /** 是否在文案后附上技能名（只有「已导出技能 <name>」这一态需要）。 */
+  showName: boolean;
+}
+
+/**
+ * 状态 → 渲染参数（规格 §7.6：已导出绿、已过期警示色 + 重导按钮）。**渲染点不自己再判一次状态**：
+ * 色名 / 文案键 / 是否带动作 / 是否附名，四者在这一处收敛——三态语义或配色变化只改这里。
+ */
+export function skillBadgeVisual(state: Exclude<SkillBadgeState, "none">): SkillBadgeVisual {
+  return state === "stale"
+    ? { tone: "warn", labelKey: "manager.skill.badgeStale", action: true, showName: false }
+    : { tone: "success", labelKey: "manager.skill.badgeExported", action: false, showName: true };
+}
 
 // ── 一键重导：同名覆盖同一目录，**绝不新增目录**（验收 16）────────────────────
 
-/** 重导请求体：**只有** promptId（宿主据此查库取既有 skillName 与目录归属）。 */
+/** AI 补全的技能名/描述（结构照 `api.ts` 的 `SkillDescriptorPayload`；本模块零 import，故在此重述）。 */
+export interface SkillDescriptorLike {
+  name: string;
+  description: string;
+  whenToUse?: string;
+}
+
+/**
+ * 重导请求体：`promptId` 必带；`descriptor` 是首次导出时存进 meta 的那一份（R-P7-AA），
+ * 读得到就原样回传、读不到就**整个不带**（退回宿主兜底链）。
+ */
 export interface SkillReExportRequest {
   promptId: string;
+  descriptor?: SkillDescriptorLike;
 }
 
 /** 宿主回执里与本次判定有关的两个字段；`path` 缺席 = 契约漂移。 */
@@ -66,11 +98,15 @@ export type SkillReExportOutcome<R> =
 /**
  * 一键重导（`POST /skills/export` 的单条形态）。
  *
- * 请求体**只**带 `promptId`，一个键都不多——这就是「同名覆盖、不新增目录」的全部机制：
- *   · 不带 `name`：宿主落到 `body.name ?? descriptor?.name ?? prompt.skillName` 的**最后一格**
- *     （既定事实见 `src/host/routes.ts` 的技能导出分支），取的是盘上已有的名字 ⇒ 写回同一目录。
- *     带 name 等于「改名导出」，那会**新建目录**（正是验收 16 要挡的）。
- *   · 不带 `descriptor`：不再跑一次 AI 补名/补描述（名字与描述已在盘上，描述走兜底链）。
+ * 请求体只有两个键，各有分工，多一个都不要：
+ *   · **必带 `promptId`**：宿主据此查库取既有 `skillName` 与目录归属（`routes.ts` 的技能导出分支）。
+ *   · 不带 `name`：宿主落到 `body.name ?? descriptor?.name ?? prompt.skillName` 的**最后一格**，取的是盘上
+ *     已有的名字 ⇒ 写回同一目录。带**别的** name 等于「改名导出」，那会**新建目录**（正是验收 16 要挡的）。
+ *   · **`descriptor` 读得到就原样回传**（R-P7-AA 修复轮 1）：它是首次导出成功时落进 meta 的那一份 AI
+ *     补全结果。不带它时宿主只能走 description 兜底链、并且**丢掉 `whenToUse`**——而「AI 生成了 whenToUse
+ *     却被客户端丢弃」正是 `src/host/skills.ts` 文件头声明修掉的上游缺陷，重导是**常规路径**（徽标的
+ *     意义就是「改了就重导」），不补这条它就会原样复活。meta 缺失时（本轮之前导出的、或从未跑过 AI
+ *     补全的）退回兜底链，**不得因此失败**。
  *   · 不带 `conflictConfirmed`：不替用户确认覆盖。同名目录**属于本插件自己**（ownerPromptId
  *     就是本条）时本就不该 409；真回 409 就说明那是用户手写的技能目录，必须让它挡住。
  *
@@ -81,10 +117,13 @@ export type SkillReExportOutcome<R> =
 export async function reExportSkill<R extends SkillReExportReceiptLike>(
   promptId: string,
   send: (request: SkillReExportRequest) => Promise<R>,
+  descriptor?: SkillDescriptorLike,
 ): Promise<SkillReExportOutcome<R>> {
+  // 有 descriptor 才带这个键：请求形状用例用 deepEqual 钉住「降级时不得多出半个键」。
+  const request: SkillReExportRequest = descriptor ? { promptId, descriptor } : { promptId };
   let receipt: R;
   try {
-    receipt = await send({ promptId });
+    receipt = await send(request);
   } catch (err) {
     // 宿主 409 / 400 / 404 与网络异常一律原样可见（ApiError.message 就是宿主原文），不吞、不重试。
     return {

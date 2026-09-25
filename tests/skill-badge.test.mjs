@@ -6,14 +6,25 @@
  *
  * 组件接线（`.tsx`）进不了 `node --test`（本仓库无 react-dom，Node 的类型擦除也不认 JSX），
  * 故「徽标挂在列表行/详情页」「点按钮真的调了 api」归 T5 活体验收——这里不造空洞断言。
- * 本文件断言的是**可执行的那一半**：三态收敛、过期边界、重导请求形状与结局分类。
+ * 本文件断言的是**可执行的那一半**：三态收敛、过期边界、状态→色名映射、重导请求形状与结局分类、
+ * 以及 R-P7-AA 的 descriptor「写 → 读 → 回传」链（含真写盘的 frontmatter 对照）。
  */
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const badge = await import("../src/skill-badge.ts");
 const skillName = await import("../src/skill-name.ts");
 const hostSkills = await import("../src/host/skills.ts");
+const exportUtils = await import("../src/client/utils/skill-export.ts");
+const theme = await import("../src/client/utils/theme.ts");
+
+/** 宿主级用例要**真写盘**（R-P7-AA 的终局证据）：DSH_HOME 指向临时目录，绝不碰用户真实技能目录。 */
+const home = mkdtempSync(join(tmpdir(), "dpe-badge-"));
+process.env.DSH_HOME = home;
+after(() => rmSync(home, { recursive: true, force: true }));
 
 /** 窄接口构造：默认「导出过、导出后又改过（100 → 200）」= 已过期。 */
 const p = (over = {}) => ({ skillName: "weekly-report", updatedAt: 200, skillExportedAt: 100, ...over });
@@ -55,6 +66,38 @@ test("三态与判定在同一张输入表上逐一一致（三态是判定的�
   for (const input of table) {
     const expected = input.skillName ? (badge.isSkillStale(input) ? "stale" : "exported") : "none";
     assert.equal(badge.skillBadgeState(input), expected, JSON.stringify(input));
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 徽标渲染参数：状态 → 色名 / 文案键 / 动作（规格 §7.6：已导出绿、已过期警示色）
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("skillBadgeVisual：已导出 = 绿 + 附名；已过期 = 警示色 + 重导按钮（渲染点不再自己判一次状态）", () => {
+  assert.deepEqual(badge.skillBadgeVisual("exported"), {
+    tone: "success",
+    labelKey: "manager.skill.badgeExported",
+    action: false,
+    showName: true,
+  });
+  assert.deepEqual(badge.skillBadgeVisual("stale"), {
+    tone: "warn",
+    labelKey: "manager.skill.badgeStale",
+    action: true,
+    showName: false,
+  });
+  assert.notEqual(badge.skillBadgeVisual("exported").tone, badge.skillBadgeVisual("stale").tone, "两态必须不同色");
+});
+
+test("TONE：两个状态色都读宿主 --dsw-alias-state-* 令牌（不写死主题色）且取值互不相同", () => {
+  const shape = /^var\(--dsw-alias-state-[a-z-]+,\s*#?[0-9a-fA-F]{3,8}\)$/;
+  for (const [name, value] of Object.entries(theme.TONE)) {
+    assert.match(value, shape, name + " 必须是 var(--dsw-alias-state-*, 兜底) 形态（规格 §7.5 口径）");
+  }
+  assert.notEqual(theme.TONE.success, theme.TONE.warn);
+  for (const state of ["exported", "stale"]) {
+    const tone = badge.skillBadgeVisual(state).tone;
+    assert.ok(Object.hasOwn(theme.TONE, tone), state + " 的 tone（" + tone + "）必须在 TONE 里有色值");
   }
 });
 
@@ -114,16 +157,30 @@ function scriptedSend(script) {
 
 const receipt = { name: "weekly-report", path: "/home/u/.dsh/skills/weekly-report/SKILL.md" };
 
-test("重导请求形状：**只**发 { promptId }（不带 name / descriptor / conflictConfirmed）", async () => {
-  const s = scriptedSend([receipt]);
-  const outcome = await badge.reExportSkill("p1", s.send);
-  assert.equal(s.calls.length, 1, "恰好一次请求");
-  assert.deepEqual(s.calls[0], { promptId: "p1" }, "请求体只带 promptId——多一个键就会改变宿主语义");
-  assert.equal(Object.keys(s.calls[0]).length, 1);
-  for (const forbidden of ["name", "descriptor", "conflictConfirmed"]) {
+/** `exportEach` 的条目（SkillCandidate 窄接口）。 */
+const cand = (id, over = {}) => ({ id, title: "标题 " + id, body: "正文 " + id, ...over });
+
+/** 首次导出时 AI 给的那一份（**原样**落 meta、**原样**回传的那份）。 */
+const aiDescriptor = { name: "Weekly Report", description: "AI 生成的描述", whenToUse: "当用户要写周报时" };
+
+test("重导请求形状：只有 promptId（+ 读得到的 descriptor），**不带** name / conflictConfirmed", async () => {
+  // ① 降级形态（meta 缺失）：请求体回到「只有 promptId」。
+  const plain = scriptedSend([receipt]);
+  const plainOutcome = await badge.reExportSkill("p1", plain.send);
+  assert.equal(plain.calls.length, 1, "恰好一次请求");
+  assert.deepEqual(plain.calls[0], { promptId: "p1" }, "降级时请求体只带 promptId——多一个键就会改变宿主语义");
+  assert.equal(Object.keys(plain.calls[0]).length, 1);
+  assert.equal(plainOutcome.ok, true);
+
+  // ② 带 descriptor 形态（R-P7-AA）：原样回传，**仍然**不带 name / conflictConfirmed。
+  const withDescriptor = scriptedSend([receipt]);
+  const outcome = await badge.reExportSkill("p1", withDescriptor.send, aiDescriptor);
+  assert.deepEqual(withDescriptor.calls[0], { promptId: "p1", descriptor: aiDescriptor }, "descriptor 必须原样回传");
+  assert.equal(Object.keys(withDescriptor.calls[0]).length, 2);
+  for (const forbidden of ["name", "conflictConfirmed"]) {
     assert.ok(
-      !Object.hasOwn(s.calls[0], forbidden),
-      "不得带 " + forbidden + "（带 name = 改名导出会新建目录 / 带 descriptor = 再跑一次 AI / 带 conflictConfirmed = 绕过归属判据）",
+      !Object.hasOwn(withDescriptor.calls[0], forbidden),
+      "不得带 " + forbidden + "（带 name = 改名导出会新建目录 / 带 conflictConfirmed = 绕过归属判据）",
     );
   }
   assert.equal(outcome.ok, true);
@@ -162,4 +219,148 @@ test("重导结局：宿主错误 → exportFailed + 原始 detail；409 **不�
     assert.equal(s.calls.length, 1, "失败后不得自动重试（带上 conflictConfirmed 就等于替用户同意覆盖）");
     assert.deepEqual(s.calls[0], { promptId: "p1" }, "失败路径的请求形状同样是「只有 promptId」");
   }
+});
+// ─────────────────────────────────────────────────────────────────────────────
+// R-P7-AA（修复轮 1）：descriptor 的写入 / 读取 / 回传 —— 重导不再丢 whenToUse、不降级 description
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("meta 键约定：pl:skill-descriptor:<promptId>（T4 照抄这一条）", () => {
+  assert.equal(exportUtils.skillDescriptorMetaKey("p1"), "pl:skill-descriptor:p1");
+});
+
+test("写入：每条**成功**导出都把用过的 descriptor **原样**落 meta，失败条目一律不落", async () => {
+  const saved = [];
+  const s = scriptedSend([receipt, { throws: new Error("提示词不存在") }]);
+  const outcomes = await exportUtils.exportEach({
+    prompts: [cand("a"), cand("b")],
+    descriptors: {
+      a: { ok: true, descriptor: aiDescriptor },
+      b: { ok: true, descriptor: { name: "b-skill", description: "b 的描述" } },
+    },
+    send: s.send,
+    confirmConflict: async () => false,
+    saveDescriptor: async (promptId, descriptor) => {
+      saved.push([promptId, descriptor]);
+    },
+  });
+  assert.deepEqual(outcomes.map((o) => o.status), ["exported", "failed"]);
+  assert.deepEqual(saved, [["a", aiDescriptor]], "只落成功那条，且是原样的 descriptor（失败条目宿主没写盘）");
+});
+
+test("写入（真实 HTTP 形状）：persistDescriptor 走 PUT /meta/<key>，体是 descriptor 的 JSON 文本", async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return { status: 200, ok: true, json: async () => ({ ok: true, data: { key: "k", value: "v" } }) };
+  };
+  try {
+    await exportUtils.persistDescriptor("p1", aiDescriptor);
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(calls.length, 1, "恰好一次写入");
+  assert.equal(calls[0].url, "/api/prompt-enhancer/meta/" + encodeURIComponent("pl:skill-descriptor:p1"));
+  assert.equal(calls[0].init.method, "PUT");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { value: JSON.stringify(aiDescriptor) });
+});
+
+test("写 → 读 → 回传（round-trip）：落进 meta 的那份必须逐字回到重导请求体里", async () => {
+  const store = new Map();
+  const s = scriptedSend([receipt]);
+  const outcomes = await exportUtils.exportEach({
+    prompts: [cand("a")],
+    descriptors: { a: { ok: true, descriptor: aiDescriptor } },
+    send: s.send,
+    confirmConflict: async () => false,
+    saveDescriptor: async (promptId, descriptor) => {
+      store.set(exportUtils.skillDescriptorMetaKey(promptId), JSON.stringify(descriptor));
+    },
+  });
+  assert.deepEqual(outcomes.map((o) => o.status), ["exported"]);
+
+  const loaded = await exportUtils.loadStoredDescriptor("a", async (key) => store.get(key) ?? "");
+  assert.deepEqual(loaded, aiDescriptor, "读回来的必须与写进去的逐字相同");
+
+  const spy = scriptedSend([receipt]);
+  const outcome = await badge.reExportSkill("a", spy.send, loaded);
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(spy.calls[0], { promptId: "a", descriptor: aiDescriptor }, "重导请求体把 descriptor 原样带上");
+});
+
+test("降级：meta 缺失（从未落过）⇒ 请求体回到「只有 promptId」，且重导**不失败**", async () => {
+  const loaded = await exportUtils.loadStoredDescriptor("never", async () => "");
+  assert.equal(loaded, undefined, "store.getMetaValue 的缺失值就是空串 ⇒ 静默降级为 undefined");
+  const spy = scriptedSend([receipt]);
+  const outcome = await badge.reExportSkill("never", spy.send, loaded);
+  assert.equal(outcome.ok, true, "meta 缺失不得让重导失败");
+  assert.deepEqual(spy.calls[0], { promptId: "never" });
+});
+
+test("降级：meta 损坏（坏 JSON / 形状不符）⇒ undefined + 可见告警，照样不失败", async () => {
+  const bad = [
+    "{不是 JSON",
+    JSON.stringify({ description: "只有描述" }),
+    JSON.stringify({ name: 42, description: "d" }),
+    JSON.stringify({ name: "n", description: "d", whenToUse: 7 }),
+    JSON.stringify("字符串不是对象"),
+  ];
+  for (const raw of bad) {
+    const loaded = await exportUtils.loadStoredDescriptor("p1", async () => raw);
+    assert.equal(loaded, undefined, "坏值必须降级：「" + raw + "」");
+  }
+  const spy = scriptedSend([receipt]);
+  const outcome = await badge.reExportSkill("p1", spy.send, undefined);
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(spy.calls[0], { promptId: "p1" }, "降级时不得多出半个键");
+});
+
+test("读写失败都不阻断：setMeta 抛错、getMeta 抛错都只告警（导出与重导各自成立）", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError("Failed to parse URL from /api/prompt-enhancer/meta/pl:skill-descriptor:p1");
+  };
+  try {
+    await exportUtils.persistDescriptor("p1", aiDescriptor); // 不得抛（它只是提质信息）
+    const loaded = await exportUtils.loadStoredDescriptor("p1", async () => {
+      throw new Error("宿主 500");
+    });
+    assert.equal(loaded, undefined);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R-P7-AA 的终局证据（真写盘）：重导保留 whenToUse 与 AI 描述，且写回**同一个目录**
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("重导 frontmatter 对照：带 descriptor = 保留 whenToUse + AI 描述；不带 = 降级（修前形态）", () => {
+  const first = hostSkills.exportSkill({
+    prompt: { id: "p1", title: "周报生成", body: "把要点整理成周报" },
+    descriptor: aiDescriptor,
+  });
+  assert.equal(first.ok, true, first.error);
+  assert.equal(first.name, "weekly-report", "AI 给的名字被 kebab 化");
+  const afterFirst = readFileSync(first.path, "utf8");
+  assert.match(afterFirst, /whenToUse: "当用户要写周报时"/);
+  assert.match(afterFirst, /description: "AI 生成的描述"/);
+
+  // 用户改了正文 ⇒ 徽标变「技能已过期」⇒ 点重导。**修前**形态：请求体不带 descriptor。
+  const changed = { id: "p1", title: "周报生成", body: "改过的正文首行\n第二行" };
+  const degraded = hostSkills.exportSkill({ prompt: changed, name: "weekly-report", ownerPromptId: "p1" });
+  assert.equal(degraded.ok, true, degraded.error);
+  const afterDegraded = readFileSync(degraded.path, "utf8");
+  assert.doesNotMatch(afterDegraded, /whenToUse/, "修前形态：不带 descriptor ⇒ whenToUse 被宿主丢掉（R-P7-AA 的缺陷）");
+  assert.match(afterDegraded, /description: "改过的正文首行"/, "修前形态：description 降级成正文首行");
+
+  // **修后**形态：重导把 meta 里那份原样回传（宿主按 toKebab(descriptor.name) 落到同一目录）。
+  const fixed = hostSkills.exportSkill({ prompt: changed, descriptor: aiDescriptor, ownerPromptId: "p1" });
+  assert.equal(fixed.ok, true, fixed.error);
+  assert.equal(fixed.path, first.path, "重导必须写回**同一个目录**（descriptor.name kebab 化后 == 库里的 skillName）");
+  const afterFixed = readFileSync(fixed.path, "utf8");
+  assert.match(afterFixed, /whenToUse: "当用户要写周报时"/, "修后：whenToUse 不再丢");
+  assert.match(afterFixed, /description: "AI 生成的描述"/, "修后：description 保持 AI 生成的那份");
+  assert.match(afterFixed, /改过的正文首行/, "正文仍然更新（重导确实发生了）");
+  assert.deepEqual(readdirSync(join(home, "skills")), ["weekly-report"], "skills 根下始终只有这一个目录（没新增）");
 });

@@ -11,11 +11,16 @@
  * 纯：无 React、无 DOM、无 fetch——HTTP 与确认弹窗都由调用方**注入**（`send` / `confirmConflict`），
  * 于是三条易错的时序（AI 单条失败不阻断 / 409 确认后重试 / 预校验提前拒绝）都能用假实现逐条钉住。
  *
+ * **唯一的库写入例外**（R-P7-AA 修复轮 1）：每条成功导出后把这一次用过的 descriptor 落 meta
+ * （`saveDescriptor`，缺省实现 = `persistDescriptor` → 既有 `api.setMeta`）。它只是重导时的提质信息，
+ * 失败只 warn、绝不改变已经尘埃落定的导出结局（见该函数注释）。
+ *
  * 技能名规则来自 `src/skill-name.ts`——与宿主 `src/host/skills.ts` **同一份**（宿主也改成从那里
  * import）；`src/host/skills.ts` 顶部有 `node:fs`，客户端 bundle 引不了（P7 T2 的 R-P7-I 修正）。
  */
 import { isValidSkillName, toKebab } from "../../skill-name.ts";
-import { ApiError, type SkillDescriptorPayload, type SkillExportReceipt } from "./api.ts";
+// `api` 只为 R-P7-AA 的 descriptor 落库（`persistDescriptor` 的默认实现）——其余 HTTP 仍由调用方注入。
+import { ApiError, api, type SkillDescriptorPayload, type SkillExportReceipt } from "./api.ts";
 
 // ── 在途批次的取消令牌（R-P7-X 修复轮 1）────────────────────────────────────
 
@@ -260,6 +265,12 @@ export interface ExportEachInput {
    * 回调在**每条成功的那一刻**触发，因此与组件在世与否无关（要求 2）。
    */
   onExported?: (outcome: ExportedOutcome) => void;
+  /**
+   * 每条**成功**导出后，把这一次用过的 descriptor 落 meta（R-P7-AA）：重导要原样回传它，否则
+   * `whenToUse` 会消失、`description` 会降级成兜底链。缺省实现 = `persistDescriptor`（走 `api.setMeta`），
+   * 失败只 warn、不影响结局；调用方也可注入自己的实现（测试里必定注入，保持用例 hermetic）。
+   */
+  saveDescriptor?: (promptId: string, descriptor: SkillDescriptorPayload) => Promise<unknown>;
 }
 
 /**
@@ -274,6 +285,9 @@ export interface ExportEachInput {
  *     客户端不知道 `DSH_HOME`，**不得**自己拼路径（这条同时挡住「假成功」）。
  *  4. **离开即停 + 完成即广播**（R-P7-X 修复轮 1）：`run` 置位后不启动新条目、不再弹确认；
  *     而每条**成功落盘**都立刻走 `onExported`（即使这一刻组件已经卸载）——见 `ExportEachInput`。
+ *  5. **成功即记住 descriptor**（R-P7-AA 修复轮 1）：`saveDescriptor`（缺省 = `persistDescriptor`）把
+ *     这一次用过的 descriptor 落 meta。广播之后才写：广播是「导出成功」的可见信号，不得被一次库写拖慢；
+ *     而 meta 只是重导时的提质信息，写入失败只 warn、不改结局。
  */
 export async function exportEach(input: ExportEachInput): Promise<ExportOutcome[]> {
   const outcomes: ExportOutcome[] = [];
@@ -340,6 +354,12 @@ async function exportOne(prompt: SkillCandidate, input: ExportEachInput): Promis
    * 回调里不得有任何依赖组件在世的东西（真实现只是 `notifyDataChanged()`）。
    */
   input.onExported?.(exported);
+  /**
+   * R-P7-AA：把这一次**用过的** descriptor 落 meta，重导才拿得回来（否则 whenToUse 消失、
+   * description 降级成兜底链）。放在广播**之后**：广播是「导出成功」的可见信号，不得被一次库写
+   * 拖后腿；而写入失败由默认实现内部兜住（只 warn），绝不改变本条已经尘埃落定的结局。
+   */
+  if (descriptor) await (input.saveDescriptor ?? persistDescriptor)(prompt.id, descriptor);
   return exported;
 }
 
@@ -361,6 +381,86 @@ function failedOutcome(prompt: SkillCandidate, err: unknown): ExportOutcome {
 /** 失败原因给人看的那一行：ApiError / Error 自带可读 message（宿主原文），其余 String()。 */
 function reasonOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// ── descriptor 的持久化（R-P7-AA 修复轮 1）──────────────────────────────────
+//
+// 为什么需要：重导（徽标上的「重新导出」）只回传名字时，宿主只能走 description 兜底链，并且**丢掉**
+// `whenToUse`——而 `src/host/skills.ts` 的文件头把「AI 生成了 whenToUse 却被客户端丢弃」列为它修掉的
+// 上游缺陷。重导是**常规路径**（徽标的意义就是「改了就重导」），不补这条缺陷它就会原样复活。
+//
+// 做法（**零 host 改动**）：每条**成功**导出后，把这一次用过的 descriptor（`{name, description,
+// whenToUse}`）落进 meta；重导前读回来原样回传给 `POST /skills/export`（该路由本来就收 `descriptor`
+// 键，见 routes.ts 的技能导出分支）。meta 缺失 / 损坏 ⇒ 退回兜底链，**不失败**。
+//
+// ⚠️ **meta 键约定（T4 照抄这一条）**：每条提示词一个键，形如 `pl:skill-descriptor:<promptId>`，值是该
+// descriptor 的 JSON 文本。`pl:` 是本插件在宿主 meta 表里的命名空间，其后按 `<用途>:<promptId>` 排布。
+
+/** meta 键：某条提示词的 AI 技能 descriptor（约定见上）。 */
+export function skillDescriptorMetaKey(promptId: string): string {
+  return "pl:skill-descriptor:" + promptId;
+}
+
+/** 形状校验：只认 `{name, description, whenToUse?}` 三字段（多余键丢弃，不原样塞进请求体）。 */
+function isDescriptorPayload(value: unknown): value is SkillDescriptorPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  if (typeof v.name !== "string" || typeof v.description !== "string") return false;
+  return v.whenToUse === undefined || typeof v.whenToUse === "string";
+}
+
+/**
+ * meta 文本 → descriptor。空串（`store.getMetaValue` 的缺失值就是空串）/ 坏 JSON / 形状不符一律
+ * `undefined` = 退回兜底链，**绝不抛**——重导不能因为一段脏 meta 失败。
+ */
+export function parseStoredDescriptor(raw: string | undefined): SkillDescriptorPayload | undefined {
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    // 脏值的后果是「重导静默降级」，必须可见（但不得阻断）。
+    console.warn("[prompt-enhancer] 技能 descriptor 的 meta 不是合法 JSON（重导退回兜底链）", err);
+    return undefined;
+  }
+  if (!isDescriptorPayload(parsed)) {
+    console.warn("[prompt-enhancer] 技能 descriptor 的 meta 形状不符（重导退回兜底链）");
+    return undefined;
+  }
+  const out: SkillDescriptorPayload = { name: parsed.name, description: parsed.description };
+  if (parsed.whenToUse !== undefined) out.whenToUse = parsed.whenToUse;
+  return out;
+}
+
+/**
+ * 落库：把某条提示词**这一次用过的** descriptor 写进 meta（默认实现 = 既有 `api.setMeta`）。
+ *
+ * 失败只 `console.warn`：它只是重导时的提质信息，不得让一次**已经成功**的导出变成失败、也不得中断批次。
+ * 为什么写「每一次成功」而不是只写第一次：descriptor 里的 `name` 是重导时的目录名候选
+ * （宿主按 `toKebab(descriptor.name)` 落盘），每次成功都覆盖 ⇒ 它与库里的 `skillName` 始终同步。
+ */
+export async function persistDescriptor(promptId: string, descriptor: SkillDescriptorPayload): Promise<void> {
+  try {
+    await api.setMeta(skillDescriptorMetaKey(promptId), JSON.stringify(descriptor));
+  } catch (err) {
+    console.warn("[prompt-enhancer] 技能 descriptor 落 meta 失败（重导会退回兜底链）", err);
+  }
+}
+
+/**
+ * 读取：某条提示词首次导出时落下的 descriptor（`getMeta` 由调用方注入，真实现 = `api.getMeta`）。
+ * 缺省 / 损坏 / 读失败一律 `undefined` = 退回兜底链，**不失败**。
+ */
+export async function loadStoredDescriptor(
+  promptId: string,
+  getMeta: (key: string) => Promise<string>,
+): Promise<SkillDescriptorPayload | undefined> {
+  try {
+    return parseStoredDescriptor(await getMeta(skillDescriptorMetaKey(promptId)));
+  } catch (err) {
+    console.warn("[prompt-enhancer] 读取技能 descriptor 失败（重导退回兜底链）", err);
+    return undefined;
+  }
 }
 
 // ── 结果汇总 ─────────────────────────────────────────────────────────────────

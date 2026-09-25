@@ -53,6 +53,13 @@ function scriptedSend(script) {
   };
 }
 
+/**
+ * R-P7-AA（修复轮 1）：`exportEach` 每条成功导出后会调 `saveDescriptor`（缺省实现会走 `api.setMeta`）
+ * 把这一次用过的 descriptor 落 meta。本文件只测**编排**，故下面每处都显式注入空实现——保持用例
+ * hermetic（真实现的 HTTP 形状由打桩 fetch 覆盖）。**断言一行未动**，只是把新 effect 也注入掉。
+ */
+const noSave = async () => {};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // B 段：技能名规则与宿主同源（不是「两份一样的代码」，是同一个函数）
 // ─────────────────────────────────────────────────────────────────────────────
@@ -242,6 +249,7 @@ test("exportEach：预校验不通过就**不发请求**（负样本：名字非
     prompts: [prompt({ id: "a", title: "", body: "   " }), prompt({ id: "b" })],
     descriptors: { a: { ok: true, descriptor: descriptor({ name: "../evil", description: "" }) } },
     send: bad.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => {
       throw new Error("预校验失败时不得问冲突");
     },
@@ -258,6 +266,7 @@ test("exportEach：成功路径——请求带 kebab 名与 descriptor、conflic
     prompts: [prompt()],
     descriptors: { p1: { ok: true, descriptor: descriptor({ name: "Weekly Report" }) } },
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => {
       throw new Error("没有 409 时不得弹确认");
     },
@@ -280,6 +289,7 @@ test("exportEach：409 → 弹确认 → 重试**必须带 conflictConfirmed: tr
     prompts: [prompt({ id: "p1", title: "我的技能", skillName: "mine" })],
     descriptors: {},
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async (info) => {
       asked.push(info);
       return true;
@@ -301,6 +311,7 @@ test("exportEach：409 后用户取消 → declined（不覆盖、不算失败�
     prompts: [prompt({ skillName: "mine" })],
     descriptors: {},
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => false,
   });
   assert.equal(s.calls.length, 1, "取消后不得重试");
@@ -317,6 +328,7 @@ test("exportEach：确认后仍 409 → failed，且**不再二次询问**（不
     prompts: [prompt({ skillName: "mine" })],
     descriptors: {},
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => {
       asked++;
       return true;
@@ -336,6 +348,7 @@ test("exportEach：非 409 的宿主错误（400/404）→ failed，不弹确认
       prompts: [prompt()],
       descriptors: { p1: { ok: true, descriptor: descriptor({ name: "ok-name" }) } },
       send: s.send,
+      saveDescriptor: noSave,
       confirmConflict: async () => {
         asked++;
         return true;
@@ -354,6 +367,7 @@ test("exportEach：宿主回执没带 path → pathMissing（**不得**在客户
     prompts: [prompt()],
     descriptors: { p1: { ok: true, descriptor: descriptor({ name: "weekly-report" }) } },
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => false,
   });
   assert.equal(outcomes[0].status, "failed");
@@ -369,6 +383,7 @@ test("exportEach：超时等非 ApiError 异常 → failed（原样可见，不�
     prompts: [prompt()],
     descriptors: { p1: { ok: true, descriptor: descriptor({ name: "weekly-report" }) } },
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => true,
   });
   assert.equal(outcomes[0].status, "failed");
@@ -391,6 +406,7 @@ test("exportEach：一条失败不影响其余条目（逐条独立，结果与�
       c: { ok: true, descriptor: descriptor({ name: "skill-c" }) },
     },
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => true,
   });
   assert.deepEqual(outcomes.map((o) => o.status), ["exported", "failed", "exported"]);
@@ -470,6 +486,7 @@ test("exportEach + run（要求 1 + 要求 2）：取消后不再启动新条目
       run.cancel();
       return { name: "skill-" + p.id, path: "/h/skills/skill-" + p.id + "/SKILL.md" };
     },
+    saveDescriptor: noSave,
     confirmConflict: async () => {
       throw new Error("没有 409 时不得弹确认");
     },
@@ -492,6 +509,7 @@ test("exportEach + run（要求 3）：取消后已发出的 409 不再弹确认
       run.cancel();
       throw new ApiError("技能目录 mine 已存在，且不属于本插件的任何提示词（可能是你手写的技能）", 409);
     },
+    saveDescriptor: noSave,
     confirmConflict: async () => {
       asked++;
       return true;
@@ -513,6 +531,7 @@ test("exportEach：onExported 只对**成功**条目触发（失败 / 预校验�
       b: { ok: true, descriptor: descriptor({ name: "b-name" }) },
     },
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => false,
     onExported: (outcome) => broadcast.push(outcome.id),
   });
@@ -528,6 +547,7 @@ test("exportEach + run：**批次开始前**就已取消 ⇒ 一条请求都不�
     prompts: [prompt({ id: "a" })],
     descriptors: { a: { ok: true, descriptor: descriptor({ name: "x" }) } },
     send: s.send,
+    saveDescriptor: noSave,
     confirmConflict: async () => true,
     run,
   });
