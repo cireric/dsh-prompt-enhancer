@@ -767,7 +767,7 @@ frontmatter：name（必填）/ description（必填）/ whenToUse（可选）
 
 **影响范围**：§4.4（写回缝与切换语义）、§7.1（座位表不变，仅 M5 期临时入口位置）、§9.3（超时与忙态口径）；P5 计划的任务 1/2/4。
 
-### 13.9undefined 宿主契约订正与 P6 口径固化（2026-09-24，用户批准）
+### 13.9 宿主契约订正与 P6 口径固化（2026-09-24，用户批准）
 
 P6 计划撰写期现核实宿主（checkout `/Users/eric/Project/tests/deepseek-harness`，DSH Local Build `0.1.5-rc.2-c291`：读源码 + 活体只读探针）发现本规格 3 处与宿主事实不符，另需固化 1 条口径。用户逐条批准后就地订正。
 
@@ -794,5 +794,47 @@ P6 计划撰写期现核实宿主（checkout `/Users/eric/Project/tests/deepseek
 
 - **淘汰二次确认**：宿主 API 不含 dry-run 路由，故确认落在**客户端预检**——读 `GET /prompts` 与 `GET /settings.maxPromptCount`，按 §4.4 的同源排序键（`aiRefined` 升序、`lastUsedAt` 升序）预演受害者并二次确认；实际删除仍由 `POST /prompts` 执行，**结果提示以响应里的 `evicted` 为准**。客户端预演与 `store.enforceMaxCount` 的一致性由「双跑对照」单测保证。
 - **选区捕获的零 DOM 注入边界（正例清单）**：**允许**只读 `window.getSelection()` / `Node.closest('[data-conversation-scroll]')` / `Node.closest('[data-composer-seat]')`（宿主自身客户端代码即用此读到这两个 `data-*` 标记，见 `packages/client/ui-conversation/src/client/skeleton/InputBar.tsx:159-177,213`，且标记由 `ConversationRoot.tsx:367,376` 渲染）；**禁止**任何 DOM 写入（`appendChild` / `remove` / `setAttribute` 于宿主节点）与任何 `keydown|keyup|keypress` 监听。§7.1 的监听集合因此确定为 `selectionchange` + 捕获阶段 `pointerdown`/`pointerup` + `scroll`。
+
+## 13.10 P6 活体验收暴露的语义订正（2026-09-24，控制者裁决；授权同 §13.9）
+
+P6 的活 GUI 验收（T7 → T7b → T7c）实测暴露两处**规格字面与产品正确性冲突**，另有若干必须留档的取舍。就地订正，避免后人照 §4.4 的字面把已修的行为改回去。
+
+### 一、淘汰语义订正：本次创建的提示词**永不**成为受害者（R45）
+
+§4.4 原写「超限时优先淘汰 `aiRefined = 0` 且 `lastUsedAt` 最旧者」。按此字面，**刚保存的那条**（`aiRefined=false`、`lastUsedAt=0`）恰是最小元、应先被淘汰；与 `POST /prompts`「**先插入、后淘汰**」的次序叠加后，产生了 P6 实测缺陷 **D-1**：**二次确认弹窗列出的候选与实际被物理删除的对象可以完全不同**（实测：弹窗列旧条目、实际删掉刚保存的那条，还提示「旧提示词已被淘汰」）。
+
+订正后的语义：
+
+- `enforceMaxCount(maxCount, options?: { exceptId?: string })`：**受害者计数仍按全集**（`all.length - maxCount`，`all` 含新项），**只有候选排序集**剔除 `exceptId`；`POST /prompts` 传 `{ exceptId: created.id }`。
+- 排序键为**真全序** `(aiRefined asc, lastUsedAt asc, createdAt asc, id asc)`。`id` 只保证**确定性**与两端一致、**不承载语义**（导入路径会把备份里的 `createdAt` 原样写入，故必须补 `id` 兜底才能成全序）。
+- 理由：客户端**无法**预演新项（其 `id` 服务端生成、`createdAt` 可能并列），故「新项可能被淘汰」这一语义从根本上**不可如实告知**；唯一能让二次确认属实的方法是保证新项不被淘汰。
+
+### 二、客户端预演的口径（D-1 的成因，必须写死）
+
+`previewEvictions(prompts, maxCount, incoming)` 必须在**插入前**集合上计算（`incoming` 默认 1）。**不得**再以 `enforceMaxCount(max - incoming)` 作为「先插入再淘汰」的等价模型——P6 的单测正是靠这条错误口径掩盖了 D-1（其文件头一度写着「≡ 先落库 incoming 条再按 max 淘汰」，而真实路由次序相反）。一致性由**复刻真实调用序**的双跑用例锁定（`listPrompts() → previewEvictions(before, max, 1) → 真 createPrompt → 真 enforceMaxCount(max, { exceptId })`），且该用例**必须在去掉 `exceptId` 豁免时必然变红**。
+
+### 三、孤儿标签清理的爆炸半径（R46）
+
+`pruneOrphanTags` 只清**本次受害者引用过、且淘汰后已无引用**的标签行（与淘汰同事务）；**全库** `count=0` 标签的清理归管理面板的「清理无用标签」动作。原实现删全库会让一次**无关**的淘汰顺手删掉用户其它标签行（P6 复验期不得不用「保护载体」记录保命——那个 workaround 本身就是行为不可预测的证据）。
+
+### 四、两个浮层的互斥以「共享可见性信号 + 渲染不变式」为准（R53/R55）
+
+`#` 候选浮层与词库面板**不得同屏**。落地：
+
+- 浮层在 `visible` 变化时把「此刻是否真的可见」发布到 `ui-state.ts` 的共享信号（`setHashSuggestVisible` / `useHashSuggestVisible`），**并在卸载或隐藏时置 false**（否则会把面板永远压住）；
+- 词库面板以**渲染不变式**被门控：`panelOpen = open && !hashSuggestVisible`（纯函数 `ui-state.ts#shouldShowLibraryPanel`），**两处渲染门与 `aria-expanded` 共用同一个派生值**；
+- **不得**退化为「观察边沿」或「事后收起」：P6 曾用 `useEffect(..., [hashOpen])` 的边沿修法，而**键盘激活路径**（Tab 到按钮 + Enter，全程无 `pointerdown`）与「面板已开时在同一令牌内就地改写查询词」都不产生该边沿。把承重不变量建在「边沿恰好被观察到」上，与建在「别人的 CSS 恰好挡住了」上是同一类脆弱。
+
+### 五、留档的取舍与限制（**是取舍，不是缺陷**；后人不要当 bug 修）
+
+| # | 内容 | 依据 |
+| - | ---- | ---- |
+| 1 | **浮层可见期间键盘用户打不开词库面板**：Enter 只置位 `open`，渲染门恒 false，浮层消失后（令牌被清/点外收起）面板才出现。**鼠标路径不受影响**（pointerdown 先把信号降为 false）。 | R57（控制者接受为已记录取舍） |
+| 2 | **变量填窗的逐字输入随卸载丢失**：`values` 是 `TemplateVariablesDialog` 的组件局部 state，面板一关即卸载。可达语义只到「**保住已选提示词 + 动作**」。 | R54 残余 |
+| 3 | **组件接线无自动化断言**：本仓库无 react-dom / jsdom（硬约束 5 禁装），故「渲染门是否真的用了派生值」等只能由活体验收覆盖。 | 变异证据：把 `panelOpen` 降级为 `open` 后 172 测试仍全绿 |
+| 4 | **详情页「原文／优化稿」并排标签在「切一次 → 关面板 → 重开编辑」后会张冠李戴**：`POST /prompts/:id/rollback` 是 `swap`，宿主不记录方向（`aiRefined` 只在写回缝置位），客户端只能猜当前 `body` 是哪一侧。 | 最终评审 I-1（M6 期间只做到「不再用错误标签断言」；**根治需为方向定义持久化**，归 P7） |
+| 5 | **两浮层互斥目前只覆盖「词库面板 × `#` 浮层」一对**：`AI` 面板与 `#` 浮层、`AI` 面板与词库面板仍靠指针边沿。同类路径（`Shift+Tab` 回输入框 + 真实按键）已对第一对被**实测证明可达**，故其余两对**疑为可达但尚未活体复现**。 | 最终评审 I-2（**P7 首项**：先活体复现（照 O-1(c) 手法），可达则按 `ui-state` 的 `none/hash/library/ai` 枚举 + claim/release 收口） |
+
+**影响范围**：§4.4（淘汰语义与二次确认）、§7.1（两浮层的互斥实现）、P6 计划的任务 4/8/9；P7 若复用 `shell.overlay` 或新增浮层，须沿用第四条的「共享信号 + 渲染不变式」形态而不是边沿。
 
 
