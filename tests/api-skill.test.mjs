@@ -196,11 +196,33 @@ test("exportPromptAsSkill 500：信封失败同样带 status（不得静默返�
   }
 });
 
+test("exportPromptAsSkill：非 JSON 响应 → 可读 ApiError，带 HTTP 状态（与 aiSkillDescriptor 的覆盖对等）", async () => {
+  const s = stubFetch(() => ({
+    status: 504,
+    ok: false,
+    json: async () => {
+      throw new SyntaxError("Unexpected token < in JSON at position 0");
+    },
+  }));
+  try {
+    await assert.rejects(api.exportPromptAsSkill({ promptId: "p1" }), (err) => {
+      assert.ok(err instanceof ApiError);
+      assert.equal(err.status, 504);
+      assert.match(err.message, /504/);
+      return true;
+    });
+  } finally {
+    s.restore();
+  }
+});
+
 // ── 表面 ─────────────────────────────────────────────────────────────────────
 
-test("api 表面：P7 的两个新方法都在；status 语义（400/404/409/503）由 call() 统一承担", () => {
+test("api 表面：P7 的两个新方法都在，且各自只取**一个**入参对象（arity 是接口形态的一部分）", () => {
   assert.equal(typeof api.aiSkillDescriptor, "function");
   assert.equal(typeof api.exportPromptAsSkill, "function");
-  // 四态齐备不是靠本文件「记住」的：上面的用例逐条打桩验证过。这里只钉住两者都叫得上名字。
-  assert.equal(typeof api.aiSkillDescriptor.length, "number");
+  // 修复轮 1（复审 P3）：旧断言 `typeof ….length === "number"` 对**任何**函数恒真，等于没断言。
+  // arity 钉成 1：两个方法都只收一个入参对象（把入参对象拆成位置参数会当场变红）。
+  assert.equal(api.aiSkillDescriptor.length, 1, "aiSkillDescriptor 只取一个入参对象");
+  assert.equal(api.exportPromptAsSkill.length, 1, "exportPromptAsSkill 只取一个入参对象");
 });

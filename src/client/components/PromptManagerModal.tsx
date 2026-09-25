@@ -210,6 +210,9 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
     setTarget({ kind: "create", prefill: pending });
   }, [capture, panel]);
 
+  /** 内容区此刻展示的是技能导出页（`'skill'` 面板值）。激活态 / aria 的唯一派生点。 */
+  const showingSkill = panelValue === "skill";
+
   /** 换页签：离开详情页**与技能导出页**，再让 store 换页签（幂等由 store 负责）。 */
   const openPanel = (next: ManagerPanel): void => {
     setTarget(null);
@@ -239,14 +242,19 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
     >
       <div style={dialogHeader}>
         <span style={dialogTitle}>{t("manager.title")}</span>
+        {/*
+          R-P7-X 要求 4（无障碍错位）：技能导出页在场时，内容区展示的**不是**任何页签的内容，
+          故四个页签一律 `aria-selected={false}`、也不再高亮——视觉与读屏必须说同一件事。
+          （激活态与 aria 取自**同一个**派生值 `showingSkill`，避免两处各自判断后漂移。）
+        */}
         <div role="tablist" aria-label={t("manager.title")} style={dialogTabs}>
           {PANEL_ORDER.map((id) => (
             <button
               key={id}
               type="button"
               role="tab"
-              aria-selected={panel === id}
-              style={dialogTab(panel === id)}
+              aria-selected={!showingSkill && panel === id}
+              style={dialogTab(!showingSkill && panel === id)}
               onClick={() => openPanel(id)}
             >
               {t(PANEL_LABEL[id])}
@@ -259,7 +267,16 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
           type="button"
           data-prompt-enhancer-skill-open=""
           style={button}
-          onClick={() => onPanelValue("skill")}
+          onClick={() => {
+            /**
+             * 要求 5（返回落点与文案一致）：进技能页与**换页签**同款——先离开详情页（`setTarget(null)`），
+             * 于是「返回管理面板」的落点**确定**：一律回到当前页签的内容区（列表 / 标签 / 回收站 / 导入导出），
+             * 不会是「刚才那张没保存的详情页」。丢弃未保存详情的代价与既有「点页签换页」逐字相同
+             * （P6 起的既有交互模型，不是本轮新引入的差异）。
+             */
+            setTarget(null);
+            onPanelValue("skill");
+          }}
         >
           {t("manager.skill.open")}
         </button>
@@ -267,8 +284,13 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
           {t("manager.close")}
         </button>
       </div>
-      <div role="tabpanel" aria-label={t(PANEL_LABEL[panel])} style={dialogBody}>
-        {panelValue === "skill" ? (
+      <div
+        role="tabpanel"
+        // 要求 4：标签与**实际内容**一致——技能页在场时报技能页的名字，不报当前页签名。
+        aria-label={showingSkill ? t("manager.skill.title") : t(PANEL_LABEL[panel])}
+        style={dialogBody}
+      >
+        {showingSkill ? (
           /* 技能导出页（规格 §7.6）：管理面板栈里的一页，与详情页同级（都在本卡片的内容区）。 */
           <SkillExportModal t={t} onBack={() => onPanelValue(null)} />
         ) : (

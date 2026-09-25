@@ -41,6 +41,7 @@ import {
 } from "../utils/dialog-style.ts";
 import {
   collectTags,
+  createSkillRun,
   describeEach,
   exportEach,
   filterByTag,
@@ -52,6 +53,7 @@ import {
   toggleSelected,
   type DescriptorOutcome,
   type ExportOutcome,
+  type SkillRun,
 } from "../utils/skill-export.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
 
@@ -84,11 +86,20 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
   /** 编排级异常（纯函数内已逐条兜住，这里只留给「编排本身」出错，绝不静默）。 */
   const [fatal, setFatal] = React.useState<string | null>(null);
   const aliveRef = React.useRef(true);
+  /**
+   * 在途批次的取消令牌（R-P7-X 修复轮 1）。本组件卸载 = 「用户离开了技能页」（切页签 / 关闭面板 /
+   * 点遮罩关闭都换掉本页 ⇒ 卸载），此刻必须 `cancel()`：
+   *  · 要求 1：后续条目**不再启动**（在途那条不硬断——写盘是宿主的副作用，见 `SkillRun` 注释）；
+   *  · 要求 3：已经发出的 409 **不再弹**无上下文的确认框；
+   *  · 要求 2 不受影响：**已完成**的条目各自在成功那一刻广播（见下面的 `onExported`）。
+   */
+  const runRef = React.useRef<SkillRun | null>(null);
 
   React.useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      runRef.current?.cancel();
     };
   }, []);
 
@@ -124,6 +135,8 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
   /** 逐条 AI 补全：失败非阻断（语义在 `describeEach`），`onEach` 让每条的结果立刻落行内。 */
   const describeChosen = (): void => {
     if (!idle || chosen.length === 0) return;
+    const run = createSkillRun();
+    runRef.current = run;
     setBusy("describing");
     setOutcomes(null);
     setFatal(null);
@@ -138,8 +151,11 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
               summary: prompt.summary,
               tags: prompt.tags,
             }),
-          (id, outcome) => {
-            if (aliveRef.current) setDescriptors((prev) => ({ ...prev, [id]: outcome }));
+          {
+            run,
+            onEach: (id, outcome) => {
+              if (aliveRef.current) setDescriptors((prev) => ({ ...prev, [id]: outcome }));
+            },
           },
         );
       } catch (err) {
@@ -147,6 +163,7 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
         console.warn("[prompt-enhancer] 技能补全编排异常", err);
         if (aliveRef.current) setFatal(reasonOf(err));
       } finally {
+        runRef.current = null;
         if (aliveRef.current) setBusy("idle");
       }
     })();
@@ -155,6 +172,8 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
   /** 逐条导出：预校验 → 请求 → 409 走共享确认 → 带 conflictConfirmed 重试（全在纯函数里）。 */
   const runExport = (): void => {
     if (!idle || chosen.length === 0) return;
+    const run = createSkillRun();
+    runRef.current = run;
     setBusy("exporting");
     setOutcomes(null);
     setFatal(null);
@@ -163,6 +182,7 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
         const results = await exportEach({
           prompts: chosen,
           descriptors,
+          run,
           send: (prompt, request) =>
             api.exportPromptAsSkill({
               promptId: prompt.id,
@@ -179,15 +199,22 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
               confirmLabel: "manager.confirm.confirm",
               cancelLabel: "manager.confirm.cancel",
             }),
+          /**
+           * 要求 2：**每条成功即广播**，而不是等批次结束再广播一次。差别在「用户跑到一半就离开」：
+           * 组件卸载后批次仍会收尾（剩余条目不再启动），若广播挂在下面那段组件回调里就会一起被丢掉，
+           * 于是宿主已回写 `skillName` / `skillExportedAt` 而列表页不重拉 ⇒ 验收 16 的徽标不出现。
+           * 回调只依赖模块级的 `notifyDataChanged()`，与组件在世与否无关。
+           */
+          onExported: () => notifyDataChanged(),
         });
+        // 这里只负责渲染（组件已经走了就没有东西可渲染）：广播已在上面逐条完成。
         if (!aliveRef.current) return;
         setOutcomes(results);
-        // 有成功条目 ⇒ 宿主已回写 skillName / skillExportedAt：广播一次，让列表页等消费者重拉。
-        if (results.some((outcome) => outcome.status === "exported")) notifyDataChanged();
       } catch (err) {
         console.warn("[prompt-enhancer] 技能导出编排异常", err);
         if (aliveRef.current) setFatal(reasonOf(err));
       } finally {
+        runRef.current = null;
         if (aliveRef.current) setBusy("idle");
       }
     })();

@@ -17,6 +17,36 @@
 import { isValidSkillName, toKebab } from "../../skill-name.ts";
 import { ApiError, type SkillDescriptorPayload, type SkillExportReceipt } from "./api.ts";
 
+// ── 在途批次的取消令牌（R-P7-X 修复轮 1）────────────────────────────────────
+
+/**
+ * 一次在途批次（AI 补全或导出）的**取消令牌**。技能页卸载（= 用户离开，切页签 / 关闭面板）时
+ * `cancel()`；编排在**每个条目之前**读它，于是：
+ *
+ *  · **不再启动新条目**（要求 1）——已经开始的那条让它跑完，不硬断 HTTP；
+ *  · **不再弹出同名冲突确认**（要求 3）——离开后确认框没有上下文来源，用户不知道它在问什么；
+ *  · **已完成的条目照旧回调**（要求 2）——广播不能因为组件没了就被跳过（验收 16 的徽标依赖它）。
+ *
+ * 为什么不直接 `AbortSignal`：条目的 HTTP 是 `api.*` 内部的信封调用，且「取消」在这里的语义是
+ * 「别再开新的」而不是「掐断写盘」——写盘是宿主的**副作用**，中途掐断既拦不住已发出的请求，
+ * 又会把「成功但结果丢失」变成「成功/失败不明」。故取消做成**协作式**：条目边界上一个布尔量。
+ */
+export interface SkillRun {
+  cancelled: boolean;
+  cancel(): void;
+}
+
+/** 建一个未取消的令牌。 */
+export function createSkillRun(): SkillRun {
+  const run: SkillRun = {
+    cancelled: false,
+    cancel() {
+      run.cancelled = true;
+    },
+  };
+  return run;
+}
+
 /** 参与导出的提示词字段（窄接口：纯逻辑不依赖整条 `Prompt` 的其它字段）。 */
 export interface SkillCandidate {
   id: string;
@@ -151,6 +181,14 @@ export type DescriptorOutcome =
   | { ok: true; descriptor: SkillDescriptorPayload }
   | { ok: false; errorKey: "manager.skill.describeFailed"; detail: string };
 
+/** `describeEach` 的可选面：取消令牌与逐条回调。 */
+export interface DescribeEachOptions {
+  /** 取消令牌：置位后**不再启动新条目**（离开技能页的语义），已完成的条目仍会回调 `onEach`。 */
+  run?: SkillRun;
+  /** 每条结果的就地回调（UI 的响应式渲染点），不影响「失败不阻断」的语义。 */
+  onEach?: (id: string, outcome: DescriptorOutcome) => void;
+}
+
 /**
  * 逐条「AI 补全名称与描述」（`POST /ai/skill-descriptor`）——**失败非阻断**（规格 §7.6：
  * 「失败条目行内红色标注，不阻断其它条目」）。
@@ -158,14 +196,19 @@ export type DescriptorOutcome =
  * 这就是「不阻断」的**唯一实现点**：单条失败被就地记成 `{ok:false}` 并**继续下一条**，
  * 绝不 throw、绝不中途 return（AI 不可用时宿主回 503，用户仍应看到其余条目的补全结果）。
  * `onEach` 让 UI 能逐条刷新（响应式渲染点），不影响上面的语义。
+ *
+ * `options.run` 置位（用户已离开技能页）时**在条目边界停住**：不再发起新的 AI 调用，
+ * 返回已经拿到的那部分结果（`Object.keys` 少几条 = 停在了哪里，UI 侧已卸载、不再渲染）。
  */
 export async function describeEach(
   prompts: readonly SkillCandidate[],
   describeOne: (prompt: SkillCandidate) => Promise<SkillDescriptorPayload>,
-  onEach?: (id: string, outcome: DescriptorOutcome) => void,
+  options: DescribeEachOptions = {},
 ): Promise<Record<string, DescriptorOutcome>> {
   const out: Record<string, DescriptorOutcome> = {};
   for (const prompt of prompts) {
+    // 要求 1（AI 侧）：离开即停——不启动新条目。
+    if (options.run?.cancelled) break;
     let outcome: DescriptorOutcome;
     try {
       outcome = { ok: true, descriptor: await describeOne(prompt) };
@@ -173,7 +216,7 @@ export async function describeEach(
       outcome = { ok: false, errorKey: "manager.skill.describeFailed", detail: reasonOf(err) };
     }
     out[prompt.id] = outcome;
-    onEach?.(prompt.id, outcome);
+    options.onEach?.(prompt.id, outcome);
   }
   return out;
 }
@@ -206,6 +249,17 @@ export interface ExportEachInput {
   send: (prompt: SkillCandidate, request: SkillExportRequest) => Promise<SkillExportReceipt>;
   /** 同名目录不属于本插件时先问用户（真实现 = `confirm.ts#requestConfirm`）；返回 false = 不覆盖。 */
   confirmConflict: (info: { id: string; title: string; name: string; detail: string }) => Promise<boolean>;
+  /** 取消令牌：置位后**不再启动新条目**、也不再弹同名冲突确认（见 `SkillRun`）。 */
+  run?: SkillRun;
+  /**
+   * 每条**成功落盘之后**立即回调（真实现 = `notifyDataChanged()`）。
+   *
+   * 为什么做成回调而不是「批次结束后由调用方统一广播」：用户可能在批次跑到一半时离开技能页
+   * （组件卸载），若广播挂在批次末尾的组件回调里，就会随组件一起消失——宿主的 `skillName` /
+   * `skillExportedAt` 已写库，而列表页不重拉 ⇒ **验收 16 的徽标不出现**（「导出成功但什么都没发生」）。
+   * 回调在**每条成功的那一刻**触发，因此与组件在世与否无关（要求 2）。
+   */
+  onExported?: (outcome: ExportedOutcome) => void;
 }
 
 /**
@@ -218,10 +272,16 @@ export interface ExportEachInput {
  *     确认后重试仍失败 → failed（**不再二次询问**，否则用户确认一次就够，不该陷入循环）。
  *  3. **目标目录只取宿主回执**：`receipt.path` 缺席时显式报 `manager.skill.pathMissing`——
  *     客户端不知道 `DSH_HOME`，**不得**自己拼路径（这条同时挡住「假成功」）。
+ *  4. **离开即停 + 完成即广播**（R-P7-X 修复轮 1）：`run` 置位后不启动新条目、不再弹确认；
+ *     而每条**成功落盘**都立刻走 `onExported`（即使这一刻组件已经卸载）——见 `ExportEachInput`。
  */
 export async function exportEach(input: ExportEachInput): Promise<ExportOutcome[]> {
   const outcomes: ExportOutcome[] = [];
-  for (const prompt of input.prompts) outcomes.push(await exportOne(prompt, input));
+  for (const prompt of input.prompts) {
+    // 要求 1（导出侧）：离开即停——不启动新条目（已发出的那条让它跑完，见 SkillRun 的注释）。
+    if (input.run?.cancelled) break;
+    outcomes.push(await exportOne(prompt, input));
+  }
   return outcomes;
 }
 
@@ -239,6 +299,14 @@ async function exportOne(prompt: SkillCandidate, input: ExportEachInput): Promis
     receipt = await input.send(prompt, request);
   } catch (err) {
     if (!isConflict(err)) return failedOutcome(prompt, err);
+    /**
+     * 要求 3：用户已离开技能页 ⇒ **不弹**同名冲突确认。此刻弹出来的框没有任何上下文来源
+     * （技能页已卸载，用户不知道它在问哪一条），故按「没有确认 ⇒ 不覆盖」落地成 `declined`：
+     * 事实与「用户点了取消」逐字相同（未确认 ⇒ 未覆盖），且该条此刻无处渲染。
+     */
+    if (input.run?.cancelled) {
+      return { status: "declined", id: prompt.id, title: prompt.title, name: pre.name, detail: reasonOf(err) };
+    }
     const approved = await input.confirmConflict({
       id: prompt.id,
       title: prompt.title,
@@ -265,7 +333,14 @@ async function exportOne(prompt: SkillCandidate, input: ExportEachInput): Promis
     };
   }
   // 名字取**宿主回执**（它才是最终判定者），而不是预检算出来的那个。
-  return { status: "exported", id: prompt.id, title: prompt.title, name: receipt.name, path: receipt.path };
+  const exported: ExportedOutcome = { status: "exported", id: prompt.id, title: prompt.title, name: receipt.name, path: receipt.path };
+  /**
+   * 要求 2：**完成即广播**。宿主此刻已经把 `skillName` / `skillExportedAt` 写库，
+   * 数据变更必须让消费者知道——否则列表页不重拉、验收 16 的徽标不出现（「导出成功但什么都没发生」）。
+   * 回调里不得有任何依赖组件在世的东西（真实现只是 `notifyDataChanged()`）。
+   */
+  input.onExported?.(exported);
+  return exported;
 }
 
 /** 409 判定按 **HTTP 状态**（不匹配文案；宿主 409 专用于同名目录冲突）。 */

@@ -9,12 +9,17 @@
  *   ① 预校验（`isValidSkillName`）被绕过 → 「预校验先行的负样本」必红；
  *   ② 409 重试丢掉 `conflictConfirmed` → 「确认后重试必须带标记」必红；
  *   ③ AI 失败改成整体中止 → 「单条失败不阻断」必红。
+ *
+ * 修复轮 1（R-P7-X）追加（在同一批用例里做的变异验证）：
+ *   ④ 去掉「离开即停止」的条目边界检查 → 「不再启动新条目」必红；
+ *   ⑤ 去掉 onExported 回调 → 「完成即广播（组件卸载后仍广播）」必红。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const {
   collectTags,
+  createSkillRun,
   describeEach,
   exportEach,
   filterByTag,
@@ -208,7 +213,7 @@ test("describeEach：单条失败只记在该条上，其余条目照跑（AI �
       if (p.id === "b") throw new ApiError("AI 生成技能描述失败（no-llm）", 503);
       return descriptor({ name: "skill-" + p.id });
     },
-    (id, outcome) => seen.push([id, outcome.ok]),
+    { onEach: (id, outcome) => seen.push([id, outcome.ok]) },
   );
   assert.deepEqual(tried, ["a", "b", "c"], "失败的 b 不得中断 c");
   assert.equal(out.a.ok, true);
@@ -413,4 +418,119 @@ test("summarizeExport：三桶 + 计数 + total（UI 只渲染这个结构）", 
   assert.equal(summary.total, 4);
   const empty = summarizeExport([]);
   assert.deepEqual([empty.okCount, empty.failCount, empty.declinedCount, empty.total], [0, 0, 0, 0]);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 修复轮 1（R-P7-X）：在途离开的保护 —— 停止新条目 / 完成仍广播 / 不再弹确认
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("createSkillRun：新令牌未取消；cancel() 置位且幂等", () => {
+  const run = createSkillRun();
+  assert.equal(run.cancelled, false);
+  run.cancel();
+  assert.equal(run.cancelled, true);
+  run.cancel();
+  assert.equal(run.cancelled, true, "重复取消是幂等空操作（卸载清理可能多次跑到）");
+});
+
+test("describeEach + run（要求 1）：取消后不再启动新条目，已经发起的那条照常收下结果", async () => {
+  const list = [prompt({ id: "a" }), prompt({ id: "b" }), prompt({ id: "c" })];
+  const run = createSkillRun();
+  const tried = [];
+  const out = await describeEach(
+    list,
+    async (p) => {
+      tried.push(p.id);
+      // 模拟「用户在第一条在途时离开技能页」：卸载清理把令牌置位。
+      run.cancel();
+      return descriptor({ name: "skill-" + p.id });
+    },
+    { run },
+  );
+  assert.deepEqual(tried, ["a"], "b / c 不得被发起（离开即停）");
+  assert.deepEqual(Object.keys(out), ["a"], "返回已经拿到的那部分（UI 侧已卸载，不再渲染）");
+  assert.equal(out.a.ok, true, "在途那条不硬断：它跑完并留下结果");
+});
+
+test("exportEach + run（要求 1 + 要求 2）：取消后不再启动新条目，但**已完成的那条仍然广播**", async () => {
+  const list = [prompt({ id: "a" }), prompt({ id: "b" }), prompt({ id: "c" })];
+  const run = createSkillRun();
+  const sent = [];
+  const broadcast = [];
+  const outcomes = await exportEach({
+    prompts: list,
+    descriptors: {
+      a: { ok: true, descriptor: descriptor({ name: "skill-a" }) },
+      b: { ok: true, descriptor: descriptor({ name: "skill-b" }) },
+      c: { ok: true, descriptor: descriptor({ name: "skill-c" }) },
+    },
+    send: async (p) => {
+      sent.push(p.id);
+      // 第一条在途时用户离开技能页（组件卸载 ⇒ cancel()），但**该条已经落盘**。
+      run.cancel();
+      return { name: "skill-" + p.id, path: "/h/skills/skill-" + p.id + "/SKILL.md" };
+    },
+    confirmConflict: async () => {
+      throw new Error("没有 409 时不得弹确认");
+    },
+    run,
+    onExported: (outcome) => broadcast.push(outcome.id),
+  });
+  assert.deepEqual(sent, ["a"], "b / c 不得被发起（离开即停）");
+  assert.deepEqual(broadcast, ["a"], "已完成条目的广播不得因为组件没了就被跳过（验收 16 的徽标依赖它）");
+  assert.deepEqual(outcomes.map((o) => o.status), ["exported"]);
+});
+
+test("exportEach + run（要求 3）：取消后已发出的 409 不再弹确认，落成 declined（未确认 ⇒ 不覆盖）", async () => {
+  const run = createSkillRun();
+  let asked = 0;
+  const outcomes = await exportEach({
+    prompts: [prompt({ skillName: "mine" }), prompt({ id: "b", skillName: "mine" })],
+    descriptors: {},
+    send: async () => {
+      // 请求已发出 → 用户此刻离开 → 宿主才回 409。
+      run.cancel();
+      throw new ApiError("技能目录 mine 已存在，且不属于本插件的任何提示词（可能是你手写的技能）", 409);
+    },
+    confirmConflict: async () => {
+      asked++;
+      return true;
+    },
+    run,
+  });
+  assert.equal(asked, 0, "离开后不得再弹没有上下文来源的同名冲突确认框");
+  assert.deepEqual(outcomes.map((o) => o.status), ["declined"], "同一事实：没有确认 ⇒ 不覆盖");
+  assert.equal(outcomes[0].name, "mine");
+});
+
+test("exportEach：onExported 只对**成功**条目触发（失败 / 预校验拒绝都不广播）", async () => {
+  const broadcast = [];
+  const s = scriptedSend([{ name: "ok-name", path: "/h/skills/ok-name/SKILL.md" }, new ApiError("提示词不存在", 404)]);
+  const outcomes = await exportEach({
+    prompts: [prompt({ id: "a" }), prompt({ id: "b" }), prompt({ id: "c", title: "", body: "   " })],
+    descriptors: {
+      a: { ok: true, descriptor: descriptor({ name: "ok-name" }) },
+      b: { ok: true, descriptor: descriptor({ name: "b-name" }) },
+    },
+    send: s.send,
+    confirmConflict: async () => false,
+    onExported: (outcome) => broadcast.push(outcome.id),
+  });
+  assert.deepEqual(outcomes.map((o) => o.status), ["exported", "failed", "failed"]);
+  assert.deepEqual(broadcast, ["a"], "失败（404）与预校验拒绝都不得广播：宿主没写库");
+});
+
+test("exportEach + run：**批次开始前**就已取消 ⇒ 一条请求都不发（边界情形）", async () => {
+  const run = createSkillRun();
+  run.cancel();
+  const s = scriptedSend([{ name: "x", path: "/h/skills/x/SKILL.md" }]);
+  const outcomes = await exportEach({
+    prompts: [prompt({ id: "a" })],
+    descriptors: { a: { ok: true, descriptor: descriptor({ name: "x" }) } },
+    send: s.send,
+    confirmConflict: async () => true,
+    run,
+  });
+  assert.equal(s.calls.length, 0);
+  assert.deepEqual(outcomes, []);
 });
