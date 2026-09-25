@@ -26,8 +26,10 @@ export type SidebarPromptEntryProps = PropsRuntime<"sidebar.footer.action"> &
 
 /**
  * 宽窄两态：`wide === false` 是 56px 收起轨道，只放图标（正方形点击区）；`wide === true` 出文字。
- * 宽态几何与宿主条目同形（P8 T8，反馈 F1）：内容左对齐、行高 42、`0 10px` 内边距、无自绘描边、
- * 填满该行（宿主 `SidebarRoot.module.css:388-389`：每个 occupant 自负 button geometry）；
+ * 宽态几何与宿主条目同形（P8 T8，反馈 F1；R1 采纳两条修复）：内容左对齐、行高 42、宿主实测的
+ * 非对称内边距 `0 10px 0 8px`（内容起始 x 与宿主相同）、无自绘描边、以 `flex: 1` + `minWidth: 0`
+ * 填满该行（与宿主同类整行 occupant 同形，不再靠 `width: 100%` 撑满；
+ * 宿主 `SidebarRoot.module.css:388-389`：每个 occupant 自负 button geometry）；
  * 轨道态保持 P6 活体验收时的现状（28×28、内容居中、无内边距、含 1px 描边——56px 轨道是另一视觉语境）。
  * 仍不引任何 UI 依赖。
  */
@@ -38,9 +40,10 @@ function entryStyle(wide: SidebarFooterActionOwnerProps["wide"]): React.CSSPrope
     justifyContent: wide ? "flex-start" : "center",
     gap: 4,
     height: wide ? 42 : 28,
-    width: wide ? "100%" : 28,
-    padding: wide ? "0 10px" : 0,
-    flex: "0 0 auto",
+    width: wide ? undefined : 28,
+    padding: wide ? "0 10px 0 8px" : 0,
+    flex: wide ? "1" : "0 0 auto",
+    minWidth: wide ? 0 : undefined,
     fontSize: 12,
     color: TOKEN.fg,
     background: "transparent",
