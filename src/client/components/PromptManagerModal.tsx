@@ -58,12 +58,13 @@ import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { promptSummary } from "../utils/insert.ts";
 import {
   UNKNOWN_READING,
-  canPersistDirection,
+  applyToggleDirection,
   compareLabelKeys,
   loadStoredDirection,
   oppositeDirection,
-  persistDirectionAfterToggle,
   readRefinedDirection,
+  shouldAcceptLateRead,
+  toggleDirectionWrite,
 } from "../utils/refined-direction.ts";
 import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
 import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
@@ -621,12 +622,22 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     initial === null ? undefined : null,
   );
 
+  /**
+   * 本页**已成功切换的次数**（每次挂载从 0 起）。只有一个用途：**迟到的 meta 读结果**若发现自己出生在
+   * 一次切换之前，就必须丢弃——那条记录描述的是切换**之前**的内容（R-P7-AE 的第二条修法）。
+   */
+  const toggleSeqRef = React.useRef(0);
+
   React.useEffect(() => {
     const id = initial === null ? null : initial.id; // 新建态：还没有 id，也就没有方向记录可读
     if (id === null) return;
     let alive = true;
+    const seqAtStart = toggleSeqRef.current;
     void loadStoredDirection(id, api.getMeta).then((raw) => {
-      if (alive) setStoredDirection(raw);
+      if (!alive) return;
+      // 迟到的读：读取开始之后发生过切换 ⇒ 丢弃（`shouldAcceptLateRead` 是纯决策，有用例）。
+      if (!shouldAcceptLateRead(toggleSeqRef.current !== seqAtStart)) return;
+      setStoredDirection(raw);
     });
     return () => {
       alive = false;
@@ -688,9 +699,9 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
 
   /**
    * §4.4 切换：宿主执行 swap(body, sourceBody)，返回值整条替换本地态（可反复点）。
-   * T4（I-1 根治）：宿主只换正文、不留方向 ⇒ **有记录**时切换要把**翻转后的方向**落 meta，否则
-   * 重开编辑页就会张冠李戴；**兜底 / 读取中不落**（`persistDirectionAfterToggle` 的内部闸门，
-   * R-P7-AC：落一个猜出来的方向 = 用户任何操作都修不好的错误标注）。
+   * T4（I-1 根治）：宿主只换正文、不留方向 ⇒ **有记录**时切换要把**翻转后的方向**落 meta；
+   * **来源未知**（没有记录 / 脏值 / 读取中 / 读失败）时则**作废**那条记录（R-P7-AE：切换改变了真值，
+   * 旧记录不会跟着翻转 ⇒ 留着它就是一条会反相、且用户无法纠正的错记录）。决策是纯函数，组件只接线。
    */
   const toggle = (): void => {
     if (busy !== "idle" || current === null) return;
@@ -701,17 +712,22 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     void (async () => {
       try {
         const swapped = await api.rollbackPrompt(id);
-        // 落库闸门在 persistDirectionAfterToggle 内部：来源是 `record` 才写**翻转后的**方向，
-        // 兜底 / 读取中一次 setMeta 都不发（**猜测不得被固化**）。它**不依赖组件是否还在世**：宿主
-        // 此刻已经 swap 完，记录晚写或不写就等于「重开编辑页张冠李戴」（同 skill-export「完成即广播」）。
+        // R-P7-AE：切换改变了真值 ⇒ 库里那条记录必须跟着失效（决策是纯函数 toggleDirectionWrite）：
+        //   · record ⇒ 写**翻转后的**方向；
+        //   · 未知（没有记录 / 脏值 / **读取中** / 读失败）⇒ **作废**（写空串）——宁可退回中性，也不留
+        //     一条会反相的陈旧记录；本地态同时回到「没有记录」；
+        //   · 只有一侧 ⇒ 什么都不写。
+        // 它**不依赖组件是否还在世**（宿主已经 swap 完，记不下来下次打开就会按陈旧记录张冠李戴）；
         // 失败只 warn（内部），不改变下面的结局，也不阻塞广播。
-        const persistable = canPersistDirection(reading);
-        void persistDirectionAfterToggle(id, reading);
+        const action = toggleDirectionWrite(current, reading);
+        toggleSeqRef.current += 1; // 让本次挂载里在途的读结果作废（迟到的读不得覆盖本地态）
+        void applyToggleDirection(id, current, reading);
         if (!aliveRef.current) return;
         setCurrent(swapped);
         setBody(swapped.body);
-        // 本地态与落库值同源（同一次判定的翻转）：屏上的标注与下一次读回来的记录必然一致。
-        if (persistable) setStoredDirection(oppositeDirection(direction));
+        // 本地态与落库值同源（同一个决策）：屏上的标注与下一次读回来的记录必然一致。
+        if (action === "persist") setStoredDirection(oppositeDirection(direction));
+        else if (action === "clear") setStoredDirection(undefined);
         notifyDataChanged();
       } catch (err) {
         console.warn("[prompt-enhancer] 两份正文互换失败", err);

@@ -20,6 +20,16 @@
  *   ⇒ 老记录（P6 期 / 导入）永远是中性（不会被自信地标错，也不再可能被点成反相）；
  *     新记录（经过一次 AI 写回）全程可持久化。
  *
+ * ⚠️ **R-P7-AE（修复轮 2）：来源未知时的切换必须让记录**一起失效**。**
+ * 切换改变的是**真值**（`body` / `sourceBody` 对调），而「来源未知 ⇒ 不落库」意味着那条**可能存在的**
+ * 记录不会跟着翻转 ⇒ 它**变成了错的**，下一次挂载还会把它当作有效记录采信（自信且用户无法纠正的反相
+ * 标注——与 R-P7-AC 要消灭的伤害同类，而且**不需要写入任何猜测**就能产生）。故现在两条硬规则：
+ *
+ *   · 来源未知（没有记录 / 脏值 / **读取中** / 读失败）时切换 ⇒ **作废记录**（写空串，走既有
+ *     `setMeta`，不需要新 API；空串在本模块就是「没有记录」）——宁可退回中性，也不留会反相的陈旧记录；
+ *   · **迟到的读结果**若出生在切换之前 ⇒ **丢弃**（`shouldAcceptLateRead`），不得覆盖本地态。
+ * 两条都是**纯决策**（`toggleDirectionWrite` / `shouldAcceptLateRead`），`.tsx` 只接线。
+ *
  * 为什么单独成 `.ts` 模块（P6 的 I-4 教训，与 `skill-export.ts` 同款）：弹窗是 `.tsx`，而
  * `node --test` **import 不了**（`ERR_UNKNOWN_FILE_EXTENSION`）。故判定 / 来源 / 翻转 /「方向 →
  * 标注」的映射 / 落库闸门都必须待在这里；组件只做接线（接线的正确性归 T5 活体验收，不在此造空洞断言）。
@@ -204,17 +214,73 @@ export async function saveRefinedDirection(
   }
 }
 
+/** 切换成功后**该写什么**：`persist` = 写翻转后的方向；`clear` = 作废那条可能已陈旧的记录（写空串）；`none` = 什么都不写。 */
+export type ToggleWrite = "persist" | "clear" | "none";
+
 /**
- * 切换成功后落库的**唯一入口**（组件只调它）：来源是 `record` 才写**翻转后的**方向并返回它；
- * 兜底 / 读取中一律返回 `undefined` 且**一次 `setMeta` 都不发**（这就是「猜测不得被固化」的证据面）。
- * 写失败只 warn（`saveRefinedDirection` 内部），绝不抛。
+ * 纯决策（R-P7-AE 的第一条修法）：切换（宿主 swap）之后，库里那条记录该被怎么处理。
+ *
+ * 关键：**切换改变的是真值**（`body` / `sourceBody` 对调），所以任何「可能存在的记录」在切换之后都
+ * **不再可信**——尤其当来源未知（没有记录 / 脏值 / **读取中** / 读失败）时，那条记录**没有跟着翻转**，
+ * 它就变成了错的，而下一次挂载还会把它当作有效记录采信 ⇒ 自信且用户无法纠正的反相标注
+ * （与 R-P7-AC 要消灭的伤害同类，且**不需要写入任何猜测**就能产生）。
+ *
+ *   · 来源 `record` ⇒ `persist`（写翻转后的方向，正常路径）；
+ *   · 来源未知且两侧都在 ⇒ `clear`（**作废**：写空串。宁可退回「不知道」的中性，也不留一条会反相的
+ *     陈旧记录——包括顺手清掉一条脏值）；
+ *   · 只有一侧 ⇒ `none`（没有第二侧 ⇒ 谈不上方向，也没有需要作废的记录）。
  */
-export async function persistDirectionAfterToggle(
+export function toggleDirectionWrite(prompt: DirectionCarrier, reading: DirectionReading): ToggleWrite {
+  if (!hasTwoBodies(prompt)) return "none";
+  return canPersistDirection(reading) ? "persist" : "clear";
+}
+
+/**
+ * 纯决策（R-P7-AE 的第二条修法）：**迟到的读结果**是否采信。
+ *
+ * `toggledSinceRead` = 这次读**开始之后**是否发生过切换。为真时那个返回值描述的是**切换之前**的内容：
+ * 贴到屏上就是错标注（库里虽然已被作废，屏上仍会先闪一帧错的，并让本地态误以为「有记录」）。故一律
+ * 丢弃；为假（读取期间没有切换）才采信。
+ */
+export function shouldAcceptLateRead(toggledSinceRead: boolean): boolean {
+  return !toggledSinceRead;
+}
+
+/**
+ * **作废**记录：把键写**空串**（T4 约束 A.3 认可的清理路径；本模块对「没有记录」的判据就是空串 / 缺失，
+ * 见 `parseStoredDirection`）。走既有 `api.setMeta`，**不需要新 API、不需要新依赖**。
+ *
+ * 失败只 warn：与其它 meta 写同款——一次库写失败不得把一次**成功**的切换变成失败（代价是本次作废没落库，
+ * 即「不动它」的旧行为，严格不比修复前更糟；报告 §9 已记这条残差）。
+ */
+export async function clearRefinedDirection(
   promptId: string,
+  setMeta: MetaWriter = (key, value) => api.setMeta(key, value),
+): Promise<void> {
+  try {
+    await setMeta(refinedDirectionMetaKey(promptId), "");
+  } catch (err) {
+    console.warn("[prompt-enhancer] 「原文 / 优化稿」方向的旧记录作废失败（下次打开可能采信一条已陈旧的记录）", err);
+  }
+}
+
+/**
+ * 切换成功后落库的**唯一入口**（组件只调它）：按 `toggleDirectionWrite` 的决策执行——
+ * `persist` 写**翻转后的**方向并返回它；`clear` 写空串并返回 `undefined`（本地态应回到「没有记录」）；
+ * `none` **一次 `setMeta` 都不发**。写失败只 warn（内部），绝不抛。
+ */
+export async function applyToggleDirection(
+  promptId: string,
+  prompt: DirectionCarrier,
   reading: DirectionReading,
   setMeta: MetaWriter = (key, value) => api.setMeta(key, value),
 ): Promise<RefinedDirection | undefined> {
-  if (!canPersistDirection(reading)) return undefined;
+  const action = toggleDirectionWrite(prompt, reading);
+  if (action === "none") return undefined;
+  if (action === "clear") {
+    await clearRefinedDirection(promptId, setMeta);
+    return undefined;
+  }
   const next = oppositeDirection(reading.direction);
   await saveRefinedDirection(promptId, next, setMeta);
   return next;
