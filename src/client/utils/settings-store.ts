@@ -71,8 +71,10 @@ function tryFallbackRead(): void {
  * （设置页写、别的标签页写、外部改 settings.yaml 都一样），store 据此换快照并广播给全部消费点。
  * 不订阅就只剩「注入那一刻的一次读」——那正是本任务要消灭的「mount 时读一次」。
  *
- * 注销（`next === null`）时补一次降级读：这条路径正是「本部署没有 settingsScope」与
- * 「scope 被卸载」的入口，快照落回默认值后再尽力取一次真实值。
+ * 注销（`next === null`）时重新武装并补一次降级读。注意**服务缺席**时本回调根本不会被执行
+ * （cordis 只在服务就位时调用 `ctx.inject` 的回调），故降级读的真实入口是**首次消费**；这条
+ * `null` 跃迁只出现在 inject disposer（服务被运行时撤下 / 插件卸载），保留它是因为服务被撤下后
+ * 快照需要重新取一次真值。
  */
 export function setSettingsScope(next: ClientSettingsScope | null): void {
   unsubscribeScope?.();
@@ -81,7 +83,7 @@ export function setSettingsScope(next: ClientSettingsScope | null): void {
   if (next !== null) unsubscribeScope = next.subscribe(derive);
   derive();
   if (next === null) {
-    // 显式进入「无 scope」缺失期：重新武装一次降级读（无 settingsScope 的部署兜底入口）。
+    // 服务被运行时撤下 ⇒ 重新武装一次降级读（快照重新取真值）。
     fallbackAttempted = false;
     tryFallbackRead();
   }
