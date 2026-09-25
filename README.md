@@ -58,13 +58,14 @@ The work ran as eight plans (P1–P8) under `docs/superpowers/plans/`; the desig
 
 ## Known limitations
 
-These are deliberate trade-offs recorded during development, not open bugs — please don't "fix" them without a design decision (spec §13.10-五, §13.11-五):
+These are deliberate trade-offs recorded during development, not open bugs — please don't "fix" them without a design decision (spec §13.10-五, §13.11-五, §13.12-五):
 
 1. **While the `#` overlay is on screen, a non-pointer activation cannot open the library panel** (spec §13.10-五-1). The gate branches on the activation channel: an activation with `event.detail === 0` — keyboard Enter/Space, `element.click()`, some assistive technology — is only let through when the overlay is absent, while a real pointer click (`detail > 0`) always is. A non-pointer activation does not latch the panel open, so once the overlay disappears you have to activate once more. The pointer path is unaffected, down to a down→up interval of 0 ms.
 2. **Per-keystroke input in the variable fill dialog is lost when the dialog unmounts** (spec §13.10-五-2). `values` is component-local state of `TemplateVariablesDialog`; closing the panel unmounts it. Only the selected prompt and the pending action survive.
 3. **Component wiring has no automated assertions** (spec §13.10-五-3). This repository has no react-dom/jsdom (hard constraint 5 forbids installing them), so invariants such as "the render gate really uses the derived value" are covered only by live acceptance. Mutation evidence: degrading `panelOpen` to `open` leaves the whole test suite green.
 4. **Type `#`, close the library panel, and the `#` overlay does not return by itself** (P8 ruling TBD-P8-6). Programmatic focus + Range restore does not bring it back on screen; only real typing does. Recorded as a trade-off, not a defect.
 5. **The AI result panel geometrically covers the composer** (P8 ruling TBD-P8-6). Its anchor and the matching setting belong to the overlay-placement / panel-size design space; explicitly recorded and **left unchanged** in this milestone.
+6. **With all three visibility toggles (`showComposerButton` / `showAIPolishButton` / `showSidebarButton`) set to `false`, the sidebar entry still renders once with the defaults before disappearing** (spec §13.12-五; M8 live acceptance §12.5). The rAF sampling run took 409 frames over 7.0 s: the two composer buttons were on screen for **0 frames**, the sidebar entry for **2 frames** (frames 5–6, t≈335 ms) — about 33 ms of flash. Cause: the settings store supplies the **defaults** until the host `settingsScope` snapshot arrives (`SidebarPromptEntry.tsx` consuming `useSettings()` + `settings-store.ts`). Left unfixed deliberately: eliminating it would re-introduce the "not-ready null state" this milestone explicitly removed — a loading gap instead of visible defaults, plus a nullable store read across every `useSettings()` call site — a cost higher than the benefit.
 
 ## systemPrompt footprint
 

@@ -460,10 +460,12 @@ frontmatter：name（必填）/ description（必填）/ whenToUse（可选）
 - `shell.overlay` — *"Frame-wide floating layer, above every column and outside their scroll containers"*；`kind: list` / `scope: root` / `replaceRisk: none` / `occupants: []`；由 root 布局条目声明，**始终挂载**；该层默认 click-through，挂载方需自行开启 pointer-events。**这是弹窗的官方根级宿主座位。**
 - 弹窗开合状态由模块级 store（`ui-state.ts`）+ 开/关动作共享，**不通过组件耦合**：输入框按钮与左侧入口都只调 `openManager()`（同进程，符合 D6）。
 
-`inject = ["slots", "locale", "workspaces", "uiConversation"]`
+`export const inject = ["slots", "locale"]`——**导出数组只有这两项**（`src/client/index.ts`，`scripts/smoke.mjs` 对其有 deep-equal 断言）。其余服务**不扩张导出数组**，一律走**条件注入** `ctx.inject([...], cb)`，共 4 段、按调用顺序固定为 `["slots"] → ["uiWorkspace"] → ["uiConversation"] → ["settingsScope"]`（smoke 的 `EXPECTED_INJECT_DEPS` 逐条断言）：
 
-- `workspaces`：导出目录选择（D5）
-- `uiConversation`：`ContextRecommendations` 经 `conversation-targets.ts` 的 `useConversationTargetSnapshot` 读取当前会话 chat 快照，抽取最近用户消息作为上下文关键词——**这是必需的**（实测 `ContextRecommendations.tsx` 的 import）
+- `slots` / `locale`（导出数组的两项）：座位的注册面与 i18n 字典的构造；`ctx.inject(["slots"], …)` 只是取一个类型化 scope 去注册座位，**不是新增依赖**。
+- `uiWorkspace`（条件注入）：导出目录选择（D5）。**缺席降级**：能力为 `null` ⇒ `isDirectoryPickerAvailable()` 为 false，导出按钮渲染为**禁用 + 可读原因**，`pickExportDirectory()` **抛可读错误**（不静默返回 null）；其余功能不受影响（D-P6-4）。
+- `uiConversation`（条件注入）：`ContextRecommendations` 经 `conversation-targets.ts` 的 `useConversationTargetSnapshot` 读取当前会话 chat 快照，抽取最近用户消息作为上下文关键词——**这是聊天上下文的唯一活数据源**（实测 `ContextRecommendations.tsx` 的 import）。**缺席降级**：推荐退化为「**只用当前草稿**」——推荐仍可用、**不崩**。
+- `settingsScope`（条件注入）：设置唯一真源（详 §13.12-一）。**缺席降级**：store 回落 `DEFAULT_SETTINGS`，并在**首次消费**做**一次**尽力而为的 `GET /settings`（失败只留一行 warn、不重试不轮询），拿到真 scope 后丢弃该 HTTP 结果。
 
 ### 7.1.1 上下文推荐的确定参数（搬运参考项目实测值）
 
@@ -941,8 +943,9 @@ P6 的活 GUI 验收（T7 → T7b → T7c）实测暴露两处**规格字面与�
 | - | ---- | ----------- |
 | 1 | **`#` 候选浮层在词库面板关闭后不会自己回来**：程序化 focus + Range 无效，**只有真实键入**才重新在屏 | P7 §10.4-7 已判定为**非缺陷**（同源：宿主无公开 composer focus 面，见 §13.8-问题三）；P8 裁定 **TBD-P8-6 (a)** 留档不改 |
 | 2 | **AI 结果面板在几何上覆盖 composer** | 属**浮层落点与设置项（面板尺寸）**范畴，动它是设计取舍；P5 已记（O-3），P6 分拣表第 11 行与 P8 的 TBD-P8-6 均**留档不修** |
+| 3 | **关闭侧栏入口时，它在首屏仍会先按默认渲染约 2 帧（≈33ms）再消失**——三个显隐开关（`showComposerButton` / `showAIPolishButton` / `showSidebarButton`）全设 `false` 后新开页加载：两个 composer 按钮在屏 **0 帧**，侧栏入口 **2 帧**后消失 | **成因**：设置 store 在宿主 `settingsScope` 快照到达之前提供**默认值**（`SidebarPromptEntry.tsx` 消费 `useSettings()` 的默认快照 + `src/client/utils/settings-store.ts` 的「默认值 → 宿主首推」窗口）。**为何不修**：消除它需重新引入 P8 明确移除的「**未就绪 null 态**」——把「默认值可见」换成「加载态空窗」，并把 store 读口变成可空类型（波及全部 `useSettings()` 调用点），代价高于收益。**判据来源**：M8 活体验收记录（§12.5，rAF 采样 409 帧 / 7.0s，侧栏入口第 5–6 帧 t≈335ms） |
 
-两条均已写进 README 的「Known limitations」节（同一裁定 TBD-P8-6），**不是静默省略**。
+三条均已写进 README 的「Known limitations」节（第 1、2 条为同一裁定 TBD-P8-6；第 3 条按控制者 M8 裁决改档为「已知限制 / 不修」），**不是静默省略**。
 
 ### 六、本轮的订正记录（让后来者看到什么曾是错的）
 
