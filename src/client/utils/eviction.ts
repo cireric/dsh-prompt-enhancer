@@ -10,7 +10,9 @@
  * 正是刚保存的那条，而本函数只能列出既有条目 → 确认框撒谎（T7 C10 = D-1）。
  * 因此本函数**不需要**为新语义改动：它本来就是「插入前集合 + 含新项的计数」这个精确模型。
  * 详见 `src/host/store.ts#enforceMaxCount` 的 R45 段。
- * ⚠️ 排序键**必须**与 `src/host/store.ts` 的 `enforceMaxCount` 同源，且**必须是全序**：
+ * ⚠️ 排序键的**唯一实现**在 `src/eviction-order.ts#compareEvictionOrder`（R59 / F-3：原先本文件与
+ * `src/host/store.ts#enforceMaxCount` 各写一份「逐字同键同序」，靠注释对齐——本项目已因两端口径不一致
+ * 炸过一次（D-1），故抽成共享模块，两端 import 同一个比较器），且**必须是全序**：
  *   `aiRefined` 升序 → `lastUsedAt` 升序 → `createdAt` 升序 → `id` 升序。
  * 前两键是 §4.4 的语义（未经人工确认的优先、最久未用的优先）；后两键是**去并列兜底**——
  * 它们不承载语义，只保证「同一集合 → 唯一顺序 → 两端同一批受害者」。
@@ -26,6 +28,7 @@
  *
  * 本模块是纯函数层：只 `import type`，不触达 react / fetch，Node 可直接 import 执行。
  */
+import { compareEvictionOrder } from "../../eviction-order.ts";
 import type { Prompt } from "../../types.ts";
 
 /**
@@ -40,15 +43,10 @@ export function previewEvictions(prompts: Prompt[], maxCount: number, incoming: 
   if (over === 0) return [];
   return (
     [...prompts]
-      // ⇄ 本键序是 §4.4 的**单一事实源**：与 src/host/store.ts#enforceMaxCount 逐字同键同序，
-      //   改任一侧必须同改另一侧（一致性由 tests/eviction.test.mjs 的双跑对照逐 id 锁死）。
-      .sort(
-        (a, b) =>
-          Number(a.aiRefined) - Number(b.aiRefined) ||
-          a.lastUsedAt - b.lastUsedAt ||
-          a.createdAt - b.createdAt ||
-          (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-      )
+      // ⇄ 比较器来自 `src/eviction-order.ts`（**唯一实现**，与 store.ts#enforceMaxCount 同一个）：
+      //   本处不再手抄键序，改键序请改那个模块。
+      //   一致性由 tests/eviction.test.mjs 的双跑对照逐 id 锁死（保留）。
+      .sort(compareEvictionOrder)
       .slice(0, over)
   );
 }

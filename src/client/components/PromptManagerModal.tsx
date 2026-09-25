@@ -514,9 +514,17 @@ interface PromptDetailProps {
  * 详情页（简报步骤 4 + 5）：标题 / 正文 / 标签 / 摘要可编辑 → `updatePrompt(id, PromptWritablePatch)`
  * （**不传** `sourceBody` / `aiRefined`，它们不在宿主白名单）；保存成功后 `notifyDataChanged()`。
  *
- * §4.4 的「原文 / 优化稿」并排对比 + 切换承接 §13.8 决定二（P5 期临时落在 AI 结果面板内）：
+ * §4.4 的「两份正文」并排对比 + 互换承接 §13.8 决定二（P5 期临时落在 AI 结果面板内）：
  * 仅 `canToggle(prompt)` 为真时渲染；切换走 `POST /prompts/:id/rollback`（宿主语义是 **swap**），
  * 用返回的整条 `Prompt` 替换本地态，故可反复点。失败按 R27 走 `error.*` 文案 + `console.warn`。
+ *
+ * ⚠️ **R59（F-5 / I-1 的部分收口）：两栏不得声称某一栏是「原文」或「优化稿」。** `rollback` 是 swap，
+ * 宿主**不记录方向**（`aiRefined` 只在 AI 写回缝置位），客户端无从知道哪一份是原文：切一次
+ * → 关面板 → 重开编辑页，左栏会显示优化稿却标着 Original、右栏显示原文却标着 Refined（C8 只因切了
+ * 两次回到自洽态才没炸）。本次只做「**不再用错误标签断言方向**」：栏标题按**实际字段**给
+ * （`body` = 当前正文，`sourceBody` = 另一份），并去掉按猜测方向着色的 `bodyIsOriginal` 状态与
+ * `Current body: …` 那行。**根治（为方向做持久化）归 P7**（规格 §13.10-五-4），本次不引入新存储键、
+ * 不改宿主路由；切换按钮与 `canToggle` 守卫保留（能力不减）。
  */
 function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElement {
   const initial = target.kind === "edit" ? target.prompt : null;
@@ -527,12 +535,6 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
   const [summary, setSummary] = React.useState(initial ? (initial.summary ?? "") : "");
   /** 本页挂着的库记录：编辑态是宿主返回值，新建态在 create 成功后落库（之前为 null）。 */
   const [current, setCurrent] = React.useState<Prompt | null>(initial);
-  /**
-   * 当前正文装的是**原文**还是**优化稿**。初值取 false（正文 = 优化稿）：唯一会写 `sourceBody`
-   * 的路径是 §4.4 的 AI 写回缝（`sourceBody ← 旧 body`），即刚写回时 body 是新稿、sourceBody 是原文；
-   * 之后每次切换（swap）两边互换，故该标志随之取反。
-   */
-  const [bodyIsOriginal, setBodyIsOriginal] = React.useState(false);
   const [busy, setBusy] = React.useState<"idle" | "saving" | "toggling">("idle");
   const [failure, setFailure] = React.useState<{ key: PromptEnhancerKey; detail: string } | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -598,7 +600,11 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     })();
   };
 
-  /** §4.4 切换：宿主执行 swap(body, sourceBody)，返回值整条替换本地态（可反复点）。 */
+  /**
+   * §4.4 切换：宿主执行 swap(body, sourceBody)，返回值整条替换本地态（可反复点）。
+   * R59：**不再翻转任何「方向」标志**——客户端无从知道交换后哪一份成了原文（见文件头 F-5 段），
+   * 两栏标题按返回记录的实际字段渲染，故交换后自然跟着换位。
+   */
   const toggle = (): void => {
     if (busy !== "idle" || current === null) return;
     const id = current.id;
@@ -611,10 +617,9 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
         if (!aliveRef.current) return;
         setCurrent(swapped);
         setBody(swapped.body);
-        setBodyIsOriginal((prev) => !prev);
         notifyDataChanged();
       } catch (err) {
-        console.warn("[prompt-enhancer] 原文 / 优化稿切换失败", err);
+        console.warn("[prompt-enhancer] 两份正文互换失败", err);
         if (!aliveRef.current) return;
         // R27：切换失败**不得**复用 ai.* 系（那是 AI 调用文案）。404 = 记录已不存在（复用 P4 键），
         // 其余（宿主此路由只另有 400「没有可回退的原文」）走新键 error.rollbackNoSource。
@@ -629,8 +634,10 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     })();
   };
 
-  const originalBody = current === null ? "" : bodyIsOriginal ? current.body : (current.sourceBody ?? "");
-  const refinedBody = current === null ? "" : bodyIsOriginal ? (current.sourceBody ?? "") : current.body;
+  // R59：栏标题只说**事实**——本页可直接编辑的那一份是 `body`，另一份是 `sourceBody`
+  // （`canToggle` 保证它非空）。不再用「原文 / 优化稿」这类客户端猜不出来的方向断言。
+  const currentBodyShown = current === null ? "" : current.body;
+  const counterpartBody = current === null ? "" : (current.sourceBody ?? "");
   const busyButton = blankBody || busy !== "idle";
 
   return (
@@ -709,22 +716,18 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
       </div>
       {current !== null && canToggle(current) && (
         <>
-          <span style={dialogTitle}>
-            {t("manager.compare.original")} / {t("manager.compare.refined")}
-          </span>
+          <span style={dialogTitle}>{t("manager.compare.title")}</span>
           <div style={compareGrid}>
             <span style={compareBlock}>
-              <span style={compareHead}>{t("manager.compare.original")}</span>
-              <span style={compareBody}>{originalBody}</span>
+              <span style={compareHead}>{t("manager.compare.current")}</span>
+              <span style={compareBody}>{currentBodyShown}</span>
             </span>
             <span style={compareBlock}>
-              <span style={compareHead}>{t("manager.compare.refined")}</span>
-              <span style={compareBody}>{refinedBody}</span>
+              <span style={compareHead}>{t("manager.compare.counterpart")}</span>
+              <span style={compareBody}>{counterpartBody}</span>
             </span>
           </div>
-          <span style={muted}>
-            {t(bodyIsOriginal ? "manager.compare.showingOriginal" : "manager.compare.showingRefined")}
-          </span>
+          <span style={muted}>{t("manager.compare.unknownDirection")}</span>
           <div style={actions}>
             <button
               type="button"

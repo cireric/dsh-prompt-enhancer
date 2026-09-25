@@ -16,6 +16,7 @@ import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { createDatabase } from "./node-sqlite.ts";
 import { dbPath } from "./paths.ts";
+import { compareEvictionOrder } from "../eviction-order.ts";
 import {
   BACKUP_VERSION,
   SCHEMA_VERSION,
@@ -805,6 +806,7 @@ function pruneOrphanTags(cur: DatabaseSync, candidateNames: Iterable<string>): v
  * 超过上限时物理删除（不进回收站），返回被淘汰的 id。
  * 顺序：**`aiRefined = 0` 优先**（未经人工确认价值），其次 `lastUsedAt` 最旧、`createdAt` 最旧，
  * 最后以 `id` 升序兜底——规格 §4.4，与上游的 `usageCount` 升序**不同**，不得照抄上游（P2-D3）。
+ * 键序的**唯一实现**是 `src/eviction-order.ts#compareEvictionOrder`（见下方 ⇄ 段）。
  *
  * 必须是**全序**（修复轮 1 的评审阻断项）：客户端预检读的是 `GET /prompts` 的 default 排序
  * （最新优先），而本函数读 `selectAllPrompts()`（无 `ORDER BY` = 插入序）——同一集合、**不同顺序**。
@@ -812,9 +814,10 @@ function pruneOrphanTags(cur: DatabaseSync, candidateNames: Iterable<string>): v
  * 才能让「弹窗列的受害者」与「实际被物理删除的对象」必然一致。`createdAt` 也会并列
  * （导入把备份里的 `createdAt` 原样写入，见 `validateBackup`），故 `id` 兜底不是可选项。
  *
- * ⇄ **同源排序键**：`src/client/utils/eviction.ts#previewEvictions` 逐键复现这里的受害者
- * （宿主没有 dry-run 路由，§4.4 的二次确认靠客户端预演）。本键序是 §4.4 的**单一事实源**，
- * 改任一侧**必须**同改另一侧；一致性由 `tests/eviction.test.mjs` 的「真实序列」逐 id 锁死。
+ * ⇄ **排序键的唯一实现**在 `src/eviction-order.ts#compareEvictionOrder`（R59 / F-3）：本函数与
+ * `src/client/utils/eviction.ts#previewEvictions`（宿主没有 dry-run 路由，§4.4 的二次确认靠客户端
+ * 预演）**import 同一个比较器**，不再各抄一份「靠注释对齐」的键序。改键序只改那个模块；
+ * 「两端给出同一批受害者 / 同一顺序」由 `tests/eviction.test.mjs` 的「真实序列」逐 id 锁死（保留）。
  *
  * **R45（T8，D-1 修复）：本次调用豁免一条 id。** `POST /prompts` 的落库顺序是「先 `createPrompt`
  * 再调本函数」，故新项此刻已在库里，且它的键恒为 `(aiRefined=false, lastUsedAt=0, createdAt=最新)`——
@@ -841,15 +844,9 @@ export function enforceMaxCount(maxCount: number, options: { exceptId?: string }
   const candidates = options.exceptId === undefined ? all : all.filter((p) => p.id !== options.exceptId);
 
   const victims = [...candidates]
-    // ⇄ 本键序是 §4.4 的**单一事实源**：与 src/client/utils/eviction.ts#previewEvictions 逐字同键同序，
-    //   改任一侧必须同改另一侧。
-    .sort(
-      (a, b) =>
-        Number(a.aiRefined) - Number(b.aiRefined) ||
-        a.lastUsedAt - b.lastUsedAt ||
-        a.createdAt - b.createdAt ||
-        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-    )
+    // ⇄ 比较器来自 `src/eviction-order.ts`（**唯一实现**；客户端预检 eviction.ts 用的是同一个）：
+    //   本处不再手抄键序，改键序请改那个模块。
+    .sort(compareEvictionOrder)
     .slice(0, over);
 
   inTransaction(cur, () => {

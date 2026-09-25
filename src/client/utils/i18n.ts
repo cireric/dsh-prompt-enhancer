@@ -89,12 +89,13 @@ export const zh = {
   "manager.edit.saving": "正在保存…",
   "manager.edit.saved": "已保存",
   "manager.edit.back": "返回列表",
-  "manager.compare.original": "原文",
-  "manager.compare.refined": "优化稿",
-  "manager.compare.toggle": "切换原文 / 优化稿",
-  "manager.compare.toggling": "正在切换…",
-  "manager.compare.showingOriginal": "当前正文：原文",
-  "manager.compare.showingRefined": "当前正文：优化稿",
+  // R59（F-5）：中性表述——宿主不记录方向，客户端不得声称某一栏是原文或优化稿。
+  "manager.compare.title": "两份正文",
+  "manager.compare.current": "当前正文",
+  "manager.compare.counterpart": "另一份",
+  "manager.compare.toggle": "互换两份正文",
+  "manager.compare.toggling": "正在互换…",
+  "manager.compare.unknownDirection": "宿主不记录哪一份是原文，这里只并列两份正文；互换后两份对调。",
 
   // ── P6 T4：标签页 / 回收站页 / 共享确认弹窗 / 淘汰二次确认 ────────────────
   "manager.tags.empty": "还没有标签",
@@ -263,12 +264,13 @@ export const en: Record<keyof typeof zh, string> = {
   "manager.edit.saving": "Saving…",
   "manager.edit.saved": "Saved",
   "manager.edit.back": "Back to list",
-  "manager.compare.original": "Original",
-  "manager.compare.refined": "Refined",
-  "manager.compare.toggle": "Toggle original / refined",
-  "manager.compare.toggling": "Switching…",
-  "manager.compare.showingOriginal": "Current body: original",
-  "manager.compare.showingRefined": "Current body: refined",
+  // R59 (F-5): neutral wording — the host does not record which body is the original.
+  "manager.compare.title": "Two bodies",
+  "manager.compare.current": "Current body",
+  "manager.compare.counterpart": "The other body",
+  "manager.compare.toggle": "Swap the two bodies",
+  "manager.compare.toggling": "Swapping…",
+  "manager.compare.unknownDirection": "The host does not record which body is the original, so both are shown side by side; swapping exchanges them.",
 
   // ── P6 T4: tags / trash / shared confirm / pre-eviction confirmation ─────
   "manager.tags.empty": "No tags yet",

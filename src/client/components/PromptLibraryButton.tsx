@@ -73,7 +73,8 @@ export function PromptLibraryButton({
    * R55：面板此刻是否真的渲染 = 「用户打开了它」**且**「`#` 浮层没在屏上」（不变式走渲染门，
    * 见 `ui-state.ts#shouldShowLibraryPanel`）。两处渲染门与 `aria-expanded` **共用**它，
    * 避免「面板没渲染但 aria 说展开了」。下方订阅边沿（`hashVisible` 上升沿那条）是**互补**的一条：
-   * 它把 `open` 也收回 false，使按钮的「再点一次收起」与浮层消失后的自动重现都保持自洽。
+   * 它把 `open` 也收回 false：按钮的「再点一次收起」由此自洽，而**浮层消失时面板不会自动重现**
+   * （R58 ② 订正：这条 effect 是 `setOpen(false)`，恰恰**阻止**自动重现；用户须再点一次按钮）。
    */
   const panelOpen = shouldShowLibraryPanel({ open, hashSuggestVisible: hashVisible });
   // 设置只读一次；读失败退回默认值（按钮照常可用），原因留在 console。
@@ -155,6 +156,8 @@ export function PromptLibraryButton({
   /**
    * R53：`#` 候选浮层**此刻真实可见**时收起词库面板（R47 只覆盖「点词库按钮」这一个指针入口，
    * 反向入口——输入框仍持焦点时敲 `#`、或浮层在同一令牌内被改写查询词后重现——会让两浮层同屏）。
+   * R59 起「点词库按钮」这一入口的判定在**动作侧**（按钮 onClick 的 `if (hashVisible) return;`）：
+   * 它让本组件不再产生「open 为真而面板不可见」的状态，本 effect 仍是把 open 收回 false 的那条。
    *
    * 订阅的是浮层自己发布的可见性（取代 R49 的 `hashOpen` 边沿：**一个门而不是两个**），
    * 且只观察 **false→true 边沿**（effect 依赖该布尔值，同值不重跑）：
@@ -164,7 +167,8 @@ export function PromptLibraryButton({
    * - 浮层已被收起（令牌仍在）时：信号恒 false，库侧无需关，也不存在上升沿。
    *
    * R55 起这条是**互补**的：同屏已由渲染门 `panelOpen = open && !hashVisible` 在结构上挡死，
-   * 本 effect 负责把 `open` 也收回 false（按钮的「再点一次收起」与浮层消失后自动重现都靠它自洽）。
+   * 本 effect 负责把 `open` 也收回 false。R58 ②（措辞订正）：收回 `open` 的后果恰恰是**浮层消失时
+   * 面板不会自动重现**——用户须再点一次按钮（这正是「一个门、一个派生值」的自洽形态，不是漏做）。
    *
    * R54：这里**只关面板、不清 pending**——浮层抢屏不是用户放弃变量填窗，清掉会让「已点动作、
    * 正等回填」的填窗选择静默消失。显式关闭路径（`close()`：点按钮/点浮层外/取消/已插入）才连
@@ -228,7 +232,21 @@ export function PromptLibraryButton({
         aria-haspopup="dialog"
         aria-expanded={panelOpen}
         onClick={() => {
-          if (open) close();
+          // R59（F-1 / I-3）：**动作侧闸门**，消除「open 为真而面板不可见」这个状态本身。
+          //
+          // 必须在最前：键盘 Enter/Space 激活这一拍**没有 pointerdown**（R57 路径），此时
+          // `hashVisible` 仍为 true——若这里不拦，Enter 就会置位一个渲染不出来的 open；
+          // 随后用户改用鼠标点同一按钮 → 那时 `panelOpen` 已随 pointerdown 转真 → 走 close()，
+          // 一次点击既没开面板、又**连带清掉 pending**（绕过 R54 对「已点动作、正等回填」的保护）。
+          // 这里直接 return，连 open 都不置位，背离状态无从产生。
+          //
+          // 鼠标路径不经此分支：按钮上的 pointerdown 已先让浮层收起 → hashVisible=false →
+          // panelOpen===open===false → 下面 setOpen(true) 正常打开。
+          //
+          // 不判 open 的原因（控制者原修法已被评审者否掉）：pointerdown 收起浮层后 React 会在
+          // click 派发**之前**重渲染，onClick 拿到的是新闭包——两种判定在鼠标路径下都会读到「真」。
+          if (hashVisible) return;
+          if (panelOpen) close();
           else setOpen(true);
         }}
       >

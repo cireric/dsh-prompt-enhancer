@@ -64,26 +64,84 @@ test("i18n：键名正则拒绝空段、首尾点与首字母大写的段（a..b
 //     就能骗过检查（本次 T6 的三个死键正是这种形态：只剩 PromptManagerModal 的注释提到它们）；
 //   · 键名拼接等动态引用同样不算，必须在下面的显式豁免清单里逐条声明理由。
 //
+// R59（F-4 / I-6）：haystack **必须先剥掉注释**再判定。旧判定直接扫原文，于是在某个源文件里写
+// 一行 `// 删掉 "manager.list.deleted"`（引号形态）就能让那个键逃过检查——一条注释即可骗过整项
+// 检查。剥注释后「只出现在注释里」= 死键；负样本见文件末尾的合成文本用例（与下面共用同一对
+// 函数，不是另写一份判定）。
+//
 // 显式豁免清单当前**为空**：实测 src/** 里没有任何键只靠动态引用而从不以字面量出现。
 // 将来若出现合法动态引用，在这里加 { key, why } 并写明理由——不得把本检查放宽成宽泛正则。
 const DYNAMIC_KEY_EXEMPTIONS = [];
 
-/** 把 src/** （排除字典自身）的全部源码拼成一段文本，供字面量精确匹配。 */
+/**
+ * 把 src/** （排除字典自身）的全部源码拼成一段文本，供字面量精确匹配。
+ * R59（F-4）：**先剥注释再拼**——注释里的引号键名不得算作引用（负样本见文件末尾）。
+ */
 function collectSourceText() {
   const srcDir = fileURLToPath(new URL("../src", import.meta.url));
   const files = readdirSync(srcDir, { recursive: true })
     .map(String)
     .filter((rel) => (rel.endsWith(".ts") || rel.endsWith(".tsx")) && !rel.endsWith("i18n.ts"));
   assert.ok(files.length > 0, "必须真的扫到 src/** 的源码（0 个文件 = 本检查是空转）");
-  return files.map((rel) => readFileSync(join(srcDir, rel), "utf8")).join("\n");
+  return stripComments(files.map((rel) => readFileSync(join(srcDir, rel), "utf8")).join("\n"));
+}
+
+/**
+ * 剥掉注释（F-4）：**块注释先**、行注释后。顺序不是随意的——先剪行注释会把跨行块注释留在半截
+ * 状态，剩余的正则可能一路吃到后面某个块注释结尾，把中间的真代码整段剪掉（误报死键）。
+ *
+ * 取舍：字符串 / 模板串里的双斜杠或块注释开头也会被误伤（把该行/该段剪掉）。方向是**保守**的：
+ * 只会让某个真引用看不见 → 误报死键（红），绝不会凭空造出一个引用（假绿）。三行正则，不引入
+ * 解析器或第三方依赖（硬约束 5）。
+ */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+/** 死键判定：键必须以带引号的整键字面量出现在**剥掉注释后**的文本里（入参即 stripComments 的输出）。 */
+function deadKeysIn(text, keys, exempt) {
+  return keys.filter(
+    (key) => !exempt.has(key) && !text.includes('"' + key + '"') && !text.includes("'" + key + "'"),
+  );
 }
 
 test("i18n：无死键——每个键都在 src/** 里作为字符串字面量被引用（A11 / R42）", () => {
-  const text = collectSourceText();
+  const text = collectSourceText(); // 已剥注释（F-4）
   for (const e of DYNAMIC_KEY_EXEMPTIONS) assert.ok(e.why.trim() !== "", e.key + " 的豁免理由不得为空");
   const exempt = new Set(DYNAMIC_KEY_EXEMPTIONS.map((e) => e.key));
-  const dead = Object.keys(i18n.zh).filter(
-    (key) => !exempt.has(key) && !text.includes('"' + key + '"') && !text.includes("'" + key + "'"),
-  );
+  const dead = deadKeysIn(text, Object.keys(i18n.zh), exempt);
   assert.deepEqual(dead, [], "以下键在 src/** 里没有任何字符串字面量引用（死键：删除，或在豁免清单里写明理由）：" + dead.join(", "));
+});
+
+// ── R59（F-4 / I-6）：注释剥离的负样本 ──────────────────────────────────────
+//
+// 只出现在注释里的引号键名**必须**判为死键：否则在源文件里写一行 `// 删掉 "xxx.nobodyUsesMe"` 就能
+// 让一个没人用的键永久逃检。本用例走的是与上面那条**同一对函数**（stripComments + deadKeysIn），
+// 不是另写一份判定——否则它只证明「测试自己会剥注释」。
+//
+// 变异验证（报告里逐次记录）：在 src 里临时加一个只出现在注释中的字典键（zh + en 各一条 + 一行注释）
+// → 上面那条死键用例必红；复原后必绿。
+test("i18n：负样本——只在注释里出现的引号键名必须判为死键（F-4 / I-6）", () => {
+  const synthetic = [
+    'const live = t("manager.compare.title");',
+    'const quoted = "manager.compare.current";',
+    "// 删掉 \"gone.nobodyUsesMe\"",
+    '/* 也是注释：\'block.nobodyUsesMe\' */',
+  ].join("\n");
+  assert.deepEqual(
+    deadKeysIn(stripComments(synthetic), [
+      "manager.compare.title",
+      "manager.compare.current",
+      "gone.nobodyUsesMe",
+      "block.nobodyUsesMe",
+    ], new Set()),
+    ["gone.nobodyUsesMe", "block.nobodyUsesMe"],
+    "行注释与块注释里的引号键名都必须被剥掉；字符串字面量里的真引用必须保留",
+  );
+  // 反面对照：不剥注释时这一对键会被误判为「活着」（旧检查的漏，正是本条负样本要钉住的缺陷）。
+  assert.deepEqual(
+    deadKeysIn(synthetic, ["gone.nobodyUsesMe", "block.nobodyUsesMe"], new Set()),
+    [],
+    "不剥注释时注释里的键名会被当成引用——这就是修复前的漏判形态（防止有人把 stripComments 从管线里摘掉）",
+  );
 });
