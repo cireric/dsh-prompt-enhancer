@@ -17,6 +17,7 @@ const { API_PREFIX, DEFAULT_SETTINGS } = await import("../src/types.ts");
 const { ApiError } = await import("../src/client/utils/api.ts");
 const { createFromCapture } = await import("../src/client/utils/capture.ts");
 const { getConfirmSnapshot, resolveConfirm } = await import("../src/client/utils/confirm.ts");
+const { setSettingsScope } = await import("../src/client/utils/settings-store.ts");
 const { subscribeDataChanged } = await import("../src/client/utils/data-sync.ts");
 const { previewEvictions } = await import("../src/client/utils/eviction.ts");
 
@@ -132,6 +133,22 @@ function overLimitFixture() {
   return { prompts, settings: { ...DEFAULT_SETTINGS, maxPromptCount: 3 } };
 }
 
+/**
+ * 把夹具里的设置装进**设置唯一真源**（D-P8-2 / P8 T1）。
+ *
+ * 为什么夹具必须走这一步：`capture.ts` 的超限预检读的是 `getSettingsSnapshot()`，不再走
+ * `GET /settings` ⇒ 只打桩 fetch 的话预检会看到默认的 300 条上限，淘汰路径永不触发。
+ * 用**假 scope** 注入（`scope !== null` ⇒ 不会触发 HTTP 降级读），因此既不改动任何断言，
+ * 也不往 fetch 桩的调用账本里多记一笔。
+ */
+function installSettings(settings) {
+  setSettingsScope({
+    getSnapshot: () => ({ status: "ready", value: settings }),
+    subscribe: () => () => {},
+    set: () => Promise.resolve(),
+  });
+}
+
 /** 未超限夹具：上限远大于条数，预检必然为空。 */
 function underLimitFixture() {
   return { prompts: [mk("a", "旧 A", false, 5)], settings: { ...DEFAULT_SETTINGS, maxPromptCount: 10 } };
@@ -139,6 +156,7 @@ function underLimitFixture() {
 
 test("出口 1 未超限：不弹确认、直接创建，返回 { ok:true, prompt, evicted }（标题首行兜底 + 载荷透传）", async () => {
   const { prompts, settings } = underLimitFixture();
+  installSettings(settings);
   const created = mk("new", "第一行");
   const s = stubFetch(
     routes({ prompts, settings, create: () => jsonRes({ ok: true, data: { prompt: created, evicted: [] } }) }),
@@ -173,6 +191,7 @@ test("出口 1 未超限：不弹确认、直接创建，返回 { ok:true, promp
 
 test("出口 2 超限：弹确认，detail 逐字等于预演出的受害者标题；确认前一条也不创建", async () => {
   const { prompts, settings } = overLimitFixture();
+  installSettings(settings);
   const created = mk("new", "新的一条");
   const s = stubFetch(
     routes({
@@ -236,6 +255,7 @@ test("出口 2 超限：弹确认，detail 逐字等于预演出的受害者标�
 
 test("出口 3 取消：返回 { ok:false, reason:'cancelled' }，POST /prompts 一次都没发、也不广播", async () => {
   const { prompts, settings } = overLimitFixture();
+  installSettings(settings);
   const s = stubFetch(
     routes({
       prompts,
@@ -265,6 +285,7 @@ test("出口 3 取消：返回 { ok:false, reason:'cancelled' }，POST /prompts 
 
 test("出口 4 create 抛错：原样上抛（同一对象）、不转成 cancelled、不广播", async () => {
   const { prompts, settings } = overLimitFixture();
+  installSettings(settings);
   const boom = new Error("磁盘满了");
   const s = stubFetch(
     routes({
@@ -302,6 +323,7 @@ test("出口 4 create 抛错：原样上抛（同一对象）、不转成 cancel
 
   // 第二种失败形态：宿主回信封失败（HTTP 500）——同样上抛 ApiError，而不是被转成 cancelled 返回值。
   const under = underLimitFixture();
+  installSettings(under.settings);
   const s2 = stubFetch(
     routes({
       prompts: under.prompts,
@@ -328,6 +350,7 @@ test("出口 4 create 抛错：原样上抛（同一对象）、不转成 cancel
 test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清两把**——被淘汰者不进回收站，故这是唯一清理点", async () => {
   // 宿主一次淘汰多条（预检只看得见插入前的集合，真正的受害者名单由宿主事务定）⇒ 回执里的 id 全都要清。
   const { prompts, settings } = overLimitFixture();
+  installSettings(settings);
   const created = mk("new", "新的一条");
   const evicted = [prompts[0].id, prompts[1].id];
   const s = stubFetch(routes({ prompts, settings, create: () => jsonRes({ ok: true, data: { prompt: created, evicted } }) }));
@@ -370,6 +393,7 @@ test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清两把**
 
 test("出口 6（重要-4）：一条 DELETE 永远挂着，保存反馈照样立刻落地（不阻塞）", async () => {
   const { prompts, settings } = overLimitFixture();
+  installSettings(settings);
   const created = mk("new", "新的一条");
   const s = stubFetch((url, init) => {
     const method = init?.method ?? "GET";
@@ -403,6 +427,7 @@ test("出口 6（重要-4）：一条 DELETE 永远挂着，保存反馈照样�
 
 test("出口 6b（重要-4）：多条清键**并发在途**（串行 await ⇒ 至多 1 条在途，本用例必红）", async () => {
   const { prompts, settings } = overLimitFixture();
+  installSettings(settings);
   const created = mk("new", "新的一条");
   const evicted = [prompts[0].id, prompts[1].id]; // 2 个 id × 2 把键 = 4 条清键请求
   let inFlight = 0;

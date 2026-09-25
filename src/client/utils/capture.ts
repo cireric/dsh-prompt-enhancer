@@ -3,7 +3,7 @@
  * 四个入口都走这里（R31 把 AI 面板从直连 `api.createPrompt` 收回）。
  *
  * 它负责 §4.4 的**淘汰二次确认（客户端预检）**与落库：
- *   1. 读现状与上限：`Promise.all([api.listPrompts(), api.getSettings()])`；
+ *   1. 读现状与上限：`await api.listPrompts()` + `getSettingsSnapshot()`（设置唯一真源，D-P8-2）；
  *   2. `previewEvictions(prompts, maxPromptCount, 1)` → 非空则弹确认（明细 = 将淘汰的标题）；
  *   3. 用户取消 → `{ ok: false, reason: "cancelled" }`：**不创建、不留半成品、不渲染成错误**；
  *   4. 同意或无需淘汰 → `api.createPrompt` → 成功后 `notifyDataChanged()` → `{ ok: true, … }`；
@@ -23,6 +23,7 @@ import { api } from "./api.ts";
 import { requestConfirm } from "./confirm.ts";
 import { notifyDataChanged } from "./data-sync.ts";
 import { previewEvictions } from "./eviction.ts";
+import { getSettingsSnapshot } from "./settings-store.ts";
 
 /** 沉淀载荷：标题可省（B/C 两个入口只有正文），正文必填。 */
 export interface CaptureInput {
@@ -49,7 +50,10 @@ function fallbackTitle(body: string): string {
 /** 创建一条提示词（超限时先二次确认）并广播数据变更。 */
 export async function createFromCapture(input: CaptureInput): Promise<CaptureOutcome> {
   // 1) 读现状与上限——宿主没有 dry-run 路由，预检只能在客户端做（规格 §13.9 四）。
-  const [prompts, settings] = await Promise.all([api.listPrompts(), api.getSettings()]);
+  //    上限改读**设置唯一真源**（D-P8-2）：同一个值不再留第二条读路径；命令式读取即此处的正确形状
+  //    （它要的是「此刻生效的上限」，不是一份需要跟随重渲染的快照）。
+  const prompts = await api.listPrompts();
+  const settings = getSettingsSnapshot();
 
   // 2) 预演「再新增 1 条」的受害者；排序键与 store.enforceMaxCount 同源。
   const victims = previewEvictions(prompts, settings.maxPromptCount, 1);

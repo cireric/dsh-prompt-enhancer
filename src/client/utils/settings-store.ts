@@ -52,7 +52,13 @@ function readSettingsFallback(): void {
       emit();
     },
     (err: unknown) => {
-      console.warn("[prompt-enhancer] 无 settingsScope，降级读取设置失败，已按默认值显示：", err);
+      // 只打一行可读原因：这条降级是**预期内**的（smoke 的假 ctx 与本部署都没有 settingsScope，
+      // 计划 §7 要求每次 CI 都走到它），可见后果是界面按默认值显示。倾倒整个 error 对象会让
+      // 每次 CI 多出一段堆栈、淹没真正的异常——**不要顺手把 err 整个对象加回来**。
+      console.warn(
+        "[prompt-enhancer] 无 settingsScope，降级读取设置失败，已按默认值显示：" +
+          (err instanceof Error ? err.message : String(err)),
+      );
     },
   );
 }
