@@ -155,7 +155,8 @@ test("⑦ 清空回收站竞态：回执给出被删 id ⇒ 清**回执里**的�
     irreversible: true,
     remove: async () => {
       h.events.push("remove");
-      return { removed: ["a", "b"] }; // = store.emptyTrash() 的返回值，路由原样放进 removed
+      // = DELETE /trash 的真实信封（T7 ⑦ 修复轮 1）：条数在 removed、被删 id 在 ids。
+      return { removed: 2, ids: ["a", "b"] };
     },
     deleteMeta: h.deleteMeta,
   });
@@ -180,7 +181,7 @@ test("⑦ 反面对照：回执没有 id 列表（单条路由回**条数**）�
     irreversible: true,
     remove: async () => {
       h.events.push("remove");
-      return { removed: 1 }; // 单条永久删除：removed 是条数，不是 id 列表
+      return { removed: 1 }; // 单条永久删除：回执里只有条数，没有 ids
     },
     deleteMeta: h.deleteMeta,
   });
@@ -195,7 +196,7 @@ test("⑦ 回执说「一条都没删」（空列表）⇒ 一把键也不清，
     irreversible: true,
     remove: async () => {
       h.events.push("remove");
-      return { removed: [] };
+      return { removed: 0, ids: [] };
     },
     deleteMeta: h.deleteMeta,
   });
@@ -204,7 +205,15 @@ test("⑦ 回执说「一条都没删」（空列表）⇒ 一把键也不清，
 });
 
 test("⑦ 回执形状不认识（缺键 / 非字符串数组）⇒ 退回入参 ids（不猜）", async () => {
-  for (const receipt of [undefined, {}, { removed: "a" }, { removed: [1, 2] }, { removed: [""] }, { ids: ["a", "b"] }]) {
+  for (const receipt of [
+    undefined,
+    {},
+    { ids: "a" },
+    { ids: [1, 2] },
+    { ids: [""] },
+    { removed: ["a", "b"] }, // 修复轮 1 之前那个「数组塞进 removed」的形态：已作废，不得再当 id 列表
+    { removed: 2, ids: null },
+  ]) {
     const h = harness();
     await deletePrompts({
       ids: ["p1"],

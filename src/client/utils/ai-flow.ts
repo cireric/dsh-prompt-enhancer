@@ -142,7 +142,8 @@ export interface DeletePromptsInput {
    * `api.deletePrompt`（软删）。一次调用即代表「本次要删的都删了」。
    *
    * 返回类型是 `unknown`：宿主那三个路由各回各的回执。收尾**只从回执里读一件事**——「真的被删掉的
-   * id 列表」（`{ removed: string[] }`，见 `receiptIds`，T7 ⑦）；读不出来就退回 `ids`，不猜。
+   * id 列表」（清空回收站回 `{ removed: number; ids: string[] }`，见 `receiptIds`，T7 ⑦）；读不出来就
+   * 退回 `ids`，不猜。
    * 回执抛出仍是**唯一的失败信号**（主操作失败 ⇒ 清键一步都不做）。
    */
   remove: () => Promise<unknown>;
@@ -182,7 +183,7 @@ export interface DeletePromptsResult {
 export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePromptsResult> {
   const receipt = await input.remove();
   if (!input.irreversible) return { succeeded: 0, failed: 0 };
-  // ⑦：清**回执说被删掉的那些** id（清空回收站的竞态窗口），回执说不出才退回调用方给的 ids。
+  // ⑦：清**回执说的那些** id（`{ ids }`，清空回收站的竞态窗口），回执说不出才退回调用方给的 ids。
   const ids = receiptIds(receipt) ?? input.ids;
   const deleteMeta = input.deleteMeta ?? ((key: string) => api.deleteMeta(key));
   let succeeded = 0;
@@ -204,16 +205,18 @@ export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePr
 /**
  * 主删除回执 → **真的被删掉的 id 列表**（T7 ⑦），读不出来返回 `undefined`（= 回执没说，由调用方退回入参）。
  *
- * 唯一认得下的形态是 `{ removed: string[] }`——宿主 `DELETE /trash`（清空回收站）就是这个形状：
- * `store.emptyTrash()` 返回被删 id 列表，路由原样放进 `removed`。其余三个删除点回执里没有 id：
- * 单条永久删除与单条软删除回的是**条数** / `{deleted}`，两者都不该被当成 id 列表。
+ * 唯一认得下的形态是 `{ ids: string[] }`——宿主 `DELETE /trash`（清空回收站）现在**同时**回
+ * `removed`（条数，既有形状）与 `ids`（被删 id 列表；T7 ⑦ / 修复轮 1）。读的键是 `ids`：`removed`
+ * 按契约是**数字**，永远不是 id 列表（修复轮 1 之前那个「数组塞进 `removed`」的形状已作废）。
+ * 其余三个删除点回执里没有 id：单条永久删除与单条软删除回的是**条数** / `{deleted}`，
+ * 两者都不该被当成 id 列表。
  *
- * 只认**非空字符串数组**：形状不符（数值 / 空数组里的非串元素 / 别的东西）一律当作「回执没说」，
- * **不猜**——猜错的后果是清掉不该清的键（或漏清），比退回入参更糟。
+ * 只认**非空字符串数组**：形状不符（数值 / 空串元素 / 别的东西）一律当作「回执没说」，**不猜**——
+ * 猜错的后果是清掉不该清的键（或漏清），比退回入参更糟。
  */
 function receiptIds(receipt: unknown): readonly string[] | undefined {
   if (typeof receipt !== "object" || receipt === null) return undefined;
-  const raw = (receipt as { removed?: unknown }).removed;
+  const raw = (receipt as { ids?: unknown }).ids;
   if (!Array.isArray(raw)) return undefined;
   if (!raw.every((id): id is string => typeof id === "string" && id !== "")) return undefined;
   return raw;

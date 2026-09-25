@@ -214,7 +214,11 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     }
 
     if (method === "DELETE" && seg.length === 1 && a === "trash") {
-      return ok(res, { removed: store.emptyTrash() });
+      // T7 ⑦（修复轮 1）：`removed` 仍是**条数**（既有信封形状不破坏）；被删的 id 列表**新增**在 `ids`。
+      // 客户端只能按宿主回执清 per-prompt meta —— 面板列出的 items 是打开那一刻的快照，清空与列表之间
+      // 存在竞态窗口，窗口内新增的回收站行同样被删掉却不在快照里。`ids.length === removed`。
+      const ids = store.emptyTrash();
+      return ok(res, { removed: ids.length, ids });
     }
 
     if (method === "DELETE" && seg.length === 2 && a === "trash") {

@@ -1,7 +1,40 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const { api, ApiError, AI_TIMEOUT_MS, AI_PROBE_TIMEOUT_MS } = await import("../src/client/utils/api.ts");
+
+/**
+ * 假 IncomingMessage / ServerResponse（与 tests/skill-export-route.test.mjs / meta-delete.test.mjs 同款）：
+ * 只够 `routes.ts` 的手写分发层用。**本文件的其它用例都不需要它们**——只有下面那条「真分发」用例
+ * 会绕过打桩的 fetch，直接调宿主的 handler。
+ */
+function fakeReq(method, url, body) {
+  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body), "utf8")];
+  return {
+    method,
+    url,
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of chunks) yield chunk;
+    },
+  };
+}
+
+function fakeRes() {
+  return {
+    statusCode: 0,
+    headers: {},
+    body: "",
+    setHeader(name, value) {
+      this.headers[name] = value;
+    },
+    end(chunk) {
+      this.body = chunk;
+    },
+  };
+}
 
 /** 打桩 globalThis.fetch：记录每次调用，调用方必须 try/finally 复原。 */
 function stubFetch(handler) {
@@ -229,8 +262,9 @@ const ROUTES = [
   // 回收站
   { route: "GET /trash", client: "listTrash", call: (a) => a.listTrash(), method: "GET", url: "/api/prompt-enhancer/trash", data: [] },
   { route: "POST /trash/:id/restore", client: "restoreTrash", call: (a) => a.restoreTrash("a/b"), method: "POST", url: "/api/prompt-enhancer/trash/a%2Fb/restore", data: { restored: 1 } },
-  // T7 ⑦ 起：宿主 `store.emptyTrash()` 回的是**被删 id 列表**（客户端据此清键），路由原样放进 `removed`。
-  { route: "DELETE /trash", client: "emptyTrash", call: (a) => a.emptyTrash(), method: "DELETE", url: "/api/prompt-enhancer/trash", data: { removed: ["a/b"] } },
+  // T7 ⑦（修复轮 1）：清空回收站的信封**同时**回条数（`removed`，数字，既有形状）与被删 id（`ids`）。
+  // 这张表的 `data` 是客户端封装的桥接数据；**信封形状本身**由文件末尾那条「真分发」用例逐字段核对。
+  { route: "DELETE /trash", client: "emptyTrash", call: (a) => a.emptyTrash(), method: "DELETE", url: "/api/prompt-enhancer/trash", data: { removed: 2, ids: ["a/b", "c/d"] } },
   { route: "DELETE /trash/:id", client: "deleteTrash", call: (a) => a.deleteTrash("a/b"), method: "DELETE", url: "/api/prompt-enhancer/trash/a%2Fb", data: { removed: 1 } },
   // AI
   { route: "GET /ai/providers", client: "listAiProviders", call: (a) => a.listAiProviders(), method: "GET", url: "/api/prompt-enhancer/ai/providers", data: [] },
@@ -367,6 +401,52 @@ test("deleteTag 400（标签在用）：ApiError.status 400，文案里带用量
     assert.equal(s.calls[0].init.method, "DELETE");
   } finally {
     s.restore();
+  }
+});
+
+// ── DELETE /trash 的信封形状（T7 ⑦ 修复轮 1）：真分发，不是打桩 ──────────────────
+//
+// 为什么必须走**真分发**：`removed` 的语义（条数 vs id 列表）与 `ids` 的存在与否都产生在
+// `routes.ts` 的那一个 hunk 里，客户端单测打桩 fetch 看不见它（这正是修复轮 1 要堵的缺口：
+// 上一轮把数组塞进了 `removed`，而 `api.ts` 的声明仍写着 number ⇒ 契约悄悄变了形状却无人红）。
+// 隔离：临时 `DSH_HOME` —— 本文件的其它用例只打桩 fetch、从不碰 store，且 `paths.ts` 是**调用期**
+// 求值、store 的 db 句柄首次 `getDb()` 才建，故这里（该进程里唯一的 store 调用者）设它是安全的。
+test("DELETE /trash 信封（真分发）：removed 仍是**数字**、被删 id 在 ids、且 ids.length === removed", async () => {
+  const home = mkdtempSync(join(tmpdir(), "dpe-trash-envelope-"));
+  process.env.DSH_HOME = home;
+  try {
+    const store = await import("../src/host/store.ts");
+    const { makeRoutes } = await import("../src/host/routes.ts");
+    const trashIds = [];
+    for (const title of ["甲", "乙"]) {
+      const p = store.createPrompt({ title, body: title + " 的正文" });
+      store.deletePrompt(p.id); // 软删除 ⇒ 进回收站
+      trashIds.push(p.id);
+    }
+
+    const callEmptyTrash = async () => {
+      const res = fakeRes();
+      await makeRoutes()[0].handler(fakeReq("DELETE", "/api/prompt-enhancer/trash"), res);
+      return { status: res.statusCode, envelope: JSON.parse(res.body) };
+    };
+
+    const first = await callEmptyTrash();
+    assert.equal(first.status, 200);
+    assert.equal(first.envelope.ok, true);
+    assert.equal(first.envelope.data.removed, 2, "removed = 被删**条数**（数字；既有形状不破坏）");
+    assert.equal(typeof first.envelope.data.removed, "number", "removed 不得变成数组（修复轮 1 的形态）");
+    assert.ok(Array.isArray(first.envelope.data.ids), "被删 id 必须显式出现在 ids 里");
+    assert.deepEqual([...first.envelope.data.ids].sort(), [...trashIds].sort(), "逐条等于被物理删除的 id");
+    assert.equal(first.envelope.data.ids.length, first.envelope.data.removed, "ids.length === removed");
+
+    // 空回收站：两个字段**仍然都在**（形状稳定；客户端不得靠「有没有这个键」猜语义）。
+    const second = await callEmptyTrash();
+    assert.equal(second.status, 200);
+    assert.equal(second.envelope.data.removed, 0);
+    assert.deepEqual(second.envelope.data.ids, [], "空的时候 ids 是空数组，不是被省略的键");
+    assert.deepEqual(Object.keys(second.envelope.data).sort(), ["ids", "removed"], "键集恒为两项");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

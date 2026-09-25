@@ -175,7 +175,14 @@ export const api = {
   restoreTrash: (id: string) =>
     call<{ restored: number }>("POST", "/trash/" + encodeURIComponent(id) + "/restore"),
   deleteTrash: (id: string) => call<{ removed: number }>("DELETE", "/trash/" + encodeURIComponent(id)),
-  emptyTrash: () => call<{ removed: number }>("DELETE", "/trash"),
+  /**
+   * 清空回收站（T7 ⑦ / 修复轮 1）。回执**同时**给两样：
+   *   · `removed` = 被删**条数**（既有形状，未变——不破坏任何既有读法）；
+   *   · `ids` = 被**物理删除的 id 列表**——客户端按**它**清 per-prompt meta（`ai-flow.ts#deletePrompts`）；
+   *     面板列出的 items 是**打开那一刻**的快照，清空与列表之间的竞态窗口内新增的行同样被删，
+   *     却不在快照里（按快照清键就会留下残键）。`ids.length === removed`。
+   */
+  emptyTrash: () => call<{ removed: number; ids: string[] }>("DELETE", "/trash"),
 
   // ── 导入导出（P6）──────────────────────────────────────────────────────
   /**
