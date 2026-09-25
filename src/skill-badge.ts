@@ -100,8 +100,9 @@ export type SkillReExportOutcome<R> =
  *
  * 请求体只有两个键，各有分工，多一个都不要：
  *   · **必带 `promptId`**：宿主据此查库取既有 `skillName` 与目录归属（`routes.ts` 的技能导出分支）。
- *   · 不带 `name`：宿主落到 `body.name ?? descriptor?.name ?? prompt.skillName` 的**最后一格**，取的是盘上
- *     已有的名字 ⇒ 写回同一目录。带**别的** name 等于「改名导出」，那会**新建目录**（正是验收 16 要挡的）。
+ *   · 不带 `name`：宿主按候选序 `prompt.skillName（非空）→ body.name → descriptor?.name` 取名——
+ *     A / 重要-1 起已导出条目的**第一格就是盘上已有的名字**（不再需要靠「不传 name」才落到它），故重导
+ *     写回同一目录；带**别的** name 也不再能改目录（宿主只把 name 当**首次导出**的候选）。这正是验收 16 要挡的。
  *   · **`descriptor` 读得到就原样回传**（R-P7-AA 修复轮 1）：它是首次导出成功时落进 meta 的那一份 AI
  *     补全结果。不带它时宿主只能走 description 兜底链、并且**丢掉 `whenToUse`**——而「AI 生成了 whenToUse
  *     却被客户端丢弃」正是 `src/host/skills.ts` 文件头声明修掉的上游缺陷，重导是**常规路径**（徽标的

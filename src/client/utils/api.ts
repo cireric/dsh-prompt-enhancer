@@ -144,8 +144,8 @@ export const api = {
    *   · 400 技能名非法 / description 兜底链全空（宿主原文）；
    *   · 404 提示词不存在；
    *   · 409 同名目录**不属于本插件**（用户手写的技能）→ 确认后带 `conflictConfirmed: true` 重试。
-   * 缺省不发的键由 `JSON.stringify` 丢弃：只传 `promptId` 时宿主自己按
-   * `body.name ?? descriptor?.name ?? prompt.skillName` 推名字。
+   * 缺省不发的键由 `JSON.stringify` 丢弃：只传 `promptId` 时宿主自己推名字，候选序为
+   * `prompt.skillName（非空）→ body.name → descriptor?.name`（**唯一事实源**：`routes.ts` 的技能导出分支）。
    */
   exportPromptAsSkill: (input: {
     promptId: string;

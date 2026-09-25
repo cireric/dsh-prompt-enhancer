@@ -169,9 +169,10 @@ export function exportNameLocked(prompt: SkillCandidate): boolean {
  *
  * 名字候选的序是**客户端自己的**（T6 / D-1）：`prompt.skillName → descriptor.name`——
  * 已导出条目的名字已锁定（见 `exportNameLocked`），AI 名只在其后兜底。
- * ⚠️ 不能靠「不下发 `name`」来实现这一点：宿主的候选序是
- * `body.name ?? descriptor?.name ?? prompt.skillName`，`descriptor?.name` 排在 `skillName` **之前**，
- * AI 名会赢 ⇒ 另建目录。故这里算出的名字必须由 `exportOne` **显式**发出去（见那里的请求体）。
+ * ⚠️ 这只是「尽量说对」：**唯一事实源是宿主**（`src/host/routes.ts` 的技能导出分支，A / 重要-1 起
+ * 候选序为 `prompt.skillName（非空）→ body.name → descriptor?.name`）。这里算出的名字仍由 `exportOne`
+ * **显式**发出去（首次导出必须如此——那时 `skillName` 还空着），但**不得**把它当成防线：
+ * 本地列表陈旧（技能页只在挂载时读一次之类）时，把目录名钉住的那一侧在宿主，不在这里。
  * `detail` 只承载**纯数据**（措辞一律由 errorKey 的 i18n 键承担，A10：en 语言下不得混排中文）。
  */
 export function precheckExport(prompt: SkillCandidate, descriptor?: SkillDescriptorPayload): SkillPrecheck {

@@ -111,6 +111,70 @@ export async function clearOverwrittenMeta(
 }
 
 /**
+ * R-C（修复轮 1）：导入**前**的「已存在 id」集合 = **活跃提示词表 ∪ 回收站**。
+ *
+ * 为什么必须含回收站：软删除（进回收站）**刻意不清键**（`ai-flow.ts#deletePrompts` 的语义 1：回收站可
+ * 恢复且**复用同一 id**），而 `importPrompts` 是 `INSERT OR REPLACE` 到**活跃表** ⇒
+ * 「备份含 X → **软删 X** → 导入该备份」会把**旧的**方向记录继承给「又活过来」的 X
+ * ⇒ 又是 R-P7-AE 那一类（自信、且切换修不回来的反相标注）。**只读活跃表看不见这条路径**。
+ *
+ * 两个来源**各自独立**读取：一侧失败只 warn + 少贡献那一侧（另一侧照常贡献）——整体作废会让另一侧
+ * 本来算得出的覆盖也漏掉，而「少清」只是残留（可再清）。两侧都失败 ⇒ 空集合 ⇒ 一把键都不清（安全方向）。
+ */
+export async function readExistingPromptIds(
+  readActive: () => Promise<readonly { id: string }[]>,
+  readTrash: () => Promise<readonly { id: string }[]>,
+): Promise<string[]> {
+  const [active, trash] = await Promise.all([
+    readIdsSafely(readActive, "活跃提示词"),
+    readIdsSafely(readTrash, "回收站"),
+  ]);
+  return [...new Set([...active, ...trash])];
+}
+
+/** 单一来源的读取：失败只 warn + 返回 `[]`（少清 = 安全方向，见上）；脏元素（非字符串 / 空串）跳过。 */
+async function readIdsSafely(
+  read: () => Promise<readonly { id: string }[]>,
+  label: string,
+): Promise<string[]> {
+  try {
+    const items = await read();
+    return items
+      .map((item) => item?.id)
+      .filter((id): id is string => typeof id === "string" && id !== "");
+  } catch (err) {
+    console.warn("[prompt-enhancer] 导入前读取" + label + " id 失败（本次不清该来源涉及的 per-prompt meta 键）", err);
+    return [];
+  }
+}
+
+/**
+ * R-B（修复轮 1）：**后台派发**——调用方（导入面板）**不 await** 这一次清键。
+ *
+ * 为什么 `await` 买不到任何东西（复审推翻了上一轮的裁决，理由照录）：
+ *   · **(a) await 之后没有任何代码读方向**：只有 `setPreview` / `setApplied` / `notifyDataChanged` +
+ *     `GET /prompts` + `/settings`；而管理面板是**互斥**的（transfer 面板在场时 list / detail 卸载），
+ *     四个 `useDataChanged` 订阅者**无一读 meta** ⇒ 不存在那个「紧随的读取依赖」。
+ *   · **(b) await 不改变窗口的宽度**：两种写法下清键**同时发出、同时返回**，await 只是把「导入完成」的
+ *     反馈**推迟到窗口之后**。
+ *   · **(c) 代价真实**：`api.ts#call` 对**非 AI 路由不设超时** ⇒ 一条挂住的 `DELETE /meta` 会让
+ *     `allSettled` **永不 settle** ⇒ 面板**永久停在 applying**（外层 catch 只接拒绝）。
+ *
+ * 返回 `void`（不是一个可以 await 的 promise）——**这就是「不阻塞」的机制**：调用方无从 await 它，
+ * 也就无法把反馈押在清键上。失败仍只 `console.warn`（绝不把一次已经成功的导入报成失败），
+ * 且拒绝被就地接住 ⇒ 不会变成 unhandled rejection。
+ */
+export function clearOverwrittenMetaDetached(
+  backup: unknown,
+  existingIds: readonly string[],
+  clear: (ids: readonly string[]) => Promise<unknown>,
+): void {
+  void clearOverwrittenMeta(backup, existingIds, clear).catch((err: unknown) => {
+    console.warn("[prompt-enhancer] 导入成功，但被覆盖条目的 per-prompt meta 键未能清理", err);
+  });
+}
+
+/**
  * 备份 payload 里的提示词 id（按出现次序去重）。**只读形状，不校验信封**——信封判定归宿主
  * `store.ts#validateBackup`（见文件头）：能走到这里说明宿主已经 `applied: true` 收下了它。
  *

@@ -1,9 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { MAX_BACKUP_BYTES, parseBackupFile, classifyImportResult, clearOverwrittenMeta } = await import(
-  "../src/client/utils/transfer.ts"
-);
+const {
+  MAX_BACKUP_BYTES,
+  parseBackupFile,
+  classifyImportResult,
+  clearOverwrittenMeta,
+  clearOverwrittenMetaDetached,
+  readExistingPromptIds,
+} = await import("../src/client/utils/transfer.ts");
 // B 的「清键」由调用方注入；组合形态用**既有**入口 deletePrompts（真实现）验一次请求形状。
 const { deletePrompts } = await import("../src/client/utils/ai-flow.ts");
 
@@ -163,4 +168,111 @@ test("B：备份里的重复 / 非法 id ⇒ 去重、跳过非字符串与空�
   });
   assert.deepEqual(out, ["a"]);
   assert.deepEqual(seen, ["a"], "同一个 id 只发一次清键调用");
+});
+
+// ── 修复轮 1：R-C 覆盖集必须含**回收站** id ─────────────────────────────────
+//
+// 复审指出的同类残留：覆盖集原先只取 `listPrompts()`（活跃表），而软删除**刻意不清键** ⇒
+// 「备份含 X → **软删 X** → 导入该备份」会把旧方向记录继承给恢复后的 X ⇒ 又是 R-P7-AE 那一类。
+// **变异靶**：把 `readExistingPromptIds` 里的回收站来源删掉（只读活跃表）⇒ 下面第一条必红。
+
+test("R-C：备份含一条**在回收站里**的 id ⇒ 覆盖集必须含它、必须清它（变异靶）", async () => {
+  const backup = {
+    version: 1,
+    prompts: [
+      { id: "trashed-x", body: "备份里的 X" },
+      { id: "brand-new", body: "库里从未有过" },
+    ],
+    tags: [],
+  };
+  // 导入前的现库：活跃表里没有 X（它被软删了，同一 id 还在回收站里）。
+  const existing = await readExistingPromptIds(async () => [{ id: "active-a" }], async () => [{ id: "trashed-x" }]);
+  assert.deepEqual([...existing].sort(), ["active-a", "trashed-x"], "覆盖集 = 活跃提示词表 ∪ 回收站（两个来源都要在）");
+
+  const cleared = [];
+  const overwritten = await clearOverwrittenMeta(backup, existing, async (ids) => {
+    cleared.push(...ids);
+  });
+  assert.deepEqual(overwritten, ["trashed-x"], "回收站里的那条也要清：它的旧方向记录已不再可信");
+  assert.deepEqual(cleared, ["trashed-x"]);
+
+  // 反面对照（原样保留）：活跃表与回收站里都没有的 id ⇒ 仍是一把都不清。
+  const cleared2 = [];
+  const none = await clearOverwrittenMeta(backup, ["active-a"], async (ids) => {
+    cleared2.push(...ids);
+  });
+  assert.deepEqual(none, []);
+  assert.deepEqual(cleared2, []);
+});
+
+test("R-C：两个来源各自独立——一侧失败只 warn 并少贡献它，另一侧照常贡献；全失败 ⇒ 空集", async () => {
+  const warns = [];
+  const original = console.warn;
+  console.warn = (...args) => warns.push(args.map(String).join(" "));
+  try {
+    const partial = await readExistingPromptIds(
+      async () => {
+        throw new Error("活跃表读失败");
+      },
+      async () => [{ id: "t1" }],
+    );
+    assert.deepEqual(partial, ["t1"], "回收站那一侧仍要贡献：整体作废会让本来算得出的覆盖也漏掉");
+    assert.equal(warns.length, 1, "失败必须可见");
+    assert.match(warns[0], /活跃提示词/, "warn 要点名是哪一侧失败");
+
+    const empty = await readExistingPromptIds(
+      async () => {
+        throw new Error("活跃表读失败");
+      },
+      async () => {
+        throw new Error("回收站读失败");
+      },
+    );
+    assert.deepEqual(empty, [], "两侧都失败 ⇒ 空集 ⇒ 一把键都不清（安全方向）");
+    assert.equal(warns.length, 3, "两次失败各一条 warn");
+
+    const dirty = await readExistingPromptIds(
+      async () => [{ id: "a" }, { id: "" }, { id: 7 }, null],
+      async () => [{ id: "a" }, {}],
+    );
+    assert.deepEqual(dirty, ["a"], "去重 + 跳过非字符串 / 空串：不猜、不补");
+  } finally {
+    console.warn = original;
+  }
+});
+
+// ── 修复轮 1：R-B 清键**派发即返回**（调用方无从 await）─────────────────────
+//
+// 复审推翻上一轮对 B 处 await 的裁决：await 买不到它声称的性质（没有紧随的读方向者；窗口宽度不变），
+// 却会让一条挂住的 `DELETE /meta`（非 AI 路由**无超时**）把面板**永久停在 applying**。
+// **变异靶**：把 `clearOverwrittenMetaDetached` 改成 `return clearOverwrittenMeta(...)`（或加 async）
+// ⇒ 下面第一条的「返回 void」必红。
+
+test("R-B：派发即返回——返回 void（调用方无从 await），且 clear 永不落地也不挂住调用方", () => {
+  const backup = { version: 1, prompts: [{ id: "p1" }, { id: "p2" }], tags: [] };
+  const seen = [];
+  const never = new Promise(() => {}); // 永不 settle：await 它的实现会永远回不来
+  const returned = clearOverwrittenMetaDetached(backup, ["p1", "p2"], (ids) => {
+    seen.push(...ids);
+    return never;
+  });
+  assert.equal(returned, undefined, "必须返回 void：可 await 的返回值就是把「不阻塞」交回给调用方自己记着");
+  assert.deepEqual(seen, ["p1", "p2"], "清键照发（派发在返回前同步发生）——不阻塞 ≠ 不做");
+});
+
+test("R-B：清键失败只 warn、不外抛、也不产生 unhandled rejection（错误仍可见）", async () => {
+  const warns = [];
+  const original = console.warn;
+  console.warn = (...args) => warns.push(args.map(String).join(" "));
+  try {
+    clearOverwrittenMetaDetached({ prompts: [{ id: "p1" }] }, ["p1"], async () => {
+      throw new Error("宿主拒绝了清键");
+    });
+    // 失败是**异步**上报的（catch 在微任务里跑）：等一拍再断言，避免「靠同步巧合」。
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(warns.length, 1, "拒绝必须被就地接住并可见（不是 unhandled rejection，也不是静默）");
+  assert.match(warns[0], /宿主拒绝了清键/);
 });
