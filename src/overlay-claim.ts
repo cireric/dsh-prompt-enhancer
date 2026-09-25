@@ -26,11 +26,14 @@
  * task-1-report.md 的判定表（R-P7-H：T5 活体验收的判据来源）。
  */
 
-/** 占屏的四种取值：`none` = 无人占屏；其余三值各自对应一张会话输入区的浮层/面板。 */
-export type OverlayKind = "none" | "hash" | "library" | "ai";
+/** 会占屏的三个面的**取值全集**（运行时形态；T7-3 的结构锁读它）。顺序即枚举顺序。 */
+export const OVERLAY_SURFACES = ["hash", "library", "ai"] as const;
 
-/** 真正会占屏的三种面（`none` 不是面，是「寄存器空着」）。 */
-export type OverlaySurface = Exclude<OverlayKind, "none">;
+/** 真正会占屏的三种面（由 {@link OVERLAY_SURFACES} 派生 ⇒ 运行时清单与类型不可能各自漂移）。 */
+export type OverlaySurface = (typeof OVERLAY_SURFACES)[number];
+
+/** 占屏的四种取值：`none` = 无人占屏；其余三值各自对应一张会话输入区的浮层/面板。 */
+export type OverlayKind = OverlaySurface | "none";
 
 /**
  * 判定某个面此刻可否渲染：**同一时刻最多一个 claim**——只有寄存器正持有该 kind 时才放行。
@@ -72,3 +75,16 @@ export function canTakeHash(visible: boolean): boolean {
 export function canRetakeHash(visible: boolean, claimed: OverlayKind): boolean {
   return visible && claimed !== "hash";
 }
+
+// ── 结构清单（T7-3 / P7 §10.4-3：改成结构锁，不再锁源码文本形状）──────────────────────
+//
+// 测试原先的「同源锁」是**文本锁**：扫全仓找 `!== "hash"` 这个字面形状，再逐行匹配组件里的调用形态。
+// 它对注释、换行、改名、抽取常量都过敏——一句提到该表达式的注释就能让它假红（在别的文件里甚至假绿）。
+// 现在把「有哪些守卫、分别是谁」做成**导出对象**：锁键集与取值（函数身份 + 形参数），与文本无关。
+// **纯新增**：这两个常量只是给同一批函数 / 取值一个命名面，不改变任何行为。
+
+/**
+ * `#` 浮层两条 claim effect 的**守卫面**：键集 = 本模块对外承诺的守卫，值 = 守卫函数**本身**。
+ * 消费组件（`HashSuggestOverlay.tsx`）与测试模型读的是同一对函数；锁「有几个、分别是谁」。
+ */
+export const HASH_CLAIM_GUARDS = { canTakeHash, canRetakeHash } as const;

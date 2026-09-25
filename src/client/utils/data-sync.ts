@@ -50,6 +50,18 @@ export function notifyDataChanged(): void {
 /**
  * 订阅数据变更：挂载时登记监听，卸载时撤销（useEffect + deps；R1 口径，不用 useSyncExternalStore）。
  * deps 由调用方给（同一份 deps 的长度必须稳定，React 的规则）。
+ *
+ * ⚠️ **契约（T7-4 / P7 §10.4-4，F-6）：`fn` 必须是稳定的 `setState` 类闭包。**
+ *
+ * `deps` 缺省是 **`[]`** ⇒ 只在**挂载那一帧**登记 `fn`，此后再不重新登记——订阅口永远握着**首帧**
+ * 那个闭包。于是 `fn` **不得读「本次渲染的变量」**：读到的会是首帧的值（闭包捕获旧值），而 React
+ * 对这件事**不会**告警（它只知道 deps 没变）。正确写法是让 `fn` 只做**状态变更**
+ * （`() => setReloadSeq((n) => n + 1)` / `() => setRows(list => ...)`）：状态更新函数本身是稳定的，
+ * 在它的 updater 里读到的永远是最新态。确实需要读当前值时，把那份依赖放进 `deps`
+ * （并保证长度稳定），**不要**靠首帧闭包。
+ *
+ * 本模块不检测这条契约（也无法检测）：它是**调用方的责任**，写在这里是因为它的失败形态是静默的
+ * ——「订阅到了但用旧值重拉」不会报错，只会给出过期数据。
  */
 export function useDataChanged(fn: () => void, deps: unknown[] = []): void {
   const { useEffect } = hooks();

@@ -36,6 +36,8 @@ export const zh = {
   "ai.close": "关闭",
   "ai.fail": "AI 调用失败",
   "ai.timeout": "AI 请求超时，请稍后重试",
+  // T7-7：**探测**超时的专属文案——必须与 ai.timeout 可辨（用户要做的事不同：查模型配置 / 网络）。
+  "ai.probeTimeout": "AI 服务探测超时，请检查模型配置或网络后重试",
   "ai.refine": "一键完善",
   "ai.refining": "正在完善…",
   "ai.refined": "完善稿",
@@ -281,6 +283,8 @@ export const en: Record<keyof typeof zh, string> = {
   "ai.close": "Close",
   "ai.fail": "AI call failed",
   "ai.timeout": "The AI request timed out, please retry later",
+  // T7-7: probe-specific timeout copy — must stay distinguishable from "ai.timeout".
+  "ai.probeTimeout": "Timed out probing for available models, please check the model settings or network and retry",
   "ai.refine": "One-click refine",
   "ai.refining": "Refining…",
   "ai.refined": "Refined draft",

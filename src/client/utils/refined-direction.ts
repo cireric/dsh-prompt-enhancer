@@ -44,8 +44,11 @@
 import { api } from "./api.ts";
 import type { PromptEnhancerKey } from "./i18n.ts";
 
-/** 已知方向只两个值；`none` = **不知道**（中性标注，且一律不落库）。 */
-export type RefinedDirection = "original" | "refined" | "none";
+/** 方向的**取值全集**（运行时形态；T7-3 的结构锁读它）：两个已知方向 + `none`（**不知道**）。 */
+export const REFINED_DIRECTIONS = ["original", "refined", "none"] as const;
+
+/** 已知方向只两个值；`none` = **不知道**（中性标注，且一律不落库）。由上面那份清单派生。 */
+export type RefinedDirection = (typeof REFINED_DIRECTIONS)[number];
 
 /** 能落进 meta 的值：只有两个已知方向（`none` 不是记录）。 */
 export type StoredDirection = Exclude<RefinedDirection, "none">;
@@ -320,3 +323,35 @@ export async function seedRefinedDirection(
 ): Promise<void> {
   await saveRefinedDirection(promptId, "refined", setMeta);
 }
+
+// ── 结构清单（T7-3 / P7 §10.4-3：改成结构锁，不再锁源码文本形状）──────────────────────
+//
+// 测试原先的「单点锁」是**文本锁**：读组件源码、数 `toggleDirectionWrite\(` 的出现次数，并用一条带
+// 分号与变量名的正则匹配 `const applied = applyToggleDirection(id, current, reading);`。它对注释与
+// 排版过敏（组件里一句提到该函数名的注释就假红），也对改名过敏（换掉那个局部变量名就假红）。
+// 现在把「组件能用什么、模块承诺了哪些纯判定」做成**导出对象**：锁键集与取值（函数身份）。
+// **纯新增**：只是给同一批函数一个命名面，不改变任何行为。
+
+/**
+ * 组件（`.tsx`）**唯一允许调用的入口面**：键集 = 组件可用的编排入口，值 = 函数**本身**。
+ *
+ * 单点求值在结构上就写在这份键集里——`toggleDirectionWrite` / `oppositeDirection` 的求值只发生在
+ * `applyToggleDirection` 内部；组件侧要自己多调一个纯决策，就必须先把键加进这里（那一刻测试变红）。
+ */
+export const REFINED_DIRECTION_ENTRY = { applyToggleDirection } as const;
+
+/**
+ * 本模块对外承诺的**纯判定面**：键集 = 判定函数清单，值 = 函数本身。测试据此断言「有哪些判定、
+ * 分别是谁」，不再扫源码文本去找算式，也不靠注释措辞对齐。
+ */
+export const REFINED_DIRECTION_DECISIONS = {
+  hasTwoBodies,
+  readRefinedDirection,
+  parseStoredDirection,
+  canPersistDirection,
+  toggleDirectionWrite,
+  oppositeDirection,
+  bodyIsOriginal,
+  compareLabelKeys,
+  shouldAcceptLateRead,
+} as const;

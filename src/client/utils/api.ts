@@ -21,12 +21,39 @@ export const AI_TIMEOUT_MS = 120_000;
  */
 export const AI_PROBE_TIMEOUT_MS = 15_000;
 
+/**
+ * 清 per-prompt meta 键（`DELETE /meta/:key`）的超时（T7-1 / P7 §10.4-1）。
+ *
+ * **有界且独立命名**：它既不是 AI 调用超时（120s，真的在等模型），也不是探测超时（15s，只问
+ * 「有没有可用模型」）——它等的是宿主一次 KV 删除。修前这条路由**不设超时**（`call()` 的
+ * `timeoutMs` 缺省即不挂 signal）：一次挂住的 `DELETE /meta` 会让 `deletePrompts` 的
+ * `Promise.allSettled` 永不落定 ⇒ 既无 `console.warn` 也无 UI 信号（P7 M7 的 Minor 3）。
+ */
+export const CLEAR_TIMEOUT_MS = 15_000;
+
+/** `AbortSignal.timeout` 到点的形态判定（看名字，不看文案）：浏览器与 Node 都抛 `TimeoutError`。 */
+function isTimeoutAbort(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const name = (err as { name?: unknown }).name;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
 /** 信封失败与响应解析失败统一抛出的错误：带 HTTP status，供调用方按状态分类（不匹配 message 文本）。 */
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  /**
+   * T7-7：true = 这次失败发生在**探测**路径（`GET /ai/providers`，见 `listAiProviders`）。
+   *
+   * 只有「探测 + 本客户端主动超时」这一条路径会置位（`call()` 里唯一的 `probe` 传出点），
+   * 故它等价于「探测超时」：探测拿到 4xx/5xx 走的是信封路径，构造时 `probe` 仍是缺省 false。
+   * 探测超时与 AI 调用超时都是「超时」，但用户要做的事不同（探测 = 没有可用模型 / 网络不通；
+   * 调用 = 模型太慢），故必须**分类可辨**（`ai-flow.ts#aiErrorKey` 据此给不同的文案键）。
+   */
+  readonly probe: boolean;
+  constructor(message: string, status: number, probe = false) {
     super(message);
     this.status = status;
+    this.probe = probe;
   }
 }
 
@@ -58,15 +85,32 @@ interface Envelope<T> { ok: boolean; data?: T; error?: string }
 
 /**
  * 失败一律抛出带可读原因的 ApiError——调用方 catch 后出 toast（不得静默吞掉）。
- * `timeoutMs` 传了才挂 AbortSignal.timeout：AI 路由用 AI_TIMEOUT_MS，其余路由不设超时（保持 P4 行为）。
+ * `timeoutMs` 传了才挂 AbortSignal.timeout：AI 路由用 AI_TIMEOUT_MS、探测用 AI_PROBE_TIMEOUT_MS、
+ * 清键用 CLEAR_TIMEOUT_MS，其余路由不设超时（保持 P4 行为）。
+ *
+ * `probe`（T7-7）：这次请求是不是 `GET /ai/providers` 探测。**只有探测路径**会把「到点」从
+ * `DOMException("TimeoutError")` 换成带标记的 `ApiError`（见下）——探测超时与 AI 调用超时必须在
+ * 分类器那里可辨；其余路径的超时**原样上抛**（既有契约，见 tests/api.test.mjs 的负面对照）。
  */
-async function call<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
-  const res = await fetch(API_PREFIX + path, {
-    method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
-  });
+async function call<T>(method: string, path: string, body?: unknown, timeoutMs?: number, probe = false): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(API_PREFIX + path, {
+      method,
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    /**
+     * `AbortSignal.timeout` 到点抛的是 `DOMException`（名字 `TimeoutError`），它身上**没有**
+     * 「这是探测」这条信息 ⇒ 探测路径换成带 `probe` 标记的 ApiError。
+     * 其它路径（含清键的 CLEAR_TIMEOUT_MS）保持**原样上抛**：超时不经信封路径是既有契约，
+     * 而调用方的 catch 同样会触发（`deletePrompts` 记 failed + `console.warn`）。
+     */
+    if (probe && isTimeoutAbort(e)) throw new ApiError("探测可用的 AI 模型超时", 0, true);
+    throw e;
+  }
   let parsed: Envelope<T>;
   try {
     parsed = (await res.json()) as Envelope<T>;
@@ -99,9 +143,13 @@ export const api = {
    * 删一条 meta KV（`DELETE /meta/:key`，T6 / O-1）。**幂等**：键不存在时宿主同样回 ok
    * （`deleted: false` 只说明「这次没删到行」，不是失败）。**通用通道**：键名约定（`pl:...`）
    * 归调用方，宿主不认识它——故这里也不做任何键名特判，调用方拼好键名传进来即可。
+   *
+   * **超时（T7-1 / P7 §10.4-1）**：挂 `CLEAR_TIMEOUT_MS`（有界、独立命名）。到点 ⇒ `AbortSignal.timeout`
+   * 中断请求 ⇒ `fetch` 拒绝（`DOMException: TimeoutError`）⇒ `deletePrompts` 的 `Promise.allSettled`
+   * 记一笔 failed 并 `console.warn`。修前不设超时：挂住的 DELETE 让收尾永不落定，连 warn 都没有。
    */
   deleteMeta: (key: string) =>
-    call<{ key: string; deleted: boolean }>("DELETE", `/meta/${encodeURIComponent(key)}`),
+    call<{ key: string; deleted: boolean }>("DELETE", `/meta/${encodeURIComponent(key)}`, undefined, CLEAR_TIMEOUT_MS),
 
   createPrompt: (input: { title: string; body: string; tags?: string[]; summary?: string }) =>
     call<{ prompt: Prompt; evicted: string[] }>("POST", "/prompts", input),
@@ -116,7 +164,9 @@ export const api = {
   updatePrompt: (id: string, patch: PromptWritablePatch & { aiWriteBack?: boolean }) =>
     call<Prompt>("PUT", "/prompts/" + encodeURIComponent(id), patch),
   rollbackPrompt: (id: string) => call<Prompt>("POST", "/prompts/" + encodeURIComponent(id) + "/rollback"),
-  listAiProviders: () => call<AiSelectable[]>("GET", "/ai/providers", undefined, AI_PROBE_TIMEOUT_MS),
+  /** 探测（T7-7）：`probe = true` ⇒ 到点抛**带标记**的 ApiError，分类器据此给「探测超时」专属文案。 */
+  listAiProviders: () =>
+    call<AiSelectable[]>("GET", "/ai/providers", undefined, AI_PROBE_TIMEOUT_MS, true),
   /**
    * `keepVariables` **必填**（P5 延期 #9 / T6-A3）：缺省 `true` 会让漏传的调用方静默落回被否决的
    * 常量，改成必填即由编译期拦住漏传。运行期仍按 `!== false` 判定，JS 调用方缺省时的旧行为不变。

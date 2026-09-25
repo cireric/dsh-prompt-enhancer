@@ -367,8 +367,17 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       const name = skills.toKebab(locked ?? asString(body.name) ?? descriptor?.name ?? "");
       if (!skills.isValidSkillName(name)) return fail(res, 400, "技能名非法：需要小写 kebab-case");
 
-      // 目录归属：查库看这个技能名是否属于本插件的某条提示词（P3-D8）
-      const owner = store.listPrompts().find((p) => p.skillName === name);
+      /**
+       * 目录归属：查库看这个技能名是否属于本插件的某条提示词（P3-D8）。
+       *
+       * **自持优先（T7-2 / P7 §10.4-2）**：先认**自己**（本次导出的这条），再认别人。
+       * 两条提示词 `skillName` 相同是**可达状态**（同名目录确认后覆盖 / 导入备份），普通 `find`
+       * 取的是**首条**——首条不是本条时，本插件自己的目录就被判成「用户手写的」，对自有目录**误报 409**
+       * （用户被迫确认覆盖自己的技能，或干脆导不出去）。自持优先把这个窄口封在查询里：
+       * 只要这条提示词自己就是这个技能名的归属者，归属判定必须落在它身上。
+       */
+      const all = store.listPrompts();
+      const owner = all.find((x) => x.skillName === name && x.id === promptId) ?? all.find((x) => x.skillName === name);
       const result = skills.exportSkill({
         prompt,
         name,

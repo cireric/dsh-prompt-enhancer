@@ -110,8 +110,12 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
    * 「导出成功 → 再点 AI 补全（真会换名）→ 再导出」会让行内名字与锁定标注继续按**旧库**撒谎。
    *
    * 挂 `useDataChanged`（与 `PromptManagerModal` / `TagManagePanel` / `RecycleManagePanel` 同款）后，
-   * 每次 `notifyDataChanged()`——导出**每条成功**都会广播一次（见下面的 `onExported`）——都会重拉一次
-   * 列表，于是行内名字与「已锁定」标注**立即如实**，不再依赖「下次进页面才刷新」。
+   * 每次 `notifyDataChanged()` 都会重拉一次列表，于是行内名字与「已锁定」标注**立即如实**。
+   *
+   * ⚠️ **重拉粒度（T7-4 / P7 §10.4-4 / A-2）**：整库重拉的触发点只剩**批末一次**
+   * （`runExport` 的 `finally`）。导出过程中的**逐条如实**由 `onExported` 的**就地更新**承担
+   * （只换那一条的 `skillName`），不再「每条成功都重拉整库」——导出 N 条曾是 N 次
+   * `GET /prompts` + N 次全量重渲染，换来的却是同一屏文字。
    *
    * ⚠️ 本地列表只负责**说实话**，不是防线：即使它陈旧（下拉在途 / 页面还没重拉），宿主的候选序也会
    * 把目录钉在既有 `skillName` 上（`src/host/routes.ts` 的技能导出分支）。
@@ -216,14 +220,22 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
               cancelLabel: "manager.confirm.cancel",
             }),
           /**
-           * 要求 2：**每条成功即广播**，而不是等批次结束再广播一次。差别在「用户跑到一半就离开」：
-           * 组件卸载后批次仍会收尾（剩余条目不再启动），若广播挂在下面那段组件回调里就会一起被丢掉，
-           * 于是宿主已回写 `skillName` / `skillExportedAt` 而列表页不重拉 ⇒ 验收 16 的徽标不出现。
-           * 回调只依赖模块级的 `notifyDataChanged()`，与组件在世与否无关。
+           * T7-4：**就地更新该条**——把刚落盘的名字写进本地那一条（锁定判定 `exportNameLocked` /
+           * `precheckExport` 读的就是它），不重拉整库。这里**不编** `skillExportedAt`：它的权威值由
+           * **批末那次重拉**带回（本页只渲染名字与「已锁定」标注，不渲染徽标）。
+           *
+           * ⚠️ 要求 2 的广播没有取消，只是**移到批末一次**（见下面 `finally` 里的 `notifyDataChanged()`）：
+           * 那次广播写在异步函数里、与组件在世与否无关——用户跑到一半离开（组件卸载）时批次仍会收尾，
+           * 宿主已回写的 `skillName` / `skillExportedAt` 照样广播出去，验收 16 的徽标不会缺席。
            */
-          onExported: () => notifyDataChanged(),
+          onExported: (outcome) => {
+            if (!aliveRef.current) return;
+            setPrompts((prev) =>
+              prev === null ? prev : prev.map((p) => (p.id === outcome.id ? { ...p, skillName: outcome.name } : p)),
+            );
+          },
         });
-        // 这里只负责渲染（组件已经走了就没有东西可渲染）：广播已在上面逐条完成。
+        // 这里只负责渲染（组件已经走了就没有东西可渲染）：广播在下面的 finally 里**批末一次**。
         if (!aliveRef.current) return;
         setOutcomes(results);
       } catch (err) {
@@ -231,6 +243,13 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
         if (aliveRef.current) setFatal(reasonOf(err));
       } finally {
         runRef.current = null;
+        /**
+         * 要求 2（**批末一次**，T7-4）：宿主已回写的 `skillName` / `skillExportedAt` 必须让订阅者知道
+         * ——否则列表页不重拉、验收 16 的徽标不出现（「导出成功但什么都没发生」）。放在 `finally` 保证
+         * 三条收尾路径（正常结束 / 编排异常 / 用户中途离开）都广播一次；它是模块级调用、写在异步函数里，
+         * 因此与组件在世与否无关。逐条成功**不再**各广播一次（那会让每个订阅者各重拉 N 次整库）。
+         */
+        notifyDataChanged();
         if (aliveRef.current) setBusy("idle");
       }
     })();

@@ -25,6 +25,12 @@ export { SKILL_NAME_MAX_LEN, SKILL_NAME_RE, isValidSkillName, toKebab } from "..
 // 逐字不变（tests/skills.test.mjs 因此无需改）；「两边是同一份规则」由 tests/skill-badge.test.mjs
 // 的**函数恒等**断言钉住（两份恰好相同的实现不算同源，会漂移）。本模块自己没有用到它，故不写
 // import：`export ... from` 直接转发同一个绑定（既有导出面与恒等两全），也免了 TS6133 的未读名。
+//
+// ⚠️ **它不是死导出（T7-6 / P7 §10.4-6 的复核结论）**：P7 收尾记它「被 tree-shake 出 host bundle」，
+// 但仓内**有引用**——`tests/skills.test.mjs` 与 `tests/skill-badge.test.mjs`（宿主 ↔ 徽标的**函数
+// 恒等锁**）都从**本模块**取它。删掉会同时打红那两处，并拆掉「宿主与徽标同源」的唯一锁 ⇒ **保留**。
+// `lib/index.js` 里看不到它，只说明宿主 loader 只取默认导出、这份绑定在产物里未被使用，与本模块的
+// 导出面无关（客户端 bundle `lib/client.js` 里的 isSkillStale 走的是 `src/skill-badge.ts` 本身）。
 export { isSkillStale } from "../skill-badge.ts";
 
 /** 技能目录：`$DSH_HOME/skills/<name>/`。 */

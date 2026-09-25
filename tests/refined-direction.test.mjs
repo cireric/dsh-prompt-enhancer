@@ -26,6 +26,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const {
+  REFINED_DIRECTION_DECISIONS,
+  REFINED_DIRECTION_ENTRY,
+  REFINED_DIRECTIONS,
   UNKNOWN_READING,
   applyToggleDirection,
   bodyIsOriginal,
@@ -64,6 +67,14 @@ async function captureWarn(fn) {
   } finally {
     console.warn = original;
   }
+}
+
+/**
+ * 剥掉注释（T7-3）：块注释先、行注释后（与 `tests/i18n.test.mjs` 的 R59 口径同一形态）。
+ * 方向是保守的：只会让某个真引用看不见（误报），绝不会凭空造出一个引用（假绿）。
+ */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 }
 
 /** 一个只记写入的假 setMeta（用例保持 hermetic：绝不触网）。 */
@@ -289,16 +300,55 @@ async function applyAndSettle(applied) {
 }
 
 /**
- * T7 ⑧-① 的同源/单点锁：**第二个求值点必须不存在**。
+ * T7-3（P7 §10.4-3）：**单点锁改成结构锁**。
  *
- * 组件（`.tsx`）在本仓库进不了 `node --test`（无 react-dom），能自动化的只有「源码里还有没有第二处
- * 求值」这件事——与 ③ 的同源锁同一路数：它不假装覆盖组件行为，只断言「同一纯决策被求值的次数」。
- * 变异（把 `const action = toggleDirectionWrite(current, reading)` 抄回组件）⇒ 本用例必红。
+ * 修前是**文本锁**：读组件源码数 `toggleDirectionWrite\(` 的出现次数，并用一条带分号与**局部变量名**
+ * 的正则匹配 `const applied = applyToggleDirection(id, current, reading);`。它对注释与排版过敏
+ * （组件里一句提到该函数名的注释就假红），也对改名过敏（换掉那个局部变量名就假红）。
+ *
+ * 现在两道锁各司其职：
+ *   · **结构锁**（本用例）：`REFINED_DIRECTION_ENTRY` 的键集**只有** `applyToggleDirection`——
+ *     「同一纯决策只有一个求值点」在结构上写明；纯判定面的键集与取值也逐项钉住；
+ *   · **源码锁**（下面那条）：组件确实只读共用入口；判定前**先剥注释**，故对注释免疫。
+ * 组件**行为**仍归 T5 活体验收——这里断言的是「第二个求值点不存在」。
  */
-test("⑧-① 单点锁：组件不再自己求值那个纯决策（只消费 applyToggleDirection 的返回值）", () => {
-  const component = readFileSync(
-    fileURLToPath(new URL("../src/client/components/PromptManagerModal.tsx", import.meta.url)),
-    "utf8",
+test("⑧-① 结构锁（T7-3）：组件入口面只有 applyToggleDirection，纯判定面的键集与取值逐项钉住", () => {
+  assert.deepEqual(
+    Object.keys(REFINED_DIRECTION_ENTRY),
+    ["applyToggleDirection"],
+    "组件唯一入口 = applyToggleDirection（决策不在组件里被第二次求值）",
+  );
+  assert.equal(REFINED_DIRECTION_ENTRY.applyToggleDirection, applyToggleDirection, "取值 = 函数本身");
+  assert.deepEqual(
+    Object.keys(REFINED_DIRECTION_DECISIONS).sort(),
+    [
+      "bodyIsOriginal",
+      "canPersistDirection",
+      "compareLabelKeys",
+      "hasTwoBodies",
+      "oppositeDirection",
+      "parseStoredDirection",
+      "readRefinedDirection",
+      "shouldAcceptLateRead",
+      "toggleDirectionWrite",
+    ].sort(),
+    "纯判定面的键集（本模块对外承诺的判定清单）",
+  );
+  assert.equal(REFINED_DIRECTION_DECISIONS.toggleDirectionWrite, toggleDirectionWrite, "取值 = 函数本身");
+  assert.equal(REFINED_DIRECTION_DECISIONS.oppositeDirection, oppositeDirection, "取值 = 函数本身");
+  // 两个纯决策**不在**组件入口面里（结构上写明「它们是本模块的，不是组件可自行求值的」）。
+  assert.ok(!Object.keys(REFINED_DIRECTION_ENTRY).includes("toggleDirectionWrite"));
+  assert.ok(!Object.keys(REFINED_DIRECTION_ENTRY).includes("oppositeDirection"));
+  // 方向取值全集：三个值逐项断言（枚举常量，供渲染点与测试共读）。
+  assert.deepEqual(REFINED_DIRECTIONS, ["original", "refined", "none"]);
+});
+
+test("⑧-① 源码锁（T7-3）：组件不自己求值那两处纯决策——**剥注释后**判定", () => {
+  const component = stripComments(
+    readFileSync(
+      fileURLToPath(new URL("../src/client/components/PromptManagerModal.tsx", import.meta.url)),
+      "utf8",
+    ),
   );
   assert.equal(
     (component.match(/toggleDirectionWrite\s*\(/g) ?? []).length,
@@ -308,12 +358,11 @@ test("⑧-① 单点锁：组件不再自己求值那个纯决策（只消费 ap
   assert.equal(
     (component.match(/oppositeDirection\s*\(/g) ?? []).length,
     0,
-    "组件也不许自己算翻转后的方向——它取返回值里的 applied.next（本地态与落库值必须是同一个值）",
+    "组件也不许自己算翻转后的方向——它取返回值里的 next（本地态与落库值必须是同一个值）",
   );
-  assert.match(
-    component,
-    /const applied = applyToggleDirection\(id, current, reading\);/,
-    "组件读共用入口的返回值",
+  assert.ok(
+    /applyToggleDirection\s*\(/.test(component),
+    "组件读共用入口的返回值（不锁那一行的排版与局部变量名）",
   );
 });
 

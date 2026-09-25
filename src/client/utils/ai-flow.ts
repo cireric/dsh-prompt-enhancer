@@ -9,7 +9,8 @@
  */
 import type { Prompt, PromptWritablePatch } from "../../types.ts";
 import type { AiRefineResult } from "./api.ts";
-import { api } from "./api.ts";
+// `ApiError` 是**值**导入（T7-7 的 `probe` 标记按实例判定，不按 name / 文案猜）；`api` 仍只作清键缺省实现。
+import { ApiError, api } from "./api.ts";
 import { clampTitle } from "../../types.ts";
 import { needsValues } from "./template.ts";
 import { refinedDirectionMetaKey } from "./refined-direction.ts";
@@ -102,8 +103,21 @@ function statusOf(err: unknown): number | undefined {
   return typeof status === "number" ? status : undefined;
 }
 
-/** 客户端 toast 文案的 i18n key：超时 / AI 不可用 / 其它失败。 */
-export function aiErrorKey(err: unknown): "ai.timeout" | "ai.unavailable" | "ai.fail" {
+/**
+ * 探测超时（T7-7）：`api.ts#ApiError` 带 `probe` 标记 = 「探测路径 + 本客户端主动超时」这一次失败
+ * （该标记只在 `call()` 的超时分支出、且只有探测路径能走到那里）。
+ *
+ * 为什么按实例判定而不是按 name / 文案：探测超时被换成了 `ApiError`（它的 `name` 是 `Error`），
+ * 与「其余路径原样上抛的 `DOMException("TimeoutError")`」分属两个类型——分类器必须一眼分开它们。
+ */
+function isProbeTimeout(err: unknown): boolean {
+  return err instanceof ApiError && err.probe;
+}
+
+/** 客户端 toast 文案的 i18n key：**探测**超时 / 调用超时 / AI 不可用 / 其它失败。 */
+export function aiErrorKey(err: unknown): "ai.probeTimeout" | "ai.timeout" | "ai.unavailable" | "ai.fail" {
+  // 探测超时排在前面：它同样是「超时」，但用户要做的事不同（去查模型配置 / 网络，而不是重试调用）。
+  if (isProbeTimeout(err)) return "ai.probeTimeout";
   if (errorName(err) === "TimeoutError") return "ai.timeout";
   if (statusOf(err) === 503) return "ai.unavailable";
   return "ai.fail";
@@ -191,10 +205,15 @@ export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePr
   const ids = receiptIds(receipt) ?? input.ids;
   const deleteMeta = input.deleteMeta ?? ((key: string) => api.deleteMeta(key));
   // 5. **并发清**（重要-4）：淘汰条数由上限配置决定（上限 300 → 50 时一次新建会淘汰 ~250 条 ⇒ 2×N
-  //    把请求**一次性发出去**（同步 map 发起，顺序仍是「逐 id、逐键」的既有次序），再 allSettled 收结果。
+  //    把请求**一次性发出去**（顺序仍是「逐 id、逐键」的既有次序），再 allSettled 收结果。
+  //    T7-5①（P7 §10.4-5）：map 的同步抛出现在被逐键兜住——每个调用推迟到一个微任务里发起，
+  //    于是一次**同步抛出**变成「被拒绝的 promise」，交给下面的 allSettled 逐键收下（记 failed + warn）。
   const keys: string[] = [];
   for (const id of ids) for (const key of perPromptMetaKeys(id)) keys.push(key);
-  const settled = await Promise.allSettled(keys.map((key) => deleteMeta(key)));
+  // 旧写法 `keys.map((key) => deleteMeta(key))`：注入实现若**同步抛出**，异常会当场炸穿整个
+  // `deletePrompts`——一次已经成功的主删除被变成失败，正是本函数第 3 条语义要挡的事。
+  // 发起次序与并发度都不变（同一轮微任务里全部发出）。
+  const settled = await Promise.allSettled(keys.map((key) => Promise.resolve().then(() => deleteMeta(key))));
   let succeeded = 0;
   let failed = 0;
   for (let i = 0; i < settled.length; i++) {

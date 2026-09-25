@@ -26,7 +26,14 @@ import { fileURLToPath } from "node:url";
 // 纯判定模块零依赖，可以被 node --test 直接 import（Node 24 的类型擦除）。
 // T7 ③：**两条 claim 守卫**也从这里 import——组件（HashSuggestOverlay 的 A/B 两条 effect）与本文件的
 // 步进模型读的是同一对函数，不再是各抄一份算式（同源锁见下面「1c」段）。
-import { canRender, canRetakeHash, canTakeHash } from "../src/overlay-claim.ts";
+// T7-3：**守卫对象 / 占屏面枚举常量**也从这里 import——结构锁锁的就是它们的键集与取值。
+import {
+  HASH_CLAIM_GUARDS,
+  OVERLAY_SURFACES,
+  canRender,
+  canRetakeHash,
+  canTakeHash,
+} from "../src/overlay-claim.ts";
 
 // store 面是模块级单例，用例之间共享状态，故每个用例自行收敛（与 tests/ui-state.test.mjs 同口径，
 // 不引入 test-only 复位 API）。
@@ -44,15 +51,26 @@ const {
 } = await import("../src/client/utils/ui-state.ts");
 const reactHooks = await import("../src/client/utils/react-hooks.ts");
 
-/** 会占屏的三个面（与 `OverlaySurface` 一致）。 */
-const KINDS = ["hash", "library", "ai"];
-/** 寄存器（`OverlayKind`）的取值全集。 */
-const CLAIMED = ["none", "hash", "library", "ai"];
+/**
+ * 会占屏的三个面与寄存器取值全集：**取自被测模块的枚举常量**（T7-3 结构锁），不再在这里另抄一份
+ * ——测试与模块各维护一张清单迟早分叉。清单的**取值**由下面「1c 结构锁」的 deepEqual 钉死
+ * （派生 + 显式断言：既不会漂移，也不会因为「跟着模块改」而变成恒真）。
+ */
+const KINDS = [...OVERLAY_SURFACES];
+const CLAIMED = ["none", ...OVERLAY_SURFACES];
 
 /** 用例之间把两个共享单例收敛回初值。 */
 function settle() {
   for (const kind of KINDS) releaseOverlay(kind);
   setHashSuggestVisible(false);
+}
+
+/**
+ * 剥掉注释（T7-3）：块注释先、行注释后（与 `tests/i18n.test.mjs` 的 R59 口径同一形态）。
+ * 方向是保守的：只会让某个真引用看不见（误报），绝不会凭空造出一个引用（假绿）。
+ */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 }
 
 /** 此刻被放行的面（与三个消费组件的门同形：`canRender(kind, claimed)`；各面还要与自己前置条件相与）。 */
@@ -121,41 +139,55 @@ test("canRetakeHash（effect B 的守卫）：只有「可见**且**寄存器不
   assert.equal(canRetakeHash(true, "ai"), true, "被夺（AI 面板）⇒ 重取");
 });
 
-// ---- 1c) 同源锁（T7 ③）：同一份守卫 ≠ 两份恰好相同 ----
+// ---- 1c) 结构锁（T7-3 / P7 §10.4-3）：锁键集与取值，不锁源码文本形状 ----
 
 /**
  * 组件（`.tsx`）在本仓库**没有自动化渲染通道**（无 react-dom / jsdom，全局硬约束 5），所以组件侧
- * 能锁的不是行为，而是**同源**这件事本身：组件里只有 import + 调用，算式在全仓只有一份。
- * 这不是「假装覆盖组件行为」——它断言的是「第二份实现不存在」，与 T2/T3 的函数恒等锁同类；
- * 组件**行为**仍归 T5 活体验收（见文件头 R-P7-C 段）。
+ * 能锁的不是行为。修前那两道锁都是**文本锁**：① 扫全仓找 `!== "hash"` 这个字面形状；② 逐行匹配
+ * 组件里的调用形态（先找含 `overlay-claim.ts` 的那一行，再按整条表达式匹配）。它们对注释、换行、
+ * 改名、抽取常量都过敏——一句提到该表达式的注释就能让它假红。
+ *
+ * 现在拆成两道各司其职的锁：
+ *   · **结构锁**（本用例）：被测模块导出**守卫对象 / 枚举常量**，这里断言**键集与取值**（函数身份 +
+ *     形参数）——与源码文本形状彻底无关；
+ *   · **源码锁**（下面那条）：组件确实只有 import + 调用、不内联算式；判定前**先剥注释**，故对注释免疫。
+ * 组件**行为**仍归 T5 活体验收（见文件头 R-P7-C 段）：它断言的是「第二份实现不存在」，不是行为。
  */
-test("同源锁：守卫算式在 src/** 里**只有一份**（在 overlay-claim.ts），组件只有 import + 调用", () => {
+test("结构锁（T7-3）：守卫对象与占屏面清单的**键集与取值**逐项钉住（对注释与排版免疫）", () => {
+  // ① 守卫对象：键集 = 本模块承诺的守卫面；取值就是本模块导出的那两个函数（不是抄来的副本）。
+  assert.deepEqual(Object.keys(HASH_CLAIM_GUARDS), ["canTakeHash", "canRetakeHash"], "守卫对象的键集");
+  assert.equal(HASH_CLAIM_GUARDS.canTakeHash, canTakeHash, "取值 = canTakeHash 本身");
+  assert.equal(HASH_CLAIM_GUARDS.canRetakeHash, canRetakeHash, "取值 = canRetakeHash 本身");
+  // 形参数是两条不变量的类型侧形态（A 不看寄存器 / B 必须看活寄存器，见 1b 段）。
+  assert.equal(HASH_CLAIM_GUARDS.canTakeHash.length, 1, "A 的守卫只收 visible 一个形参");
+  assert.equal(HASH_CLAIM_GUARDS.canRetakeHash.length, 2, "B 的守卫收 visible + 活寄存器");
+  // ② 占屏面清单：**取值**逐项断言（不是「等于模块自己那份常量」那种恒真读法）。
+  assert.deepEqual(OVERLAY_SURFACES, ["hash", "library", "ai"], "占屏面的取值全集（顺序即枚举顺序）");
+  assert.deepEqual(KINDS, ["hash", "library", "ai"], "前面几条真值表用的就是这份清单");
+});
+
+test("源码锁（T7-3）：守卫算式在 src/** 里只有一份，组件只有 import + 调用——**剥注释后**判定", () => {
   const srcDir = fileURLToPath(new URL("../src", import.meta.url));
   const files = readdirSync(srcDir, { recursive: true })
     .map(String)
     .filter((rel) => rel.endsWith(".ts") || rel.endsWith(".tsx"));
   assert.ok(files.length > 0, "必须真的扫到 src/** 的源码（0 个文件 = 本检查是空转）");
+  /** 剥注释后再判：注释里提到算式不再影响结论（旧锁正是在这里对注释过敏）。 */
+  const stripped = (rel) => stripComments(readFileSync(join(srcDir, rel), "utf8"));
 
   // ① 算式（`!== "hash"`）只许出现在唯一实现里：抄回组件、抄进第三处 ⇒ 必红。
-  const withGuardExpr = files.filter((rel) => readFileSync(join(srcDir, rel), "utf8").includes('!== "hash"'));
+  const withGuardExpr = files.filter((rel) => stripped(rel).includes('!== "hash"'));
   assert.deepEqual(withGuardExpr, ["overlay-claim.ts"], "守卫算式只能有一份（换成两份恰好相同 = 同源失守）");
 
-  // ② 组件从**同一个模块** import 这对守卫（同一路径、同一名字），并在 A/B 两条 effect 里调用。
-  const component = readFileSync(join(srcDir, "client/components/HashSuggestOverlay.tsx"), "utf8");
-  const importLine = component.split("\n").find((line) => line.includes("overlay-claim.ts"));
-  assert.ok(importLine, "组件必须从 overlay-claim.ts 导入判定");
-  assert.match(importLine, /\bcanTakeHash\b/, "…且导入 canTakeHash（A 的守卫）");
-  assert.match(importLine, /\bcanRetakeHash\b/, "…且导入 canRetakeHash（B 的守卫）");
-  assert.match(
-    component,
-    /if \(canTakeHash\(visible\)\) claimOverlay\("hash"\)/,
-    "A 的 effect 体读共用守卫（不许内联算式）",
-  );
-  assert.match(
-    component,
-    /if \(canRetakeHash\(visible, getOverlayClaimSnapshot\(\)\)\) claimOverlay\("hash"\)/,
-    "B 的 effect 体读共用守卫，且第二个实参是**活寄存器**的读值",
-  );
+  // ② 组件从**同一个模块** import 这对守卫（名字取自结构锁的键集），且**不内联**任何算式。
+  const component = stripped("client/components/HashSuggestOverlay.tsx");
+  assert.ok(component.includes("overlay-claim.ts"), "组件必须从 overlay-claim.ts 导入判定");
+  for (const guard of Object.keys(HASH_CLAIM_GUARDS)) {
+    assert.ok(component.includes(guard), "组件必须从 overlay-claim.ts 导入 " + guard);
+    // 真的**调用**它（不锁那一行的排版与实参写法：旧锁正是拿整条表达式去匹配，换行/改名即假红）。
+    assert.ok(new RegExp(guard + "\\s*\\(").test(component), "…且真的调用 " + guard + "（不许各抄一份算式）");
+  }
+  assert.equal(component.includes('!== "hash"'), false, "组件不得内联守卫算式（第二份实现）");
 });
 
 // ---- 2) store：claimOverlay / releaseOverlay / 订阅 ----

@@ -418,8 +418,9 @@ export function setMetaValue(key: string, value: string): void {
  * **键不存在也成功**（幂等）：调用方要的是「键不在了」这个**目标状态**，重复清一次不该失败；
  * 返回值只如实说明「这次删掉了没有」，供上层的清理计数（不是失败信号）。
  *
- * 形态刻意**通用**：meta 是宿主的中立 KV 表，键名约定（`pl:` 前缀、`<用途>:<promptId>` 分段）
- * 全归客户端；宿主不认识任何具体键名，也不为此做特判——否则两处就耦合成一份隐式契约。
+ * 形态刻意**通用**：meta 是宿主的中立 KV 表，**键名约定（前缀、分段、以及 `<用途>:<id>` 的排布）
+ * 全归客户端**；宿主不认识任何具体键名，也不为此做特判——否则两处就耦合成一份隐式契约
+ * （T7-5② / P7 §10.4-5：宿主侧连「客户端键长什么样」都不写，只认一条**不透明的键**）。
  */
 export function deleteMetaValue(key: string): boolean {
   const res = getDb().prepare("DELETE FROM meta WHERE key = ?").run(key);
@@ -678,13 +679,15 @@ export function deleteTrash(ids: string[]): number {
 /**
  * 清空回收站：**返回被物理删除的 id 列表**（T7 ⑦；旧形态是删除条数）。
  *
- * 为什么必须是 id 列表：`DELETE FROM trash` 是**一次性**的，而客户端清 per-prompt meta 键
- * （`pl:refined-dir:` / `pl:skill-descriptor:`）需要知道**真的删掉了哪几条**。回收站面板手里的
- * items 是**打开那一刻**的快照，清空与列表之间存在竞态窗口：窗口内新增的回收站行同样被这条语句删掉，
- * 却不在快照里 ⇒ 它那一对键永远没人清（T6 报告 §5 记的残口）。回执里带上 id 之后，客户端按**回执**
- * 清键（`client/utils/ai-flow.ts#deletePrompts` 的 `receiptIds`），与面板列了什么彻底解耦。
+ * 为什么必须是 id 列表：`DELETE FROM trash` 是**一次性**的，而客户端要清它自己的 per-prompt meta 键
+ * ——它需要知道**真的删掉了哪几条**。回收站面板手里的 items 是**打开那一刻**的快照，清空与列表之间的
+ * 竞态窗口内新增的回收站行同样被这条语句删掉，却不在快照里 ⇒ 它那一对键永远没人清（T6 报告 §5 记的
+ * 残口）。回执里带上 id 之后，客户端按**回执**清键（`client/utils/ai-flow.ts#deletePrompts` 的
+ * `receiptIds`），与面板列了什么彻底解耦。
  *
- * **不含 `pl:` 键名约定**：这里只回「哪些行没了」，怎么用是客户端的事（T6-B 的通用形态）。
+ * **不含任何客户端键名约定**（T7-5② / P7 §10.4-5）：键名（前缀、用途段、`<用途>:<id>` 的排布）
+ * 只存在于客户端——写进宿主就是把它耦合成一份两处各写一半的隐式契约。这里只回「哪些行没了」，
+ * 怎么用是客户端的事（T6-B 的通用形态）。
  * 语句仍在**一个事务**里（先读 id 再删），读到的集合就是被删的集合。
  */
 export function emptyTrash(): string[] {
