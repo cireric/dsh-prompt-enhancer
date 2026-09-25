@@ -26,10 +26,14 @@ export type SidebarPromptEntryProps = PropsRuntime<"sidebar.footer.action"> &
 
 /**
  * 宽窄两态：`wide === false` 是 56px 收起轨道，只放图标（正方形点击区）；`wide === true` 出文字。
- * 宽态几何与宿主条目同形（P8 T8，反馈 F1；R1 采纳两条修复）：内容左对齐、行高 42、宿主实测的
- * 非对称内边距 `0 10px 0 8px`（内容起始 x 与宿主相同）、无自绘描边、以 `flex: 1` + `minWidth: 0`
- * 填满该行（与宿主同类整行 occupant 同形，不再靠 `width: 100%` 撑满；
- * 宿主 `SidebarRoot.module.css:388-389`：每个 occupant 自负 button geometry）；
+ * 宽态几何与宿主条目同形（P8 T8，反馈 F1；R1 两条修复 + R2 由活体读数驱动的一处纠正）：内容左对齐、
+ * 行高 42、宿主实测的非对称内边距 `0 10px 0 8px`（内容起始 x 与宿主相同）、无自绘描边、`overflow: hidden`、
+ * `line-height: 22`（后两项同宿主 `.trigger`）。
+ * 横向填满该行用 `alignSelf: "stretch"`（交叉轴填满，flex 原生）而**不是** `flex: "1"`：本按钮的宿主容器
+ * `footerActions` 是 **column** 容器（活体实测：`flex: "1"` = `1 1 0%` 的 flex-basis 走纵轴，直接盖掉
+ * `height: 42`，行高塌成 15px），故 `flex` 恒为 `"0 0 auto"`；`alignSelf: "stretch"` 在 column 容器里
+ * 沿交叉轴（水平）填满，若容器是 row 则退化为无害的 no-op（`height` 已显式给定）。
+ * 宿主 `SidebarRoot.module.css:388-389`：每个 occupant 自负 button geometry；
  * 轨道态保持 P6 活体验收时的现状（28×28、内容居中、无内边距、含 1px 描边——56px 轨道是另一视觉语境）。
  * 仍不引任何 UI 依赖。
  */
@@ -41,9 +45,12 @@ function entryStyle(wide: SidebarFooterActionOwnerProps["wide"]): React.CSSPrope
     gap: 4,
     height: wide ? 42 : 28,
     width: wide ? undefined : 28,
+    alignSelf: wide ? "stretch" : undefined,
     padding: wide ? "0 10px 0 8px" : 0,
-    flex: wide ? "1" : "0 0 auto",
+    flex: "0 0 auto",
     minWidth: wide ? 0 : undefined,
+    overflow: wide ? "hidden" : undefined,
+    lineHeight: wide ? 22 : undefined,
     fontSize: 12,
     color: TOKEN.fg,
     background: "transparent",
