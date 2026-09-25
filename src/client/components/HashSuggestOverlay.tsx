@@ -10,7 +10,9 @@
  * 关闭路径有两条：① 令牌消失（用户删掉 `#` 或补了空格）；② R47 起，点浮层**外部**收起自己——
  * 与词库面板 / AI 面板同一套互斥约定（document 捕获阶段的 pointerdown **纯监听**，
  * 不改宿主 DOM，见 `PromptLibraryButton` / `AIPolishButton`）。它只关自身、不抢键、不改草稿；
- * 被关掉后令牌没变，故浮层保持收起，直到草稿被继续编辑（令牌位置或查询词变化 = 一次新的打开）。
+ * 被关掉后令牌没变，故浮层保持收起，直到草稿被继续编辑（令牌位置或查询词变化 = 一次新的打开）；
+ * **令牌消失也会把收起态复位**（R48）——否则「收起 → 删光令牌 → 在同一起点重打同一查询词」
+ * 会复现同一个令牌身份，浮层被永久静默抑制。该判定是 `utils/hash-token.ts` 的纯函数，本组件只消费。
  *
  * 职责单一：读草稿 → 判尾令牌 → 渲染候选 → 点击改草稿。纯逻辑一律复用既有
  * 函数：令牌检测/替换/过滤走 `../utils/hash-token.ts`，变量判定走
@@ -21,7 +23,13 @@ import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type { Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
-import { filterPrompts, readHashToken, replaceHashToken } from "../utils/hash-token.ts";
+import {
+  filterPrompts,
+  nextDismissedKey,
+  readHashToken,
+  replaceHashToken,
+  shouldShowSuggest,
+} from "../utils/hash-token.ts";
 import { promptSummary } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
@@ -46,7 +54,9 @@ export function HashSuggestOverlay({
    * 查询词变化）就是一次新的打开，浮层重新出现。
    */
   const [dismissedKey, setDismissedKey] = React.useState<string | null>(null);
-  const visible = tokenKey !== null && dismissedKey !== tokenKey;
+  // R48：判定抽在 `utils/hash-token.ts`（纯模块），组件只消费——组件面没有渲染测试通道，
+  // 判定留在组件里就只能靠活体验收，变异无从证起。
+  const visible = shouldShowSuggest({ open, tokenKey, dismissedKey });
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   /** null = 本次打开还没加载完。 */
   const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
@@ -61,6 +71,9 @@ export function HashSuggestOverlay({
   React.useEffect(() => {
     if (!open) {
       setPending(null);
+      // R48：令牌消失必须把「已收起」一并复位，否则「收起 → 删光令牌 → 在同一起点重打同一查询词」
+      // 会复现同一个 tokenKey，浮层被**永久静默**抑制（同一状态值重复设置会被 React 跳过，无渲染环）。
+      setDismissedKey((prev) => nextDismissedKey(open, prev));
       return;
     }
     let alive = true;

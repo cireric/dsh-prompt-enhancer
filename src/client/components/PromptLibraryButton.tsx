@@ -13,6 +13,7 @@ import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots
 import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
+import { readHashToken } from "../utils/hash-token.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
@@ -46,6 +47,12 @@ export function PromptLibraryButton({
   inputActions,
 }: PromptLibraryButtonProps): React.ReactElement | null {
   const draft = useInput((s) => s.draft);
+  /**
+   * R49：草稿此刻是否处于「会触发 `#` 候选浮层」的状态。判定复用 `hash-token.ts` 的既有纯函数，
+   * 组件不重写令牌解析。门与 `HashSuggestOverlay` 的显示门**同源**（当前 = 令牌存在；P8 把
+   * `hashTriggerEnabled` 接进浮层时两处同改）。
+   */
+  const hashOpen = readHashToken(draft) !== null;
   /** null = 设置未就绪：先不渲染按钮，避免「本该隐藏却又闪一下」。 */
   const [settings, setSettings] = React.useState<PluginSettings | null>(null);
   const [open, setOpen] = React.useState(false);
@@ -130,6 +137,18 @@ export function PromptLibraryButton({
     setOpen(false);
     setPending(null);
   };
+
+  /**
+   * R49：草稿**进入**「会触发 `#` 浮层」的状态时收起词库面板——R47 只覆盖了「点词库按钮」这一个
+   * 指针入口，反向入口（输入框仍持焦点时直接敲 `#`、或程序化改草稿）会让两个浮层同屏。
+   *
+   * 只观察**边沿**（依赖 `hashOpen`，不依赖 `open`）：草稿里本就有 `#令牌` 时点词库按钮
+   * **不得**被立刻收掉，否则按钮看起来坏了（P4 既有行为劣化）。`close` 只调两个稳定的 setState，
+   * 不捕获可变值，故不必进依赖。
+   */
+  React.useEffect(() => {
+    if (hashOpen) close();
+  }, [hashOpen]);
 
   /**
    * 沉淀入口 B 的落库前段（R4：pushCapture 由本组件调用）：选中正文推进 store，再打开管理面板。

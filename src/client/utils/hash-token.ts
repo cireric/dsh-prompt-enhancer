@@ -13,6 +13,36 @@ export function readHashToken(draft: string): { query: string; start: number } |
   return { query: m[2] ?? "", start };
 }
 
+/**
+ * `#` 候选浮层此刻该不该显示（R48）。
+ *
+ * 抽成纯函数的理由：这是本仓库**第三次**同类缺陷——「静默抑制」（T3 的选中浮出、R34 的 store
+ * 载荷、R47 的收起态），而组件面没有自动化渲染测试通道（无 react / jsdom，全局硬约束 5）。
+ * 判定留在纯模块里才有变异可证：`tests/hash-token.test.mjs` 锁住「令牌消失 → 收起态必须复位」。
+ *
+ * 显示 = 令牌在（`open`，与 `tokenKey !== null` 同义）**且** 这个令牌不是被「点浮层外部」收起的那个。
+ */
+export function shouldShowSuggest(input: {
+  open: boolean;
+  tokenKey: string | null;
+  dismissedKey: string | null;
+}): boolean {
+  return input.open && input.tokenKey !== null && input.dismissedKey !== input.tokenKey;
+}
+
+/**
+ * 令牌消失（`open === false`）时，收起态必须**复位**（R48 的缺陷本体）。
+ *
+ * 不复位就会永久静默：收起 → 删光令牌 → 在**同一起点**重打**同一**查询词 → `tokenKey` 完全相同
+ * → 浮层被上一轮的收起态压住，`#` 候选不再出现（再多敲一个字符才恢复，即「静默」）。
+ *
+ * 令牌仍在时保持收起态：同一令牌被点外部收起后不自弹回，草稿继续编辑（位置/查询词变化）才算
+ * 一次新的打开。组件侧调用点见 `src/client/components/HashSuggestOverlay.tsx`。
+ */
+export function nextDismissedKey(open: boolean, dismissedKey: string | null): string | null {
+  return open ? dismissedKey : null;
+}
+
 /** 用正文替换尾令牌（保留令牌之前的文本，令牌与正文之间保留一个空格）。 */
 export function replaceHashToken(draft: string, body: string): string {
   const token = readHashToken(draft);
