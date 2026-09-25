@@ -56,6 +56,13 @@ import {
 } from "../utils/dialog-style.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { promptSummary } from "../utils/insert.ts";
+import {
+  compareLabelKeys,
+  loadStoredDirection,
+  oppositeDirection,
+  resolveRefinedDirection,
+  saveRefinedDirection,
+} from "../utils/refined-direction.ts";
 import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
 import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
 import { ImportExportModal } from "./ImportExportModal.tsx";
@@ -568,13 +575,14 @@ interface PromptDetailProps {
  * 仅 `canToggle(prompt)` 为真时渲染；切换走 `POST /prompts/:id/rollback`（宿主语义是 **swap**），
  * 用返回的整条 `Prompt` 替换本地态，故可反复点。失败按 R27 走 `error.*` 文案 + `console.warn`。
  *
- * ⚠️ **R59（F-5 / I-1 的部分收口）：两栏不得声称某一栏是「原文」或「优化稿」。** `rollback` 是 swap，
- * 宿主**不记录方向**（`aiRefined` 只在 AI 写回缝置位），客户端无从知道哪一份是原文：切一次
- * → 关面板 → 重开编辑页，左栏会显示优化稿却标着 Original、右栏显示原文却标着 Refined（C8 只因切了
- * 两次回到自洽态才没炸）。本次只做「**不再用错误标签断言方向**」：栏标题按**实际字段**给
- * （`body` = 当前正文，`sourceBody` = 另一份），并去掉按猜测方向着色的 `bodyIsOriginal` 状态与
- * `Current body: …` 那行。**根治（为方向做持久化）归 P7**（规格 §13.10-五-4），本次不引入新存储键、
- * 不改宿主路由；切换按钮与 `canToggle` 守卫保留（能力不减）。
+ * ⚠️ **方向（R59 / F-5 的 I-1，本轮由 T4 根治）**：`rollback` 是 swap，宿主**不记录方向**——它只对调
+ * 两份正文（`aiRefined` 原样保留），所以「此刻的 `body` 是哪一侧」必须由客户端**自己记**。P6 的做法是
+ * 「不再用错误标签断言方向」（两栏按实际字段给中性标题），代价是方向永久不可知（切一次 → 关面板 →
+ * 重开编辑页就靠猜）。本轮把方向**持久化在该提示词上**：切换成功后写 meta（`pl:refined-dir:<id>`，
+ * 见 `utils/refined-direction.ts`），重开详情页时读回来 ⇒ 已知方向**如实标注**（原文 / 优化稿）；
+ * 确实无从判断时（只有一侧，或没有记录且 `aiRefined` 为假）才退回 P6 的中性表述。
+ * 判定、翻转与「方向 → 标注」的映射都在纯逻辑模块里（可单测），本组件只做接线；不引入新存储键、
+ * 不改宿主路由，切换按钮与 `canToggle` 守卫保留（能力不减）。
  */
 function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElement {
   const initial = target.kind === "edit" ? target.prompt : null;
@@ -596,6 +604,25 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
       aliveRef.current = false;
     };
   }, []);
+
+  /**
+   * 该提示词的**已存方向**（meta 的原文文本；`undefined` = 没有记录 / 读取失败）。方向是**持久化**的
+   * 而不是本组件的局部状态：每次进详情页（含「切一次 → 关面板 → 重开编辑」）都重读一次，读回来的值
+   * 与现状一起交给 `resolveRefinedDirection` 合并（P6 之前导出的记录没有这个键 ⇒ 走兜底，不抛）。
+   */
+  const [storedDirection, setStoredDirection] = React.useState<string | undefined>(undefined);
+
+  React.useEffect(() => {
+    const id = initial === null ? null : initial.id; // 新建态：还没有 id，也就没有方向记录可读
+    if (id === null) return;
+    let alive = true;
+    void loadStoredDirection(id, api.getMeta).then((raw) => {
+      if (alive) setStoredDirection(raw);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [initial === null ? null : initial.id]);
 
   const blankBody = body.trim() === "";
 
@@ -652,8 +679,8 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
 
   /**
    * §4.4 切换：宿主执行 swap(body, sourceBody)，返回值整条替换本地态（可反复点）。
-   * R59：**不再翻转任何「方向」标志**——客户端无从知道交换后哪一份成了原文（见文件头 F-5 段），
-   * 两栏标题按返回记录的实际字段渲染，故交换后自然跟着换位。
+   * T4（I-1 根治）：宿主只换正文、不留方向 ⇒ 切换必须把**翻转后的方向**落 meta，否则重开编辑页
+   * 就会张冠李戴；翻转用 `oppositeDirection`（未知方向翻转后仍是未知 ⇒ 不写，不得落一个猜的值）。
    */
   const toggle = (): void => {
     if (busy !== "idle" || current === null) return;
@@ -664,9 +691,15 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     void (async () => {
       try {
         const swapped = await api.rollbackPrompt(id);
+        // 宿主执行的是 **swap** ⇒ 方向翻转。落库**不依赖组件是否还在世**：宿主此刻已经 swap 完，
+        // 记录晚写或不写就等于「重开编辑页张冠李戴」（与 skill-export 的「完成即广播」同款理由）。
+        // saveRefinedDirection 内部：none 不写、写失败只 warn —— 不改变下面的结局，也不阻塞广播。
+        const next = oppositeDirection(direction);
+        void saveRefinedDirection(id, next);
         if (!aliveRef.current) return;
         setCurrent(swapped);
         setBody(swapped.body);
+        setStoredDirection(next === "none" ? undefined : next);
         notifyDataChanged();
       } catch (err) {
         console.warn("[prompt-enhancer] 两份正文互换失败", err);
@@ -684,8 +717,13 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     })();
   };
 
-  // R59：栏标题只说**事实**——本页可直接编辑的那一份是 `body`，另一份是 `sourceBody`
-  // （`canToggle` 保证它非空）。不再用「原文 / 优化稿」这类客户端猜不出来的方向断言。
+  /**
+   * 方向（三态）与两栏标注键：判定只发生在 `refined-direction.ts` 的纯函数里（可单测），组件只把结果
+   * 渲染成 `t(...)`。左栏恒是**本页可直接编辑的那一份**（`body`），右栏是 `sourceBody`
+   * （`canToggle` 保证它非空）——方向只决定**标注**，不改变两栏的取值。
+   */
+  const direction = current === null ? "none" : resolveRefinedDirection(current, storedDirection);
+  const labels = compareLabelKeys(direction);
   const currentBodyShown = current === null ? "" : current.body;
   const counterpartBody = current === null ? "" : (current.sourceBody ?? "");
   const busyButton = blankBody || busy !== "idle";
@@ -785,15 +823,18 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
           <span style={dialogTitle}>{t("manager.compare.title")}</span>
           <div style={compareGrid}>
             <span style={compareBlock}>
-              <span style={compareHead}>{t("manager.compare.current")}</span>
+              <span style={compareHead}>{t(labels.current)}</span>
               <span style={compareBody}>{currentBodyShown}</span>
             </span>
             <span style={compareBlock}>
-              <span style={compareHead}>{t("manager.compare.counterpart")}</span>
+              <span style={compareHead}>{t(labels.counterpart)}</span>
               <span style={compareBody}>{counterpartBody}</span>
             </span>
           </div>
-          <span style={muted}>{t("manager.compare.unknownDirection")}</span>
+          {/* 方向不可知（只有一侧 / 没有记录且 aiRefined 为假）⇒ 中性表述；已知 ⇒ 说明它已被记录。 */}
+          <span style={muted}>
+            {t(labels.neutral ? "manager.compare.unknownDirection" : "manager.compare.directionPersisted")}
+          </span>
           <div style={actions}>
             <button
               type="button"

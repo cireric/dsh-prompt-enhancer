@@ -96,6 +96,10 @@ export const zh = {
   "manager.compare.toggle": "互换两份正文",
   "manager.compare.toggling": "正在互换…",
   "manager.compare.unknownDirection": "宿主不记录哪一份是原文，这里只并列两份正文；互换后两份对调。",
+  // P7 T4（I-1 根治）：方向已按提示词持久化（pl:refined-dir:<id>），已知方向时如实标注。
+  "manager.compare.original": "原文",
+  "manager.compare.refined": "优化稿",
+  "manager.compare.directionPersisted": "方向已随这条提示词记录：关闭面板再打开，两栏标注不变。",
 
   // ── P6 T4：标签页 / 回收站页 / 共享确认弹窗 / 淘汰二次确认 ────────────────
   "manager.tags.empty": "还没有标签",
@@ -307,6 +311,10 @@ export const en: Record<keyof typeof zh, string> = {
   "manager.compare.toggle": "Swap the two bodies",
   "manager.compare.toggling": "Swapping…",
   "manager.compare.unknownDirection": "The host does not record which body is the original, so both are shown side by side; swapping exchanges them.",
+  // P7 T4 (root fix for I-1): the direction is persisted per prompt (pl:refined-dir:<id>), so a known direction is labelled as such.
+  "manager.compare.original": "Original",
+  "manager.compare.refined": "Refined draft",
+  "manager.compare.directionPersisted": "The direction is recorded with this prompt: close the panel and reopen it and the labels stay the same.",
 
   // ── P6 T4: tags / trash / shared confirm / pre-eviction confirmation ─────
   "manager.tags.empty": "No tags yet",
