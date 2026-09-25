@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeDispatch } from "./helpers/fake-http.mjs";
 
 const { api, ApiError, AI_TIMEOUT_MS, AI_PROBE_TIMEOUT_MS } = await import("../src/client/utils/api.ts");
 
@@ -13,35 +14,9 @@ const { api, ApiError, AI_TIMEOUT_MS, AI_PROBE_TIMEOUT_MS } = await import("../s
  */
 const HOME_BEFORE_API_TEST = process.env.DSH_HOME;
 
-/**
- * 假 IncomingMessage / ServerResponse（与 tests/skill-export-route.test.mjs / meta-delete.test.mjs 同款）：
- * 只够 `routes.ts` 的手写分发层用。**本文件的其它用例都不需要它们**——只有下面那条「真分发」用例
- * 会绕过打桩的 fetch，直接调宿主的 handler。
- */
-function fakeReq(method, url, body) {
-  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body), "utf8")];
-  return {
-    method,
-    url,
-    async *[Symbol.asyncIterator]() {
-      for (const chunk of chunks) yield chunk;
-    },
-  };
-}
-
-function fakeRes() {
-  return {
-    statusCode: 0,
-    headers: {},
-    body: "",
-    setHeader(name, value) {
-      this.headers[name] = value;
-    },
-    end(chunk) {
-      this.body = chunk;
-    },
-  };
-}
+// 假 IncomingMessage / ServerResponse（+ 「真跑一次分发」）**在 `tests/helpers/fake-http.mjs`**：
+// 本文件原先的那份与 meta-delete / skill-export-route 逐字相同（R1 必修 1 / 追加项），现已统一。
+// **本文件的其它用例都不需要它**——只有下面那条「真分发」用例会绕过打桩的 fetch，直接调宿主的 handler。
 
 /** 打桩 globalThis.fetch：记录每次调用，调用方必须 try/finally 复原。 */
 function stubFetch(handler) {
@@ -433,6 +408,12 @@ test("DELETE /trash 信封（真分发）：removed 仍是**数字**、被删 id
   try {
     const store = await import("../src/host/store.ts");
     const { makeRoutes } = await import("../src/host/routes.ts");
+    // **本文件与另三处的差异**：`makeRoutes` 是本用例**在里面**动态 import 的（这个用例要自己
+    // 重指 `DSH_HOME`），故 `makeDispatch` 也只能在这里构造；`API_PREFIX` 同样按本文件的动态
+    // import 口径取（它正是路由注册用的那个常量 ⇒ 拼出来的路径与原先硬写的
+    // "/api/prompt-enhancer/trash" **逐字相同**）。
+    const { API_PREFIX } = await import("../src/types.ts");
+    const dispatch = makeDispatch({ makeRoutes, API_PREFIX });
     const trashIds = [];
     for (const title of ["甲", "乙"]) {
       const p = store.createPrompt({ title, body: title + " 的正文" });
@@ -440,11 +421,8 @@ test("DELETE /trash 信封（真分发）：removed 仍是**数字**、被删 id
       trashIds.push(p.id);
     }
 
-    const callEmptyTrash = async () => {
-      const res = fakeRes();
-      await makeRoutes()[0].handler(fakeReq("DELETE", "/api/prompt-enhancer/trash"), res);
-      return { status: res.statusCode, envelope: JSON.parse(res.body) };
-    };
+    /** 真跑一次 `DELETE /trash`（路径相对 API_PREFIX；假 req/res 在 helper 里）。 */
+    const callEmptyTrash = () => dispatch("DELETE", "/trash");
 
     const first = await callEmptyTrash();
     assert.equal(first.status, 200);
