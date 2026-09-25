@@ -30,7 +30,7 @@ import { api, type AiRefineResult, type AiSelectable } from "../utils/api.ts";
 import { createFromCapture, type CaptureOutcome } from "../utils/capture.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { claimOverlay, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
+import { claimOverlayIfFree, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
 
 /** 输入框旁「AI 优化」按钮。 */
 export type AIPolishButtonProps =
@@ -141,7 +141,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const aiVisible = aiWanted && canRender("ai", claimed);
 
   /**
-   * claim 接线（T1）：**只取空屏**（`claimed === "none"` 时才取），被别面占着就让位，屏一空出来再取。
+   * claim 接线（T1）：**只取空屏**（`claimOverlayIfFree`：写入那一刻寄存器真的空着才取），被别面占着
+   * 就让位，屏一空出来再取。
    *
    * 为什么本面不抢——这与词库面板 / `#` 浮层**刻意不同**：
    *  - 那两面的前置条件是**一次激活**（点击 / 令牌出现），抢屏＝「最新意图胜出」，抢完不会把谁永久压住
@@ -164,9 +165,16 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
       releaseOverlay("ai");
       return;
     }
-    if (claimed === "ai") return;
-    if (claimed !== "none") return;
-    claimOverlay("ai");
+    // **活寄存器**，不是本次渲染的快照（修复轮 1 的评审发现）：`claimOverlayIfFree` 把「此刻是否真的
+    // 空着」的判定与写入收进 store（同步、原子）。用 `claimed` 快照做守卫是 TOCTOU：本 effect 在**提交
+    // 之后**才跑，而 `claimed` 是**本次渲染那一刻**的值——提交与本次 flush 之间，寄存器可能已被更早的
+    // effect（`#` 浮层所在的 slot 在本 slot 之前 ⇒ 它先抢）或两次事件之间的一个回调（词库 onClick 的
+    // `claimOverlay("library")`）改写；那样 `claimOverlay("ai")` 就成了**无条件最后写者**：在屏的
+    // `#` 浮层被压掉，而它的 `visible` 不跳变 ⇒ 令牌仍在却**没有重取时机** = 永久静默（比同屏更坏）。
+    //
+    // deps 保留 `claimed`：它是**唤醒信号**——别面释放（寄存器转 `none`）时本 effect 必须重跑来取屏，
+    // 否则本面要等到下一次无关渲染才有机会上屏；`claimOverlayIfFree` 自身幂等，重跑无副作用。
+    claimOverlayIfFree("ai");
   }, [aiWanted, claimed]);
 
   /** 卸载即释放（宿主收走插槽时；此时组件不再渲染，上面那条 effect 不会跑）。 */

@@ -6,6 +6,8 @@
  *     以及由它直接推出的「任一时刻至多一张浮层在场」（0 帧同屏的纯判定形式）。
  *  2. `ui-state.ts` 的 claim store：幂等、抢屏、**只释放自己持有的**、独立 listener set、
  *     Node 侧无 react 的可见失败、以及 R55 历史形态（`shouldShowLibraryPanel`）与新读法的逐格同值。
+ *  3. **`claimOverlayIfFree`（修复轮 1）**：「只取空屏」是**原子**判定——它是 AI 面板的取屏路径，
+ *     也正是评审发现的 TOCTOU 的要害：快照陈旧时的写入不得再抢走别面。
  *
  * **为什么组件接线不在这里测**（R-P7-C）：本仓库没有 react-dom / jsdom（全局硬约束 5），三个组件的
  * 渲染门与 effect 没有自动化通道。这里**不造空洞断言**去假装覆盖它——活体判据交给 T5（判定表见
@@ -21,6 +23,7 @@ import { canRender } from "../src/overlay-claim.ts";
 // 不引入 test-only 复位 API）。
 const {
   claimOverlay,
+  claimOverlayIfFree,
   getOverlayClaimSnapshot,
   releaseOverlay,
   setHashSuggestVisible,
@@ -197,7 +200,68 @@ test("claim 的 listener set 与其它订阅域互不串扰（管理面板 / `#`
   settle();
 });
 
-// ---- 3) 与 P6 既有不变量的关系 ----
+// ---- 3) claimOverlayIfFree：长驻状态「只取空屏」（修复轮 1 的要害） ----
+
+test('claimOverlayIfFree：空屏才取——首次调用就取到', () => {
+  settle();
+  const seen = [];
+  const off = subscribeOverlayClaim(() => seen.push(getOverlayClaimSnapshot()));
+  claimOverlayIfFree("ai");
+  assert.equal(getOverlayClaimSnapshot(), "ai");
+  assert.deepEqual(seen, ["ai"], "真实变更派发一次");
+  off();
+  settle();
+});
+
+test('claimOverlayIfFree：别面持有时是空操作、不派发（含「调用方拿着陈旧快照」的那一拍）', () => {
+  settle();
+  // 复刻评审给的 TOCTOU 时序：组件在自己的渲染里读到 `claimed === "none"`（快照），
+  // 提交之后、它的 effect 跑之前，寄存器已被**更早的 effect**（`#` 浮层所在 slot 在前）抢走。
+  const staleSnapshotReadAtRender = getOverlayClaimSnapshot(); // = "none"
+  assert.equal(staleSnapshotReadAtRender, "none", "前置：渲染那一刻确实是空屏");
+  claimOverlay("hash"); // 更早的 effect（或两次事件之间的一个回调）先抢
+  const seen = [];
+  const off = subscribeOverlayClaim(() => seen.push(getOverlayClaimSnapshot()));
+  // 组件的取屏路径——若它按**陈旧快照**写（等价于无条件 claimOverlay），这里就会把浮层压掉。
+  claimOverlayIfFree("ai");
+  assert.equal(getOverlayClaimSnapshot(), "hash", "别面持有 ⇒ 不得改写寄存器（不得成为无条件最后写者）");
+  assert.equal(seen.length, 0, "空操作不派发");
+  off();
+  settle();
+});
+
+test('claimOverlayIfFree：已持有本面时幂等；别面释放后能取到（唤醒由订阅驱动）', () => {
+  settle();
+  claimOverlayIfFree("ai");
+  const seen = [];
+  const off = subscribeOverlayClaim(() => seen.push(getOverlayClaimSnapshot()));
+  claimOverlayIfFree("ai");
+  assert.equal(seen.length, 0, "已持有：幂等、不派发（effect 重跑无副作用）");
+  // 别面（`#` 浮层）抢走 → 再释放：AI 的 effect 由 `claimed` 的跳变唤醒后重跑，这一次必须取到。
+  claimOverlay("hash");
+  releaseOverlay("hash");
+  assert.equal(getOverlayClaimSnapshot(), "none");
+  claimOverlayIfFree("ai");
+  assert.equal(getOverlayClaimSnapshot(), "ai", "屏空出来 ⇒ 取到");
+  assert.deepEqual(seen, ["hash", "none", "ai"]);
+  off();
+  settle();
+});
+
+test('claimOverlayIfFree / claimOverlay：被位移的面**能**重取（持续形态赖以成立的通道）', () => {
+  settle();
+  // `#` 浮层的持续形态 = 「只要 visible 且寄存器不在自己手里就重取」。这条锁住的是它赖以成立的
+  // store 语义：`claimOverlay` 是**抢**（不是排队、不是拒绝），故被位移的面必有重取通道。
+  claimOverlay("hash");
+  claimOverlay("library"); // 位移
+  assert.equal(getOverlayClaimSnapshot(), "library");
+  claimOverlay("hash"); // 重取（持续形态的那一行）
+  assert.equal(getOverlayClaimSnapshot(), "hash", "重取必须成功——否则被位移的面会永久静默");
+  assert.deepEqual(allowedFaces(getOverlayClaimSnapshot()), ["hash"]);
+  settle();
+});
+
+// ---- 4) 与 P6 既有不变量的关系 ----
 
 test("R55 的历史形态（shouldShowLibraryPanel）与 claim 读法逐格同值", () => {
   for (const open of [false, true]) {

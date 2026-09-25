@@ -38,7 +38,13 @@ import {
 import { promptSummary } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { claimOverlay, releaseOverlay, setHashSuggestVisible, useOverlayClaim } from "../utils/ui-state.ts";
+import {
+  claimOverlay,
+  getOverlayClaimSnapshot,
+  releaseOverlay,
+  setHashSuggestVisible,
+  useOverlayClaim,
+} from "../utils/ui-state.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 
 /** `#` 候选浮层（任务 6 落地完整行为）。 */
@@ -176,17 +182,28 @@ export function HashSuggestOverlay({
    * （`onScreen` 在每次渲染时重算）——R55 的纪律针对的是判定，不是这次写入。令牌出现到抢到屏之间
    * 最多差一次提交，那一提交里本面不渲染（不会与任何面同屏）。
    *
+   * **持续形态**（修复轮 1 的评审发现）：体是「只要想在场、寄存器不在本面手里就重取」，deps 是
+   * `[visible, claimed]`（`claimed` 是**唤醒信号**：寄存器被别面改写的每一次都必须让本 effect 重跑）。
+   * 为什么不能是一次性写入（deps 只有 `[visible]`）：`visible` 由令牌派生，**被位移时它不跳变**
+   * ——一次性写入下，浮层被别面抢走后**没有任何重取时机**，令牌仍在草稿里却永远不再上屏（其 pending
+   * 变量填窗也一并消失）= 永久静默。这句话同时是报告 §4.1「浮层可见 ⇔ 浮层持 claim」这条等价前提的
+   * 成立条件。
+   *
+   * 为什么读**活寄存器**而不是本次渲染的 `claimed` 快照：本 effect 在**提交之后**才跑，快照可能已被
+   * 更早的 effect 或两次事件之间的一个回调改写——那时快照说「已经是 hash」而寄存器其实已归别面，
+   * 重取就会被漏掉（反向的陈旧同样致命：见 `AIPolishButton` 的取屏守卫）。`getOverlayClaimSnapshot()`
+   * 读的是此刻的真值。
+   *
    * 释放是**条件式**的（`releaseOverlay` 只清自己持有的）：pointerdown 收起本浮层与「点击词库按钮」
    * 可能落在同一拍上（F1-1 的 0/5/10ms），本 effect 的 cleanup 晚于词库的取屏时**不得**把它清掉。
-   * 卸载也必须释放（P6 的教训：留成占位会把别的面压住）。
+   * 卸载也必须释放（P6 的教训：留成占位会把别的面压住）——故 cleanup 无条件存在。
    */
   React.useEffect(() => {
-    if (!visible) return;
-    claimOverlay("hash");
+    if (visible && getOverlayClaimSnapshot() !== "hash") claimOverlay("hash");
     return () => {
       releaseOverlay("hash");
     };
-  }, [visible]);
+  }, [visible, claimed]);
 
   // R47：被点外部收起之后（仅当前这个令牌）不再渲染；令牌消失或变化即自动复位。
   // T1：另一个条件由 claim 提供（想在场 ≠ 屏在本面手里），见上面的 `onScreen`。

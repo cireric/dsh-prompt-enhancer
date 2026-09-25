@@ -202,6 +202,27 @@ export function claimOverlay(kind: OverlaySurface): void {
 }
 
 /**
+ * **只取空屏**：寄存器此刻空着（或已归本面）才取；别面持有时是**同步、原子**的空操作（不派发）。
+ *
+ * 与 `claimOverlay` 的分工：后者是「**激活即抢**」（词库按钮的点击 / `#` 令牌出现——最新意图胜出），
+ * 本函数是「**长驻状态只取空屏**」（AI 面板：有结果在手上，屏被占就让位、空出来再取）。
+ *
+ * 为什么判定必须收进 store（而不是让调用方「先读快照、再决定是否取屏」）：组件的 effect 在**提交之后**
+ * 才跑，而它读到的组件快照是**本次渲染那一刻**的值——提交与写入之间，寄存器可能已被更早的 effect
+ * （`#` 浮层所在的 slot 在本 slot 之前 ⇒ 它先抢）或两次事件之间的一个回调（词库 onClick 的
+ * `claimOverlay('library')`）改写。那样「取屏」就退化成**无条件最后写者**，把在屏的别面静默压掉
+ * （`#` 浮层被压 ⇒ 令牌仍在却**没有重取时机** = 永久静默，比同屏更坏）。把「空屏判定 + 写入」收进
+ * 本函数后，调用方读不到中间态，TOCTOU 缝隙不存在。
+ */
+export function claimOverlayIfFree(kind: OverlaySurface): void {
+  if (claimedOverlay === kind) return;
+  if (claimedOverlay !== "none") return;
+  claimedOverlay = kind;
+  // 先复制再遍历：监听器里退订或再订阅都不会打乱本次派发（与 emit 同约定）。
+  for (const listener of [...overlayClaimListeners]) listener();
+}
+
+/**
  * 释放自己持有的 claim。**只释放自己持有的**：`claimed !== kind` 时是安全的空操作（不派发）——
  * 被位移的一方收尾时不得把新持有者的 claim 连带清掉。
  */
