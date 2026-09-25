@@ -38,24 +38,46 @@ export function surface(width: number, height: number): CSSProperties {
   };
 }
 
-/** 头部：标题 + 四页签 + 关闭，一行不换行（窄窗时页签区自身横向滚动）。 */
+/**
+ * 头部容器：**两行纵向**（P8 T9 的最小修，源自反馈 F2）——
+ * 第 1 行 = 标题 + 关闭（`dialogHeaderTop`），第 2 行 = 四页签 + 导出为技能（`dialogHeaderBottom`）。
+ * 改前是「标题 + 四页签 + 导出 + 关闭」压在**同一行 nowrap**、页签区自带横向滚动，
+ * 默认面板宽（420）下页签被右侧按钮裁切；纵向拆行后页签区拿到整行宽度，不再被裁。
+ */
 export const dialogHeader: CSSProperties = {
   display: "flex",
-  alignItems: "center",
-  gap: 8,
+  flexDirection: "column",
+  gap: 6,
   padding: "10px 12px",
   borderBottom: `1px solid ${TOKEN.border}`,
   flex: "0 0 auto",
 };
 
+/** 头部第 1 行：标题（左）+ 关闭按钮（右，靠 `marginLeft: "auto"` 推到行尾）。 */
+export const dialogHeaderTop: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+/** 头部第 2 行：四页签（左）+ 导出为技能（右，靠 `marginLeft: "auto"` 推到行尾）。 */
+export const dialogHeaderBottom: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
 export const dialogTitle: CSSProperties = { color: TOKEN.fg, fontSize: 13, fontWeight: 600, flex: "0 0 auto" };
 
+/** 页签行：**可换行**（去掉 `overflowX: "auto"`）——这是「页签不再被裁切」的关键。 */
 export const dialogTabs: CSSProperties = {
   display: "flex",
   gap: 4,
   flex: "1 1 auto",
   minWidth: 0,
-  overflowX: "auto",
+  flexWrap: "wrap",
 };
 
 /** 页签按钮；选中态用 accent 描边 + hover 底色。 */

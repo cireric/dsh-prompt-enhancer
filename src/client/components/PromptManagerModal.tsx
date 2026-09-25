@@ -33,6 +33,8 @@ import {
   compareHead,
   dialogBody,
   dialogHeader,
+  dialogHeaderBottom,
+  dialogHeaderTop,
   dialogTab,
   dialogTabs,
   dialogTitle,
@@ -239,49 +241,58 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
       aria-label={t("manager.title")}
       style={surface(settings.panelWidth, settings.panelHeight)}
     >
+      {/*
+        头部两行化（P8 T9，用户反馈 F2）：第 1 行 = 标题 + 关闭（`marginLeft: "auto"` 推到行尾）；
+        第 2 行 = 四页签 + 导出为技能（同款推右）。改前四者同挤一行 nowrap，
+        默认面板宽 420 下页签被右侧按钮裁切。三块锚点 / aria / onClick 语义逐字未动。
+      */}
       <div style={dialogHeader}>
-        <span style={dialogTitle}>{t("manager.title")}</span>
-        {/*
-          R-P7-X 要求 4（无障碍错位）：技能导出页在场时，内容区展示的**不是**任何页签的内容，
-          故四个页签一律 `aria-selected={false}`、也不再高亮——视觉与读屏必须说同一件事。
-          （激活态与 aria 取自**同一个**派生值 `showingSkill`，避免两处各自判断后漂移。）
-        */}
-        <div role="tablist" aria-label={t("manager.title")} style={dialogTabs}>
-          {PANEL_ORDER.map((id) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={!showingSkill && panel === id}
-              style={dialogTab(!showingSkill && panel === id)}
-              onClick={() => openPanel(id)}
-            >
-              {t(PANEL_LABEL[id])}
-            </button>
-          ))}
+        <div style={dialogHeaderTop}>
+          <span style={dialogTitle}>{t("manager.title")}</span>
+          <button type="button" style={{ ...button, marginLeft: "auto" }} onClick={closeManager}>
+            {t("manager.close")}
+          </button>
         </div>
-        {/* 工具栏的「导出为技能」（规格 §7.6）：打开管理面板栈的 `'skill'` 页。
-            T5 活体探针锚点（声明式渲染，非 DOM 注入）。 */}
-        <button
-          type="button"
-          data-prompt-enhancer-skill-open=""
-          style={button}
-          onClick={() => {
-            /**
-             * 要求 5（返回落点与文案一致）：进技能页与**换页签**同款——先离开详情页（`setTarget(null)`），
-             * 于是「返回管理面板」的落点**确定**：一律回到当前页签的内容区（列表 / 标签 / 回收站 / 导入导出），
-             * 不会是「刚才那张没保存的详情页」。丢弃未保存详情的代价与既有「点页签换页」逐字相同
-             * （P6 起的既有交互模型，不是本轮新引入的差异）。
-             */
-            setTarget(null);
-            onPanelValue("skill");
-          }}
-        >
-          {t("manager.skill.open")}
-        </button>
-        <button type="button" style={button} onClick={closeManager}>
-          {t("manager.close")}
-        </button>
+        <div style={dialogHeaderBottom}>
+          {/*
+            R-P7-X 要求 4（无障碍错位）：技能导出页在场时，内容区展示的**不是**任何页签的内容，
+            故四个页签一律 `aria-selected={false}`、也不再高亮——视觉与读屏必须说同一件事。
+            （激活态与 aria 取自**同一个**派生值 `showingSkill`，避免两处各自判断后漂移。）
+          */}
+          <div role="tablist" aria-label={t("manager.title")} style={dialogTabs}>
+            {PANEL_ORDER.map((id) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={!showingSkill && panel === id}
+                style={dialogTab(!showingSkill && panel === id)}
+                onClick={() => openPanel(id)}
+              >
+                {t(PANEL_LABEL[id])}
+              </button>
+            ))}
+          </div>
+          {/* 工具栏的「导出为技能」（规格 §7.6）：打开管理面板栈的 `'skill'` 页。
+              T5 活体探针锚点（声明式渲染，非 DOM 注入）。 */}
+          <button
+            type="button"
+            data-prompt-enhancer-skill-open=""
+            style={{ ...button, marginLeft: "auto" }}
+            onClick={() => {
+              /**
+               * 要求 5（返回落点与文案一致）：进技能页与**换页签**同款——先离开详情页（`setTarget(null)`），
+               * 于是「返回管理面板」的落点**确定**：一律回到当前页签的内容区（列表 / 标签 / 回收站 / 导入导出），
+               * 不会是「刚才那张没保存的详情页」。丢弃未保存详情的代价与既有「点页签换页」逐字相同
+               * （P6 起的既有交互模型，不是本轮新引入的差异）。
+               */
+              setTarget(null);
+              onPanelValue("skill");
+            }}
+          >
+            {t("manager.skill.open")}
+          </button>
+        </div>
       </div>
       <div
         role="tabpanel"
