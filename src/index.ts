@@ -13,7 +13,7 @@ import type {} from "@deepseek-ai/dsh-host-webserver";
 import type {} from "@deepseek-ai/dsh-llm";
 import type {} from "@deepseek-ai/dsh-settings";
 import type { Context } from "@deepseek-ai/cordis";
-import { registerLlm } from "./host/ai.ts";
+import { clearRouteCache, registerLlm } from "./host/ai.ts";
 import { makeRoutes } from "./host/routes.ts";
 import { PromptEnhancerSettingsSchema, registerSettings, SETTINGS_NAMESPACE } from "./host/settings.ts";
 
@@ -24,7 +24,12 @@ export const inject: string[] = [];
 
 export function apply(ctx: Context): void {
   ctx.inject(["settings"], (settingsCtx) => {
-    registerSettings(settingsCtx.settings.register(SETTINGS_NAMESPACE, PromptEnhancerSettingsSchema));
+    // D-P8-3：清路由缓存这类**承重动作**放在权威层——`scope.watch` 覆盖**任意写入者**
+    // （HTTP 路由、settingsScope 的 mutate、外部改 settings.yaml），而不是只覆盖我们自己的那一个调用点。
+    // 路由层的原调用点保留兜底（R-P8-2）；宿主 scope 没有 `watch` 时挂不上，属有意的降级。
+    registerSettings(settingsCtx.settings.register(SETTINGS_NAMESPACE, PromptEnhancerSettingsSchema), {
+      onChange: clearRouteCache,
+    });
     return () => registerSettings(undefined);
   });
 

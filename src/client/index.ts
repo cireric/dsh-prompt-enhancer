@@ -14,6 +14,9 @@
  * 其余两个座位（recommend / settings.section）按路线图属 P7/P8。i18n 字典随本 fiber 注册，卸载即撤。
  * 注册顺序即产物内注册顺序，也是 scripts/smoke.mjs 行为断言的账本顺序。
  * P6 追加：目录选择能力（ctx.uiWorkspace）经**条件注入**持有，inject 导出数组不扩张。
+ * P8 T1 追加：设置唯一真源（ctx.settingsScope）同走条件注入——段序固定为
+ *   ["slots"] → ["uiWorkspace"] → ["settingsScope"]（smoke 按此顺序断言；任务 3 会把
+ *   ["uiConversation"] 插在 uiWorkspace 与 settingsScope 之间）。
  */
 
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
@@ -24,13 +27,24 @@ import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
 // ctx.uiWorkspace 的 Context 增强（目录选择能力）由 ui-workspace 的 client 半声明
 import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
+// ctx.settingsScope 的 Context 增强与服务类型（设置命名空间绑定的入口）
+import type { SettingsScopeBinder } from "@deepseek-ai/dsh-client-ui-settings/client";
 import { AIPolishButton } from "./components/AIPolishButton.tsx";
 import { HashSuggestOverlay } from "./components/HashSuggestOverlay.tsx";
 import { PromptLibraryButton } from "./components/PromptLibraryButton.tsx";
 import { PromptSurfaceHost } from "./components/PromptSurfaceHost.tsx";
 import { SidebarPromptEntry } from "./components/SidebarPromptEntry.tsx";
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
+import { setSettingsScope } from "./utils/settings-store.ts";
 import { setDirectoryCapability } from "./utils/workspace-dir.ts";
+
+/**
+ * 设置命名空间（与宿主 `src/host/settings.ts#SETTINGS_NAMESPACE` 同值）。
+ *
+ * 此处**重述而非 import**：`host/settings.ts` 拉 `@deepseek-ai/schemastery` 且属 host 侧，
+ * 引进 client bundle 会跨 host/client 边界（与 api.ts 里「响应形状在客户端重述」同一纪律）。
+ */
+const SETTINGS_NAMESPACE = "prompt-enhancer";
 
 declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface LocaleNamespaceMap {
@@ -93,4 +107,16 @@ export function apply(ctx: ClientContext): void {
       if (__DEV__) console.log("[prompt-enhancer] client unloaded");
     };
   }, "prompt-enhancer: lifecycle");
+
+  // 设置唯一真源（P8 T1 / TBD-P8-1 的 (a)）：服务缺席时 store 回落默认值 + HTTP 降级。
+  //
+  // 注入的是**绑定到本命名空间的 scope**（`binder.bind({ namespace })`），不是 binder 本身：
+  // 宿主 `ctx.settingsScope` 是 `SettingsScopeBinder`，只有 `bind` / `describe`；读快照与写字段
+  // 都在绑定后的 `SettingsScope`（`getSnapshot` / `subscribe` / `set`）上——store 要的正是它。
+  // smoke 的假 ctx 没有该服务（真宿主里 ctx.inject 保证在场），故仍按可选面处理、缺席即 null。
+  ctx.inject(["settingsScope"], (scope: ClientContext) => {
+    const binder = scope.settingsScope as SettingsScopeBinder | undefined;
+    setSettingsScope(binder ? binder.bind({ namespace: SETTINGS_NAMESPACE }) : null);
+    return () => setSettingsScope(null);
+  });
 }

@@ -25,9 +25,10 @@
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { canRender } from "../../overlay-claim.ts";
-import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
+import type { Prompt } from "../../types.ts";
 import { aiErrorKey, canToggle, keepVariablesFor, libraryCreateInput, needsWriteBack, writeBackRefined } from "../utils/ai-flow.ts";
 import { api, type AiRefineResult, type AiSelectable } from "../utils/api.ts";
+import { useSettings } from "../utils/settings-store.ts";
 import { createFromCapture, type CaptureOutcome } from "../utils/capture.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { seedRefinedDirection } from "../utils/refined-direction.ts";
@@ -92,8 +93,11 @@ function SparkleIcon(): React.ReactElement {
 
 export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProps): React.ReactElement | null {
   const draft = useInput((s) => s.draft);
-  /** null = 设置未就绪：先不渲染按钮，避免「本该隐藏却又闪一下」。 */
-  const [settings, setSettings] = React.useState<PluginSettings | null>(null);
+  /**
+   * 设置改读**共享响应式 store**（P8 T1）：宿主 scope 每次已提交变更都推一次快照，按钮的显隐与
+   * 形状随之即时生效——不再是「mount 时读一次」。无 scope 时 store 给默认值，且无未就绪的 null 态。
+   */
+  const settings = useSettings();
   const [status, setStatus] = React.useState<Status>("idle");
   /** 点击那一刻的草稿快照（D-P5-5）：「原文」永远是它，润色与完善都用它当输入。 */
   const [original, setOriginal] = React.useState("");
@@ -181,23 +185,6 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   /** 卸载即释放（宿主收走插槽时；此时组件不再渲染，上面那条 effect 不会跑）。 */
   React.useEffect(() => () => releaseOverlay("ai"), []);
-
-  // 设置只读一次；读失败退回默认值（按钮照常可用），原因留在 console。
-  React.useEffect(() => {
-    let alive = true;
-    api.getSettings().then(
-      (value) => {
-        if (alive) setSettings(value);
-      },
-      (err: unknown) => {
-        console.warn("[prompt-enhancer] 设置读取失败，本次按默认设置显示按钮", err);
-        if (alive) setSettings(DEFAULT_SETTINGS);
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   /**
    * 面板整体收起：状态、两份文本、完善结果、库记录、三类错误、复制提示一并归零
@@ -442,7 +429,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     close();
   };
 
-  if (settings === null || settings.showAIPolishButton === false) return null;
+  if (settings.showAIPolishButton === false) return null;
 
   // 调用/完善/存库三态同属「忙」：按钮置灰、aria-busy、状态行可见，重入由 busyRef 兜底。
   // 提示文案按阶段取值：refining 是另一次 AI 调用、saving 是本地写库，都不该沿用

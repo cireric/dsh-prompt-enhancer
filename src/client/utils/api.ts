@@ -90,6 +90,8 @@ export const api = {
   },
   recordUsage: (id: string) => call<Prompt>("POST", `/prompts/${encodeURIComponent(id)}/use`),
   getSettings: () => call<PluginSettings>("GET", "/settings"),
+  /** 写设置（降级路径：无 `settingsScope` 时用；有 scope 时写走宿主 scope.set）。 */
+  updateSettings: (patch: Partial<PluginSettings>) => call<PluginSettings>("PUT", "/settings", patch),
   getMeta: (key: string) => call<{ key: string; value: string }>("GET", `/meta/${encodeURIComponent(key)}`).then((r) => r.value),
   setMeta: (key: string, value: string) =>
     call<{ key: string; value: string }>("PUT", `/meta/${encodeURIComponent(key)}`, { value }),

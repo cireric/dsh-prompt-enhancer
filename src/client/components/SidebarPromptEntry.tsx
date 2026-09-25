@@ -10,8 +10,7 @@
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SidebarFooterActionOwnerProps } from "@deepseek-ai/dsh-client-ui-sidebar/client";
-import { DEFAULT_SETTINGS, type PluginSettings } from "../../types.ts";
-import { api } from "../utils/api.ts";
+import { useSettings } from "../utils/settings-store.ts";
 import { TOKEN } from "../utils/theme.ts";
 import { openManager } from "../utils/ui-state.ts";
 
@@ -48,27 +47,13 @@ function entryStyle(wide: SidebarFooterActionOwnerProps["wide"]): React.CSSPrope
 }
 
 export function SidebarPromptEntry({ t, wide }: SidebarPromptEntryProps): React.ReactElement | null {
-  /** null = 设置未就绪：先不渲染，避免「本该隐藏却又闪一下」（与 PromptLibraryButton 同款）。 */
-  const [settings, setSettings] = React.useState<PluginSettings | null>(null);
+  /**
+   * 设置改读**共享响应式 store**（P8 T1）：宿主 scope 每次已提交变更都推一次快照，入口的显隐随之
+   * 即时生效——不再是「mount 时读一次」。无 scope 时 store 给默认值（不再有未就绪的 null 态）。
+   */
+  const settings = useSettings();
 
-  // 设置只读一次；读失败退回默认值（入口照常可用），原因留在 console（不静默吞掉）。
-  React.useEffect(() => {
-    let alive = true;
-    api.getSettings().then(
-      (value) => {
-        if (alive) setSettings(value);
-      },
-      (err: unknown) => {
-        console.warn("[prompt-enhancer] 设置读取失败，本次按默认设置显示侧栏入口", err);
-        if (alive) setSettings(DEFAULT_SETTINGS);
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  if (settings === null || !settings.showSidebarButton) return null;
+  if (!settings.showSidebarButton) return null;
 
   return (
     <button

@@ -11,8 +11,9 @@
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { canRender } from "../../overlay-claim.ts";
-import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
+import type { Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
+import { useSettings } from "../utils/settings-store.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
@@ -63,8 +64,12 @@ export function PromptLibraryButton({
    * 令牌内就地改写查询词」（令牌一直在 → 无边沿可观察 → 面板不关 → 两浮层同屏重叠）。
    */
   const hashVisible = useHashSuggestVisible();
-  /** null = 设置未就绪：先不渲染按钮，避免「本该隐藏却又闪一下」。 */
-  const [settings, setSettings] = React.useState<PluginSettings | null>(null);
+  /**
+   * 设置改读**共享响应式 store**（P8 T1）：宿主 scope 每次已提交变更都推一次快照，消费点随之重渲染
+   * ——不再是「mount 时读一次」。无 scope（无 ui-settings 的部署）时 store 给默认值，且不再有
+   * 「未就绪的 null 态」（读失败经归一化回落默认，按钮照常可用）。
+   */
+  const settings = useSettings();
   const [open, setOpen] = React.useState(false);
   /** null = 本次打开还没加载完。 */
   const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
@@ -95,23 +100,6 @@ export function PromptLibraryButton({
    * claim 接线），故「浮层可见」⇔「claim 在 `hash` 手里」。
    */
   const panelOpen = open && canRender("library", claimed);
-  // 设置只读一次；读失败退回默认值（按钮照常可用），原因留在 console。
-  React.useEffect(() => {
-    let alive = true;
-    api.getSettings().then(
-      (value) => {
-        if (alive) setSettings(value);
-      },
-      (err: unknown) => {
-        console.warn("[prompt-enhancer] 设置读取失败，本次按默认设置显示按钮", err);
-        if (alive) setSettings(DEFAULT_SETTINGS);
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
-
   // 每次打开都重新拉取（列表可能在管理面板里被改过）。
   // 只依赖 open：失败文案的本地化由渲染期的 t 负责，把它放进依赖会让
   // 「t 身份不稳定」的实现变成重拉循环。
@@ -249,7 +237,7 @@ export function PromptLibraryButton({
     else apply(prompt, prompt.body, mode);
   };
 
-  if (settings === null || !settings.showComposerButton) return null;
+  if (!settings.showComposerButton) return null;
 
   return (
     <span

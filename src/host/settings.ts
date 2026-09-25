@@ -5,10 +5,11 @@
  * 我们只把 schema 注册给 `ctx.settings` 并把 scope 存下来，之后 `get / update` 都走宿主。
  * 这样既不需要 `js-yaml`，也不会像上游那样「读整份文件再写回」而丢掉注释或伤到别的命名空间。
  *
- * 依赖面刻意收窄为 `SettingsScopeLike`（只有 `get` / `update`）而不是整个 `ctx`：
+ * 依赖面刻意收窄为 `SettingsScopeLike`（`get` / `update`，可选 `watch`）而不是整个 `ctx`：
  * 跑 `node --test` 时没有宿主，注入一个假 scope 就能覆盖默认值兜底与非法值处理。
  */
 import z from "@deepseek-ai/schemastery";
+import { normalizeSettings } from "../settings-shape.ts";
 import { DEFAULT_SETTINGS, type PluginSettings } from "../types.ts";
 
 /** 设置命名空间（写入 `settings.yaml` 的顶层 key）。 */
@@ -18,6 +19,14 @@ export const SETTINGS_NAMESPACE = "prompt-enhancer";
 export interface SettingsScopeLike {
   get(): unknown;
   update(patch: object): Promise<void> | void;
+  /**
+   * 观察已提交的设置变更（宿主 `SettingsScope.watch`，可选面）。
+   *
+   * **刻意收成可选**：跑 `node --test` 时注入的假 scope 没有它，旧调用点（不传 hooks）也照旧工作。
+   * 有它才挂观察——「改了就生效」的权威边沿是宿主的（覆盖任意写入者：HTTP 路由、settingsScope
+   * 的 mutate、外部改 settings.yaml），而不是我们自己的某个调用点（D-P8-3）。
+   */
+  watch?(callback: (next: unknown, prev: unknown) => void): () => void;
 }
 
 /**
@@ -41,48 +50,35 @@ export const PromptEnhancerSettingsSchema = z.object({
 });
 
 let scope: SettingsScopeLike | undefined;
+/** 当前观察的退订器：换 scope 或注销时一并释放，不留悬挂观察者。 */
+let unwatch: (() => void) | undefined;
 
-/** 注入 / 注销设置 scope（由 `src/index.ts` 的条件注入调用）。 */
-export function registerSettings(next: SettingsScopeLike | undefined): void {
+/**
+ * 注入 / 注销设置 scope（由 `src/index.ts` 的条件注入调用）。
+ *
+ * `hooks.onChange` 在**每一次已提交的设置变更**后触发（D-P8-3：清路由缓存这类承重动作放权威层，
+ * 覆盖任意写入者）。scope 没有 `watch`（假 scope / 旧宿主）时挂不上——这是有意的降级，
+ * 不是错误；调用点原有的兜底路径仍在。
+ */
+export function registerSettings(
+  next: SettingsScopeLike | undefined,
+  hooks?: { onChange?: () => void },
+): void {
+  unwatch?.();
+  unwatch = undefined;
   scope = next;
+  if (!next) return;
+  const onChange = hooks?.onChange;
+  if (next.watch && onChange) {
+    unwatch = next.watch(() => {
+      onChange();
+    });
+  }
 }
 
 /** 设置服务当前是否可用（`PUT /settings` 据此决定是否返回 503）。 */
 export function isSettingsAvailable(): boolean {
   return scope !== undefined;
-}
-
-function pickNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function pickBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function pickString(value: unknown, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-/** 逐字段归一：任何缺失/类型不符的字段都回落默认值，绝不把 `undefined` 漏给调用方。 */
-function normalizeSettings(raw: unknown): PluginSettings {
-  const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
-  const d = DEFAULT_SETTINGS;
-  return {
-    panelWidth: pickNumber(r.panelWidth, d.panelWidth),
-    panelHeight: pickNumber(r.panelHeight, d.panelHeight),
-    showComposerButton: pickBoolean(r.showComposerButton, d.showComposerButton),
-    composerButtonIconOnly: pickBoolean(r.composerButtonIconOnly, d.composerButtonIconOnly),
-    showAIPolishButton: pickBoolean(r.showAIPolishButton, d.showAIPolishButton),
-    aiPolishButtonIconOnly: pickBoolean(r.aiPolishButtonIconOnly, d.aiPolishButtonIconOnly),
-    hashTriggerEnabled: pickBoolean(r.hashTriggerEnabled, d.hashTriggerEnabled),
-    contextRecommendEnabled: pickBoolean(r.contextRecommendEnabled, d.contextRecommendEnabled),
-    selectionAddEnabled: pickBoolean(r.selectionAddEnabled, d.selectionAddEnabled),
-    showSidebarButton: pickBoolean(r.showSidebarButton, d.showSidebarButton),
-    maxPromptCount: pickNumber(r.maxPromptCount, d.maxPromptCount),
-    aiProvider: pickString(r.aiProvider, d.aiProvider),
-    aiModel: pickString(r.aiModel, d.aiModel),
-  };
 }
 
 /** 读当前设置；设置服务不可用或读取失败时回落默认值（返回**副本**，改它不影响默认值）。 */

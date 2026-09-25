@@ -14,15 +14,14 @@
 import * as React from "react";
 import type { TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
 import {
-  DEFAULT_SETTINGS,
   clampTitle,
-  type PluginSettings,
   type Prompt,
   type PromptSort,
   type PromptWritablePatch,
 } from "../../types.ts";
 import { canToggle, deletePrompts } from "../utils/ai-flow.ts";
 import { ApiError, api } from "../utils/api.ts";
+import { useSettings } from "../utils/settings-store.ts";
 import { createFromCapture } from "../utils/capture.ts";
 import { notifyDataChanged, useDataChanged } from "../utils/data-sync.ts";
 import {
@@ -161,26 +160,14 @@ type EditTarget =
  * 管理面板本体：头部（标题 + 四页签 + 关闭）恒定，内容区按 `panel` 分发。
  */
 export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: PromptManagerModalProps): React.ReactElement {
-  /** 尺寸走设置（规格 §4.2）；读失败留 console 痕迹并沿用默认值，不挡面板打开。 */
-  const [settings, setSettings] = React.useState<PluginSettings>(DEFAULT_SETTINGS);
+  /**
+   * 尺寸走设置（规格 §4.2），读法改为**共享响应式 store**（P8 T1）：`panelWidth/panelHeight`
+   * 因此即时生效——设置页改完不重开面板，这里就按新尺寸重渲染。无 scope 时 store 给默认值。
+   */
+  const settings = useSettings();
   const [target, setTarget] = React.useState<EditTarget | null>(null);
   /** 沉淀载荷快照（ui-state 的 store）：非 null 说明入口 B/C 刚推进来一段正文。 */
   const capture = useCapture();
-
-  React.useEffect(() => {
-    let alive = true;
-    api.getSettings().then(
-      (value) => {
-        if (alive) setSettings(value);
-      },
-      (err: unknown) => {
-        console.warn("[prompt-enhancer] 设置读取失败，本次按默认尺寸显示管理面板", err);
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   /**
    * 「详情页是否正持着未保存输入」（即 `target !== null`）：消费载荷的 effect 要读它，
