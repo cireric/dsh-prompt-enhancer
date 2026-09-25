@@ -174,15 +174,19 @@ test("i18n：负样本——只在注释里出现的引号键名必须判为死�
   );
 });
 
-test("i18n：管线自带剥注释——**输入**真含注释标记，产出不含任何注释标记（T7 ⑤：摘掉调用即红）", () => {
-  // 与上一条共用 `sourceHaystack`：它断言的是**管线真的接了剥注释这一步**，而不是「有个函数能剥」。
-  // P8 T5 加固（修前前提空转）：断言对象从「另一个文件」（i18n.ts 被过滤条件排除，根本不在拼接集合里）
-  // 换成**管线的输入本身** —— 前提若空转（抽取逻辑读到空 / 读到别处），这几条立刻变红。
+test("i18n：生产入口 collectSourceText() 真的把剥注释接进管线——输入真含标记，产出不含任何标记（T7 ⑤：摘掉调用即红）", () => {
+  // 断言对象一分为二，缺一不可：
+  //   · 产物侧断言的是**死键检查真正调用的那个生产入口** `collectSourceText()`（绝不在本用例里另调
+  //     `sourceHaystack` 自己重造产物——那样「把 `collectSourceText()` 里的剥注释调用摘掉」时本用例
+  //     照样全绿：未剥注释只会**多**出引用，不可能造出死键，覆盖就丢了）；
+  //   · 前提侧断言的是**该入口读进来的原文**（`collectSourceSources()` 的返回值），不是别的文件：
+  //     修前前提读的是 `src/client/utils/i18n.ts`，而它被过滤条件排除在拼接之外——抽取逻辑读到空
+  //     （或读到别处）时前提照样绿（空转）。
   const sources = collectSourceSources();
   const raw = sources.join("\n");
   assert.ok(raw.includes("//"), "前提：参与拼接的 src/** 原文里真的有行注释标记（否则下面两条是空转）");
   assert.ok(raw.includes("/*"), "前提：参与拼接的 src/** 原文里真的有块注释开头（否则下面两条是空转）");
-  const text = sourceHaystack(sources); // 与 collectSourceText 同一条管线，不是另写一份判定
+  const text = collectSourceText(); // 生产入口（死键用例调的就是它），不是本用例自己重造的产物
   assert.equal(text.includes("//"), false, "管线产出里仍有行注释标记 ⇒ 剥注释没接进管线");
   assert.equal(text.includes("/*"), false, "管线产出里仍有块注释开头 ⇒ 剥注释没接进管线");
 });
