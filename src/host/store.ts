@@ -675,11 +675,27 @@ export function deleteTrash(ids: string[]): number {
   return removed;
 }
 
-/** 清空回收站。 */
-export function emptyTrash(): number {
+/**
+ * 清空回收站：**返回被物理删除的 id 列表**（T7 ⑦；旧形态是删除条数）。
+ *
+ * 为什么必须是 id 列表：`DELETE FROM trash` 是**一次性**的，而客户端清 per-prompt meta 键
+ * （`pl:refined-dir:` / `pl:skill-descriptor:`）需要知道**真的删掉了哪几条**。回收站面板手里的
+ * items 是**打开那一刻**的快照，清空与列表之间存在竞态窗口：窗口内新增的回收站行同样被这条语句删掉，
+ * 却不在快照里 ⇒ 它那一对键永远没人清（T6 报告 §5 记的残口）。回执里带上 id 之后，客户端按**回执**
+ * 清键（`client/utils/ai-flow.ts#deletePrompts` 的 `receiptIds`），与面板列了什么彻底解耦。
+ *
+ * **不含 `pl:` 键名约定**：这里只回「哪些行没了」，怎么用是客户端的事（T6-B 的通用形态）。
+ * 语句仍在**一个事务**里（先读 id 再删），读到的集合就是被删的集合。
+ */
+export function emptyTrash(): string[] {
   const cur = getDb();
-  const res = cur.prepare("DELETE FROM trash").run();
-  return res.changes !== undefined ? Number(res.changes) : 0;
+  return inTransaction(cur, () => {
+    const ids = (cur.prepare("SELECT id FROM trash").all() as unknown as Array<{ id: string }>).map((row) =>
+      String(row.id),
+    );
+    cur.prepare("DELETE FROM trash").run();
+    return ids;
+  });
 }
 
 // ── 导入导出（规格 §4.3，与参考项目同构）───────────────────────────────────

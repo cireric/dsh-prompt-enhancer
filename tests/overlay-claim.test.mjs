@@ -19,9 +19,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // 纯判定模块零依赖，可以被 node --test 直接 import（Node 24 的类型擦除）。
-import { canRender } from "../src/overlay-claim.ts";
+// T7 ③：**两条 claim 守卫**也从这里 import——组件（HashSuggestOverlay 的 A/B 两条 effect）与本文件的
+// 步进模型读的是同一对函数，不再是各抄一份算式（同源锁见下面「1c」段）。
+import { canRender, canRetakeHash, canTakeHash } from "../src/overlay-claim.ts";
 
 // store 面是模块级单例，用例之间共享状态，故每个用例自行收敛（与 tests/ui-state.test.mjs 同口径，
 // 不引入 test-only 复位 API）。
@@ -95,6 +100,62 @@ test('claimed === "none"（无人占屏）时任何面都不得渲染——不�
     assert.equal(canRender(kind, "none"), false, kind + " 在无人占屏时不得渲染");
   }
   assert.deepEqual(allowedFaces("none"), []);
+});
+
+// ---- 1b) 两条 claim 守卫（T7 ③：组件与模型共用的同一对纯判定）----
+
+test("canTakeHash（effect A 的守卫）：只看 visible；**刻意不收** claimed（R-P7-R：寄存器不进 A 的依赖）", () => {
+  assert.equal(canTakeHash(false), false, "不可见 ⇒ 不取");
+  assert.equal(canTakeHash(true), true, "可见 ⇒ 取屏（一次）");
+  // 参数表是「A 的 deps 里没有寄存器」这条不变量的**类型侧**证据：想让它读寄存器就必须加第二个形参，
+  // 那一刻本断言变红（并在代码里留下「为什么不能加」的追问点）。
+  assert.equal(canTakeHash.length, 1, "A 的守卫只收 visible 一个形参");
+});
+
+test("canRetakeHash（effect B 的守卫）：只有「可见**且**寄存器不在本面手里」才放行", () => {
+  assert.equal(canRetakeHash(false, "none"), false, "不可见 ⇒ 不取（隐藏时 B 一次也不写）");
+  assert.equal(canRetakeHash(false, "library"), false, "不可见 ⇒ 不取，哪怕寄存器在别面手里");
+  assert.equal(canRetakeHash(true, "hash"), false, "已在手里 ⇒ 不写（这正是「写一次即静默」的前提）");
+  assert.equal(canRetakeHash(true, "none"), true, "空屏 + 可见 ⇒ 取（别面释放后回到本面的路径）");
+  assert.equal(canRetakeHash(true, "library"), true, "被夺（词库）⇒ 重取");
+  assert.equal(canRetakeHash(true, "ai"), true, "被夺（AI 面板）⇒ 重取");
+});
+
+// ---- 1c) 同源锁（T7 ③）：同一份守卫 ≠ 两份恰好相同 ----
+
+/**
+ * 组件（`.tsx`）在本仓库**没有自动化渲染通道**（无 react-dom / jsdom，全局硬约束 5），所以组件侧
+ * 能锁的不是行为，而是**同源**这件事本身：组件里只有 import + 调用，算式在全仓只有一份。
+ * 这不是「假装覆盖组件行为」——它断言的是「第二份实现不存在」，与 T2/T3 的函数恒等锁同类；
+ * 组件**行为**仍归 T5 活体验收（见文件头 R-P7-C 段）。
+ */
+test("同源锁：守卫算式在 src/** 里**只有一份**（在 overlay-claim.ts），组件只有 import + 调用", () => {
+  const srcDir = fileURLToPath(new URL("../src", import.meta.url));
+  const files = readdirSync(srcDir, { recursive: true })
+    .map(String)
+    .filter((rel) => rel.endsWith(".ts") || rel.endsWith(".tsx"));
+  assert.ok(files.length > 0, "必须真的扫到 src/** 的源码（0 个文件 = 本检查是空转）");
+
+  // ① 算式（`!== "hash"`）只许出现在唯一实现里：抄回组件、抄进第三处 ⇒ 必红。
+  const withGuardExpr = files.filter((rel) => readFileSync(join(srcDir, rel), "utf8").includes('!== "hash"'));
+  assert.deepEqual(withGuardExpr, ["overlay-claim.ts"], "守卫算式只能有一份（换成两份恰好相同 = 同源失守）");
+
+  // ② 组件从**同一个模块** import 这对守卫（同一路径、同一名字），并在 A/B 两条 effect 里调用。
+  const component = readFileSync(join(srcDir, "client/components/HashSuggestOverlay.tsx"), "utf8");
+  const importLine = component.split("\n").find((line) => line.includes("overlay-claim.ts"));
+  assert.ok(importLine, "组件必须从 overlay-claim.ts 导入判定");
+  assert.match(importLine, /\bcanTakeHash\b/, "…且导入 canTakeHash（A 的守卫）");
+  assert.match(importLine, /\bcanRetakeHash\b/, "…且导入 canRetakeHash（B 的守卫）");
+  assert.match(
+    component,
+    /if \(canTakeHash\(visible\)\) claimOverlay\("hash"\)/,
+    "A 的 effect 体读共用守卫（不许内联算式）",
+  );
+  assert.match(
+    component,
+    /if \(canRetakeHash\(visible, getOverlayClaimSnapshot\(\)\)\) claimOverlay\("hash"\)/,
+    "B 的 effect 体读共用守卫，且第二个实参是**活寄存器**的读值",
+  );
 });
 
 // ---- 2) store：claimOverlay / releaseOverlay / 订阅 ----
@@ -282,8 +343,10 @@ test('claimOverlayIfFree / claimOverlay：被位移的面**能**重取（持续�
  *   ——修复轮 3 的评审发现旧模型的这一栏恒为 `{A:1, B:0}`，即 B 的写路径**根本不可达**（用例声称的
  *   比它证明的多）。故 A 必须严格按 `visible` **边沿**重跑（不再折成 else 分支、不再每轮无条件重跑）。
  *
- * **这是模型，不是组件渲染**（本仓库无 react-dom）：副作用体逐字照抄组件里那两行守卫，用的是真实 store
- * API。它能证明的是「**这个设计**在被夺后确实由 B 重取、且一定终止」；组件的接线本身仍只能活体。
+ * **这是模型，不是组件渲染**（本仓库无 react-dom）：副作用体读的是与组件**同一个**守卫函数
+ * （T7 ③ 起：`overlay-claim.ts#canTakeHash` / `canRetakeHash`，不再各抄一份算式），用的是真实 store
+ * API。它能证明的是「**这个设计**在被夺后确实由 B 重取、且一定终止」；组件的接线本身仍只能活体——
+ * 组件侧能自动化的只有「算式没有第二份」这件事（见上面 1c 的同源锁）。
  */
 function createSplitHarness(initialVisible = false, maxRounds = 40) {
   let visible = initialVisible;
@@ -311,14 +374,15 @@ function createSplitHarness(initialVisible = false, maxRounds = 40) {
       if (aSeen.visible !== visible) {
         if (aSeen.visible !== null) write("a", () => releaseOverlay("hash"));
         aSeen.visible = visible;
-        if (visible) write("a", () => claimOverlay("hash"));
+        // T7 ③：守卫与组件**同一个函数**（不再各抄一份算式）；改坏它，本模型与组件接线一起被看到。
+        if (canTakeHash(visible)) write("a", () => claimOverlay("hash"));
       }
-      // effect B：deps [visible, claimed]，无 cleanup；体读**活寄存器**。
+      // effect B：deps [visible, claimed]，无 cleanup；体读**活寄存器**（守卫的第二个实参）。
       const claimNow = getOverlayClaimSnapshot();
       if (bSeen.visible !== visible || bSeen.claim !== claimNow) {
         bSeen.visible = visible;
         bSeen.claim = claimNow;
-        if (visible && claimNow !== "hash") write("b", () => claimOverlay("hash"));
+        if (canRetakeHash(visible, claimNow)) write("b", () => claimOverlay("hash"));
       }
       if (dispatches === before) break; // 一整轮无真写 ⇒ 静默
     }

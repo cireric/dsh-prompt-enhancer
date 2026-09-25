@@ -41,3 +41,34 @@ export type OverlaySurface = Exclude<OverlayKind, "none">;
 export function canRender(kind: OverlaySurface, claimed: OverlayKind): boolean {
   return claimed === kind;
 }
+
+// ── `#` 浮层两条 claim effect 的守卫（T7 ③：组件与测试模型**同源**）────────────────
+//
+// 为什么把这两行提出来（T7 ③）：T1 时代组件（`HashSuggestOverlay.tsx` 的 A/B 两条 effect）与
+// `tests/overlay-claim.test.mjs` 的步进模型**各抄一份**同一对算式，于是「删掉守卫」这个变异要在两处
+// 分别做，两处也可能各自漂移（本项目反复栽在同一类事上：同一个判定的第二份实现迟早与第一份分叉）。
+// 现在两边都 import 这里的函数：一处改动同时被组件接线与模型用例看到；同源锁见
+// `tests/overlay-claim.test.mjs`（断言这对算式在 `src/**` 里**只有一份**，且组件只有 import + 调用）。
+
+/**
+ * effect **A**（取 + 释放）的守卫：可见就取屏。
+ *
+ * **刻意不收 `claimed` 参数**：A 的 deps 只有 `[visible]`——这是 R-P7-R 的承重形态（「终止性来自代码
+ * 自身的自限性，不来自宿主的批处理语义」）。让调用方为了算这个守卫去读寄存器，等于把寄存器重新塞回
+ * A 的依赖里：那正是修复轮 2 拆掉的东西。参数表只有一个布尔量，是本条不变量在**类型上**的那一半。
+ */
+export function canTakeHash(visible: boolean): boolean {
+  return visible;
+}
+
+/**
+ * effect **B**（只重取）的守卫：可见**且**寄存器此刻不在本面手里。
+ *
+ * `claimed` **必须是活寄存器的读值**（`getOverlayClaimSnapshot()`），不是本次渲染的快照：B 在提交之后
+ * 才跑，快照两个方向都会陈旧，而**致命的是「向上错」**——快照说「已经是 hash」而寄存器其实已归别面 ⇒
+ * 守卫判成「不用写」⇒ 漏掉必要的重取 ⇒ 浮层被夺后**永久静默**（见 `HashSuggestOverlay.tsx` 的 B 段）。
+ * 反方向「向下漏」无害：那次写会被 store 的同值守卫挡下。
+ */
+export function canRetakeHash(visible: boolean, claimed: OverlayKind): boolean {
+  return visible && claimed !== "hash";
+}

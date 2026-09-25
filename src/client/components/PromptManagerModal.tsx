@@ -56,15 +56,16 @@ import {
 } from "../utils/dialog-style.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { promptSummary } from "../utils/insert.ts";
+// T7 ⑧-①：决策**只在 `applyToggleDirection` 内求值一次**，组件不再 import `toggleDirectionWrite`
+// （那正是「同一纯决策两处求值」的第二个调用点）；`oppositeDirection` 同理——翻转后的方向由返回值
+// `applied.next` 给出（本地态与落库值是**同一个值**，不再各算一遍）。
 import {
   UNKNOWN_READING,
   applyToggleDirection,
   compareLabelKeys,
   loadStoredDirection,
-  oppositeDirection,
   readRefinedDirection,
   shouldAcceptLateRead,
-  toggleDirectionWrite,
 } from "../utils/refined-direction.ts";
 import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
 import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
@@ -708,7 +709,8 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
    * §4.4 切换：宿主执行 swap(body, sourceBody)，返回值整条替换本地态（可反复点）。
    * T4（I-1 根治）：宿主只换正文、不留方向 ⇒ **有记录**时切换要把**翻转后的方向**落 meta；
    * **来源未知**（没有记录 / 脏值 / 读取中 / 读失败）时则**作废**那条记录（R-P7-AE：切换改变了真值，
-   * 旧记录不会跟着翻转 ⇒ 留着它就是一条会反相、且用户无法纠正的错记录）。决策是纯函数，组件只接线。
+   * 旧记录不会跟着翻转 ⇒ 留着它就是一条会反相、且用户无法纠正的错记录）。决策是纯函数，组件只接线——
+   * 而且只有**一处**接线（T7 ⑧-①：决策在 `applyToggleDirection` 内部求值，组件读它的返回值）。
    */
   const toggle = (): void => {
     if (busy !== "idle" || current === null) return;
@@ -726,15 +728,21 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
         //   · 只有一侧 ⇒ 什么都不写。
         // 它**不依赖组件是否还在世**（宿主已经 swap 完，记不下来下次打开就会按陈旧记录张冠李戴）；
         // 失败只 warn（内部），不改变下面的结局，也不阻塞广播。
-        const action = toggleDirectionWrite(current, reading);
-        toggleSeqRef.current += 1; // 让本次挂载里在途的读结果作废（迟到的读不得覆盖本地态）
-        void applyToggleDirection(id, current, reading);
+        // T7 ⑧-①：决策只在 `applyToggleDirection` **内部求值一次**，组件读它返回的 `write` / `next`。
+        // 返回值是**同步**的（决策同步可得、落库在 `done` 里跑），故下面几行仍与旧形态**同拍**：
+        // 同一个提交里换 body + 换本地方向，不会出现「body 已换、标注还是旧的」那一帧错标注。
+        const applied = applyToggleDirection(id, current, reading);
+        // ↓ 这一行是「**路径 (i) 屏上不闪错**」的唯一保证（T7 ⑧-③ 更正 task-4-report.md:136 的归属）：
+        //   迟到的读结果之所以被 `shouldAcceptLateRead` 丢弃，全靠它把 `toggleSeqRef` 推过读取时取的
+        //   那份快照（读那侧只负责比对；没有这次自增，比对永远看到「没切换过」⇒ 迟到结果照样上屏）。
+        toggleSeqRef.current += 1;
+        void applied.done; // 落库**不等**（`done` 绝不 reject；它挂住也不该把面板卡在 toggling）
         if (!aliveRef.current) return;
         setCurrent(swapped);
         setBody(swapped.body);
-        // 本地态与落库值同源（同一个决策）：屏上的标注与下一次读回来的记录必然一致。
-        if (action === "persist") setStoredDirection(oppositeDirection(direction));
-        else if (action === "clear") setStoredDirection(undefined);
+        // 本地态与落库值同源（**同一个决策、同一个值**）：屏上的标注与下一次读回来的记录必然一致。
+        if (applied.write === "persist") setStoredDirection(applied.next);
+        else if (applied.write === "clear") setStoredDirection(undefined);
         notifyDataChanged();
       } catch (err) {
         console.warn("[prompt-enhancer] 两份正文互换失败", err);

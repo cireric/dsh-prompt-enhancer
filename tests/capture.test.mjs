@@ -4,7 +4,7 @@
  * 为什么补这个文件：**D-1 正是死在这条缝上**——二次确认框列出的受害者与宿主实际物理删除的对象
  * 逐 id 不等（T7 C10 = FAIL），而这条缝就在 `preview → create` 这几行里。组件接线在本仓库没有
  * 自动化通道（无 react-dom / jsdom，全局硬约束 5），但 `capture.ts` 是**非组件、可测**的模块，
- * 「组件接线无自动化」这句话盖不住它。下面四条逐一钉住它的四个出口。
+ * 「组件接线无自动化」这句话盖不住它。下面五条逐一钉住它的五个出口（⑤ = T7 ①：淘汰者的清键）。
  *
  * 手法与 `tests/api.test.mjs` 一致：打桩 `globalThis.fetch`（`api.ts` 在调用期解析 fetch）。
  * 确认弹窗**不**打桩——用的是真实的 `confirm.ts`（先发布在途请求、再由本文件 resolve）：
@@ -59,16 +59,28 @@ function mk(id, title, aiRefined = false, lastUsedAt = 0, createdAt = 0) {
   };
 }
 
-/** 路由桩：GET /prompts（插入前集合）、GET /settings、POST /prompts（创建）。未打桩的请求直接抛（不静默）。 */
+/**
+ * 路由桩：GET /prompts（插入前集合）、GET /settings、POST /prompts（创建）、
+ * DELETE /meta/\<key\>（T7 ① 的清键）。未打桩的请求直接抛（不静默）。
+ */
 function routes({ prompts, settings, create }) {
   return (url, init) => {
     const method = init?.method ?? "GET";
     if (url === API_PREFIX + "/prompts" && method === "GET") return jsonRes({ ok: true, data: prompts });
     if (url === API_PREFIX + "/prompts" && method === "POST") return create();
     if (url === API_PREFIX + "/settings" && method === "GET") return jsonRes({ ok: true, data: settings });
+    // T7 ①：淘汰者的 per-prompt meta 由客户端清（`DELETE /meta/<key>`，宿主那条是**通用**清键路由，
+    // 键名约定归客户端）——按真实回执打桩，而不是让请求掉进「未打桩」的抛错里。
+    if (url.startsWith(API_PREFIX + "/meta/") && method === "DELETE") {
+      return jsonRes({ ok: true, data: { key: "k", deleted: true } });
+    }
     throw new Error("未打桩的请求：" + method + " " + url);
   };
 }
+
+/** 只数 meta 清键请求（T7 ①）：`DELETE /meta/<key>`。 */
+const isMetaDelete = (call) =>
+  (call.init?.method ?? "GET") === "DELETE" && call.url.startsWith(API_PREFIX + "/meta/");
 
 /**
  * 给可能永不落地的 promise 一个上限：实现若弹了确认却没人 resolve，用例必须**快速变红**，
@@ -137,6 +149,8 @@ test("出口 1 未超限：不弹确认、直接创建，返回 { ok:true, promp
       "标题取正文首个非空行兜底；body / tags / summary 原样透传",
     );
     assert.equal(broadcasts, 1, "创建成功后必须广播一次数据变更");
+    // T7 ① 的反面对照：没有淘汰 ⇒ 一次清键请求都不发（否则「无脑全清」也能让上面那条正向用例绿）。
+    assert.equal(s.calls.filter(isMetaDelete).length, 0, "evicted 为空 ⇒ 一把键都不清");
   } finally {
     unsub();
     s.restore();
@@ -150,7 +164,8 @@ test("出口 2 超限：弹确认，detail 逐字等于预演出的受害者标�
     routes({
       prompts,
       settings,
-      create: () => jsonRes({ ok: true, data: { prompt: created, evicted: [prompts[0].title] } }),
+      // 宿主回执里的 evicted 是**被物理删除的 id 列表**（store.enforceMaxCount 的返回值），不是标题。
+      create: () => jsonRes({ ok: true, data: { prompt: created, evicted: [prompts[0].id] } }),
     }),
   );
   const pending = createFromCapture({ body: "新正文" });
@@ -186,8 +201,17 @@ test("出口 2 超限：弹确认，detail 逐字等于预演出的受害者标�
     const outcome = await raceTimeout(pending, 2000, "确认后必须落地");
     assert.equal(outcome.ok, true);
     assert.deepEqual(outcome.prompt, created, "返回宿主实际创建的那一条");
-    assert.deepEqual(outcome.evicted, [prompts[0].title], "淘汰名单以宿主响应里的 evicted 为准");
+    assert.deepEqual(outcome.evicted, [prompts[0].id], "淘汰名单以宿主响应里的 evicted（被删 id）为准");
     assert.equal(s.calls.filter(isCreate).length, 1, "确认后恰好创建一次");
+    // 淘汰者的两把键就该在这一刻被清（T7 ① 正是补在这里：被淘汰者不进回收站 ⇒ 没有第二个清理点）。
+    assert.deepEqual(
+      s.calls.filter(isMetaDelete).map((c) => c.url),
+      [
+        API_PREFIX + "/meta/" + encodeURIComponent("pl:refined-dir:" + prompts[0].id),
+        API_PREFIX + "/meta/" + encodeURIComponent("pl:skill-descriptor:" + prompts[0].id),
+      ],
+      "被淘汰的那条各清两把键",
+    );
   } finally {
     resolveConfirm(false); // 断言中途失败时不留挂在途请求
     s.restore();
@@ -282,5 +306,37 @@ test("出口 4 create 抛错：原样上抛（同一对象）、不转成 cancel
     assert.equal(caught.ok, undefined, "不得被转成 { ok:false, reason:'cancelled' } 这种返回值");
   } finally {
     s2.restore();
+  }
+});
+
+test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清两把**——被淘汰者不进回收站，故这是唯一清理点", async () => {
+  // 宿主一次淘汰多条（预检只看得见插入前的集合，真正的受害者名单由宿主事务定）⇒ 回执里的 id 全都要清。
+  const { prompts, settings } = overLimitFixture();
+  const created = mk("new", "新的一条");
+  const evicted = [prompts[0].id, prompts[1].id];
+  const s = stubFetch(routes({ prompts, settings, create: () => jsonRes({ ok: true, data: { prompt: created, evicted } }) }));
+  try {
+    const pending = createFromCapture({ body: "新正文" });
+    await tick();
+    assert.ok(getConfirmSnapshot() !== null, "前提：超限先弹确认");
+    resolveConfirm(true);
+    const outcome = await raceTimeout(pending, 2000, "确认后必须落地");
+    assert.deepEqual(outcome.evicted, evicted, "回执里的淘汰名单原样带回调用方");
+    // 键名与 `ai-flow.ts#perPromptMetaKeys` 同源（这里按约定重写一次，两处不一致即红）。
+    const expected = [];
+    for (const id of evicted) {
+      expected.push(
+        API_PREFIX + "/meta/" + encodeURIComponent("pl:refined-dir:" + id),
+        API_PREFIX + "/meta/" + encodeURIComponent("pl:skill-descriptor:" + id),
+      );
+    }
+    assert.deepEqual(s.calls.filter(isMetaDelete).map((c) => c.url), expected, "每个被淘汰的 id 各清两把键");
+    for (const call of s.calls.filter(isMetaDelete)) {
+      assert.equal(call.init.method, "DELETE", "清键走 DELETE（无请求体）");
+      assert.equal(call.init.body, undefined);
+    }
+  } finally {
+    resolveConfirm(false);
+    s.restore();
   }
 });

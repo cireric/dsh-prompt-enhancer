@@ -83,7 +83,20 @@ function collectSourceText() {
     .map(String)
     .filter((rel) => (rel.endsWith(".ts") || rel.endsWith(".tsx")) && !rel.endsWith("i18n.ts"));
   assert.ok(files.length > 0, "必须真的扫到 src/** 的源码（0 个文件 = 本检查是空转）");
-  return stripComments(files.map((rel) => readFileSync(join(srcDir, rel), "utf8")).join("\n"));
+  return sourceHaystack(files.map((rel) => readFileSync(join(srcDir, rel), "utf8")));
+}
+
+/**
+ * **管线函数**（T7 ⑤）：一批源码文本 → 死键检查的 haystack。**剥注释就在这一步，且只有这一步**
+ * （`collectSourceText` 与文件末尾那条负样本都走它）。
+ *
+ * 为什么必须共用：旧版负样本**自己调** `stripComments`，于是「把 `stripComments` 从管线里摘掉」
+ * 这个变异 8 条用例**全绿**——负样本只证明了「测试自己会剥注释」，与管线接没接线无关（管线接线当时
+ * 只有派单里那次文档化变异守着）。共用之后，摘掉这一步同时打红两处：负样本（注释里的键又被当成引用）
+ * 与下面那条「管线产出不得含注释标记」。
+ */
+function sourceHaystack(sources) {
+  return stripComments(sources.join("\n"));
 }
 
 /**
@@ -116,11 +129,15 @@ test("i18n：无死键——每个键都在 src/** 里作为字符串字面量�
 // ── R59（F-4 / I-6）：注释剥离的负样本 ──────────────────────────────────────
 //
 // 只出现在注释里的引号键名**必须**判为死键：否则在源文件里写一行 `// 删掉 "xxx.nobodyUsesMe"` 就能
-// 让一个没人用的键永久逃检。本用例走的是与上面那条**同一对函数**（stripComments + deadKeysIn），
-// 不是另写一份判定——否则它只证明「测试自己会剥注释」。
+// 让一个没人用的键永久逃检。本用例走的是与上面那条**同一条管线**（sourceHaystack + deadKeysIn），
+// 不是另写一份判定——否则它只证明「测试自己会剥注释」（T7 ⑤ 修的正是这一点）。
 //
 // 变异验证（报告里逐次记录）：在 src 里临时加一个只出现在注释中的字典键（zh + en 各一条 + 一行注释）
 // → 上面那条死键用例必红；复原后必绿。
+//
+// T7 ⑤：本用例**不再自己调 `stripComments`**，而是走管线函数 `sourceHaystack`——与 `collectSourceText`
+// 同一条接线。于是「把 stripComments 从管线里摘掉」这个变异会**同时**打红这里与下面那条断言，
+// 而不是像修复前那样一条都不红（那时它只证明「测试自己会剥注释」）。
 test("i18n：负样本——只在注释里出现的引号键名必须判为死键（F-4 / I-6）", () => {
   const synthetic = [
     'const live = t("manager.compare.title");',
@@ -129,7 +146,7 @@ test("i18n：负样本——只在注释里出现的引号键名必须判为死�
     '/* 也是注释：\'block.nobodyUsesMe\' */',
   ].join("\n");
   assert.deepEqual(
-    deadKeysIn(stripComments(synthetic), [
+    deadKeysIn(sourceHaystack([synthetic]), [
       "manager.compare.title",
       "manager.compare.current",
       "gone.nobodyUsesMe",
@@ -142,6 +159,17 @@ test("i18n：负样本——只在注释里出现的引号键名必须判为死�
   assert.deepEqual(
     deadKeysIn(synthetic, ["gone.nobodyUsesMe", "block.nobodyUsesMe"], new Set()),
     [],
-    "不剥注释时注释里的键名会被当成引用——这就是修复前的漏判形态（防止有人把 stripComments 从管线里摘掉）",
+    "不剥注释时注释里的键名会被当成引用——这就是修复前的漏判形态",
   );
+});
+
+test("i18n：管线自带剥注释——collectSourceText 的产出**不含任何注释标记**（T7 ⑤：摘掉调用即红）", () => {
+  // 与上一条共用 `sourceHaystack`：它断言的是**管线真的接了剥注释这一步**，而不是「有个函数能剥」。
+  // 反向证据（本仓库实测）：src/** 的原文里 `//` 与 `/*` 都在，剥完之后两个都不在。
+  const text = collectSourceText();
+  assert.equal(text.includes("//"), false, "管线产出里仍有行注释标记 ⇒ 剥注释没接进管线");
+  assert.equal(text.includes("/*"), false, "管线产出里仍有块注释开头 ⇒ 剥注释没接进管线");
+  // 反面对照：原文确实有这些标记（否则上面两条是空转——「恒不含 //」也可以来自「什么都没读到」）。
+  const raw = readFileSync(fileURLToPath(new URL("../src/client/utils/i18n.ts", import.meta.url)), "utf8");
+  assert.ok(raw.includes("//") && raw.includes("/*"), "前提：源码里真的有注释标记");
 });

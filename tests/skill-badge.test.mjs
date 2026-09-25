@@ -315,6 +315,32 @@ test("降级：meta 损坏（坏 JSON / 形状不符）⇒ undefined + 可见告
   assert.deepEqual(spy.calls[0], { promptId: "p1" }, "降级时不得多出半个键");
 });
 
+test("多余键丢弃（T7 ④ 补的用例）：meta 里多出来的字段一律不进 descriptor，只回 ≤3 个已知字段", () => {
+  // 报告曾声称覆盖了这条，但仓内没有用例（T7 ④ 的裁决）——它是重导请求体形状的最后一道闸：
+  // meta 是**外部数据**（用户可手改 / 老版本可能写过多余键），不能原样塞进请求体。
+  // 直接用 JSON **文本**构造（而不是 JSON.stringify 一个字面量）：`"__proto__"` 要真的成为被解析对象上的
+  // 一个自有键（字面量里的 `__proto__:` 是设置原型，不会进 JSON）。
+  const withExtras = exportUtils.parseStoredDescriptor(
+    '{"name":"weekly-report","description":"把要点整理成周报","whenToUse":"当用户要写周报时",' +
+      '"extra":"多余字段","nested":{"a":1},"__proto__":{"polluted":true},"name2":"另一个名字"}',
+  );
+  assert.deepEqual(withExtras, {
+    name: "weekly-report",
+    description: "把要点整理成周报",
+    whenToUse: "当用户要写周报时",
+  }, "多余键必须被丢弃（逐字回一个只有已知字段的新对象）");
+  assert.deepEqual(Object.keys(withExtras), ["name", "description", "whenToUse"], "键集恰好三个");
+
+  // 缺 whenToUse 时**不得**回一个 `whenToUse: undefined` 的键：请求体里多出的半截键同样是形状漂移。
+  const twoFields = exportUtils.parseStoredDescriptor(
+    JSON.stringify({ name: "n", description: "d", extra: 1 }),
+  );
+  assert.deepEqual(twoFields, { name: "n", description: "d" });
+  assert.deepEqual(Object.keys(twoFields), ["name", "description"]);
+  // 反面对照：多出键**不影响**合法判定（丢弃 ≠ 拒绝），否则「一律返回 undefined」也能让上面两条绿。
+  assert.ok(withExtras !== undefined, "有多余键 ≠ 形状不符：不得因此降级（降级是丢信息，不是安全）");
+});
+
 test("读写失败都不阻断：setMeta 抛错、getMeta 抛错都只告警（导出与重导各自成立）", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async () => {

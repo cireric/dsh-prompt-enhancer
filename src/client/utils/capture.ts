@@ -7,7 +7,10 @@
  *   2. `previewEvictions(prompts, maxPromptCount, 1)` → 非空则弹确认（明细 = 将淘汰的标题）；
  *   3. 用户取消 → `{ ok: false, reason: "cancelled" }`：**不创建、不留半成品、不渲染成错误**；
  *   4. 同意或无需淘汰 → `api.createPrompt` → 成功后 `notifyDataChanged()` → `{ ok: true, … }`；
- *   5. `api` 抛错**照旧上抛**（调用方已有失败分支，本层不吞——全局硬约束 15）。
+ *   5. **淘汰者的 per-prompt meta 由本层清**（T7 ①）：被超限淘汰的提示词**不进回收站**（宿主
+ *      `store.enforceMaxCount` 直接 `DELETE FROM prompts`）⇒ 它的键**没有第二个清理点**，
+ *      `pl:refined-dir:<id>` / `pl:skill-descriptor:<id>` 会永久残留；
+ *   6. `api` 抛错**照旧上抛**（调用方已有失败分支，本层不吞——全局硬约束 15）。
  *
  * 提示文案（title/message/confirmLabel/cancelLabel）是 i18n 键，由唯一渲染点
  * `PromptSurfaceHost` 翻译——本模块不引 react、不知道 locale（见 confirm.ts 头部）。
@@ -15,6 +18,7 @@
  * 真正的受害者名单由 `store.enforceMaxCount` 决定）。
  */
 import { clampTitle, type Prompt } from "../../types.ts";
+import { deletePrompts } from "./ai-flow.ts";
 import { api } from "./api.ts";
 import { requestConfirm } from "./confirm.ts";
 import { notifyDataChanged } from "./data-sync.ts";
@@ -69,5 +73,22 @@ export async function createFromCapture(input: CaptureInput): Promise<CaptureOut
     summary: input.summary,
   });
   notifyDataChanged();
-  return { ok: true, prompt: created.prompt, evicted: created.evicted };
+
+  // 5) ①（T7）：清掉**被超限淘汰者**的 per-prompt meta 键。宿主回执里的 `evicted` 是**被物理删除的
+  //    id 列表**（不是标题），那些行从不进回收站 ⇒ 不走本层这条路就永远没人清它们的键。
+  //
+  //    为什么用 T6 的收尾编排（`deletePrompts`）而不是在这里重写一遍循环：键的枚举（`perPromptMetaKeys`）
+  //    与「逐条清、失败只 warn 不反噬」的语义只有那一处真源，第三份拷贝迟早漂移。
+  //    为什么**不得**改成宿主在同一个事务里清 meta：`pl:` 键名是**客户端**的约定，宿主不认识它
+  //    （T6-B 的「通用形态」：宿主只有 `DELETE /meta/:key` 这个通用通道）——把键名搬进宿主就是把两处
+  //    耦合成一份隐式契约。
+  //
+  //    `remove` 传一个**已完成标记**：淘汰发生在宿主 `POST /prompts` 的同一个事务里，客户端拿到
+  //    `created` 时那次物理删除**已经提交** ⇒ T6 的「主删先行」次序在此天然成立，这里既不需要也
+  //    不可能再发一次删除。清键失败只 warn（`deletePrompts` 内部），**绝不影响**这次创建的结局。
+  const evicted = created.evicted ?? [];
+  if (evicted.length > 0) {
+    await deletePrompts({ ids: evicted, irreversible: true, remove: async () => {} });
+  }
+  return { ok: true, prompt: created.prompt, evicted };
 }

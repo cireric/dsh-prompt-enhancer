@@ -140,17 +140,24 @@ export interface DeletePromptsInput {
   /**
    * 主删除（先做、做成功才谈收尾）：真实现 = `api.deleteTrash`（单条）/ `api.emptyTrash`（整批）/
    * `api.deletePrompt`（软删）。一次调用即代表「本次要删的都删了」。
-   * 返回类型是 `unknown`：宿主那三个路由各回各的回执（`{deleted}` / `{removed}`），
-   * 收尾只关心「它有没有抛」，不看回执内容。
+   *
+   * 返回类型是 `unknown`：宿主那三个路由各回各的回执。收尾**只从回执里读一件事**——「真的被删掉的
+   * id 列表」（`{ removed: string[] }`，见 `receiptIds`，T7 ⑦）；读不出来就退回 `ids`，不猜。
+   * 回执抛出仍是**唯一的失败信号**（主操作失败 ⇒ 清键一步都不做）。
    */
   remove: () => Promise<unknown>;
   /** 清键实现；缺省 = `api.deleteMeta`。测试注入假实现以保持 hermetic。 */
   deleteMeta?: MetaDeleter;
 }
 
-/** 收尾结果：`cleared` = 成功删掉的键数；`failed` = 清键失败数（每次失败都有 `console.warn`）。 */
+/**
+ * 收尾结果：**清键请求**的成功 / 失败计数（T7 ⑧-⑤ 更名：旧名 `cleared` 读起来像「删掉的行数」，
+ * 实际数的是**成功的请求数**——宿主 `DELETE /meta/:key` 是幂等的，键不存在时同样回 ok
+ * （`{deleted: false}`），故一次成功只说明「这次请求被接受了」，不等于删掉了一行）。
+ * 每次失败都有 `console.warn`（不静默）。
+ */
 export interface DeletePromptsResult {
-  cleared: number;
+  succeeded: number;
   failed: number;
 }
 
@@ -167,23 +174,47 @@ export interface DeletePromptsResult {
  *  3. **主操作先行，清键不得反噬**：主删除失败 ⇒ 原样抛出、**一行 meta 都不动**（提示词还在，键
  *     必须还在）；清键失败 ⇒ 只 `console.warn` + 计入 `failed`，绝不把已经成功的删除变成失败
  *     （删除是主操作、清键是收尾），也绝不静默（A11：错误必须可见）。
+ *  4. **清谁的键以主删除回执为准**（T7 ⑦）：回执给出被删 id 列表时用它，给不出才退回 `input.ids`。
+ *     这条专治「清空回收站」的竞态——面板列出的 items 是打开那一刻的快照，窗口内新增的行同样被删，
+ *     却不在快照里；按回执清键之后，`ids` 只用来决定「要不要清」的语义（软删除仍然一把都不清），
+ *     而**删了谁**只有宿主说了算。`irreversible` 仍是「清键」这件事的**唯一决策点**。
  */
 export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePromptsResult> {
-  await input.remove();
-  if (!input.irreversible) return { cleared: 0, failed: 0 };
+  const receipt = await input.remove();
+  if (!input.irreversible) return { succeeded: 0, failed: 0 };
+  // ⑦：清**回执说被删掉的那些** id（清空回收站的竞态窗口），回执说不出才退回调用方给的 ids。
+  const ids = receiptIds(receipt) ?? input.ids;
   const deleteMeta = input.deleteMeta ?? ((key: string) => api.deleteMeta(key));
-  let cleared = 0;
+  let succeeded = 0;
   let failed = 0;
-  for (const id of input.ids) {
+  for (const id of ids) {
     for (const key of perPromptMetaKeys(id)) {
       try {
         await deleteMeta(key);
-        cleared++;
+        succeeded++;
       } catch (err) {
         failed++;
         console.warn("[prompt-enhancer] 清理提示词的 meta 键失败（提示词已删除，残留键：" + key + "）", err);
       }
     }
   }
-  return { cleared, failed };
+  return { succeeded, failed };
+}
+
+/**
+ * 主删除回执 → **真的被删掉的 id 列表**（T7 ⑦），读不出来返回 `undefined`（= 回执没说，由调用方退回入参）。
+ *
+ * 唯一认得下的形态是 `{ removed: string[] }`——宿主 `DELETE /trash`（清空回收站）就是这个形状：
+ * `store.emptyTrash()` 返回被删 id 列表，路由原样放进 `removed`。其余三个删除点回执里没有 id：
+ * 单条永久删除与单条软删除回的是**条数** / `{deleted}`，两者都不该被当成 id 列表。
+ *
+ * 只认**非空字符串数组**：形状不符（数值 / 空数组里的非串元素 / 别的东西）一律当作「回执没说」，
+ * **不猜**——猜错的后果是清掉不该清的键（或漏清），比退回入参更糟。
+ */
+function receiptIds(receipt: unknown): readonly string[] | undefined {
+  if (typeof receipt !== "object" || receipt === null) return undefined;
+  const raw = (receipt as { removed?: unknown }).removed;
+  if (!Array.isArray(raw)) return undefined;
+  if (!raw.every((id): id is string => typeof id === "string" && id !== "")) return undefined;
+  return raw;
 }

@@ -226,7 +226,13 @@ test("回收站：软删除 → 可见 → 恢复无损 → 永久删除 → 清
 
   const q = store.createPrompt({ title: "再删一条", body: "y" });
   store.deletePrompt(q.id);
-  assert.ok(store.emptyTrash() >= 1, "清空必须报告删除条数");
+  // T7 ⑦：清空回收站回的是**被物理删除的 id 列表**（旧口径「条数」已被取代）——客户端按它清
+  // per-prompt meta（所以列表必须**逐条**可信，而不是一个计数）。
+  const emptied = store.emptyTrash();
+  assert.ok(Array.isArray(emptied), "返回值必须是 id 列表");
+  assert.ok(emptied.length >= 1 && emptied.every((id) => typeof id === "string" && id !== ""), "逐条都是非空 id");
+  assert.ok(emptied.includes(q.id), "刚删的那条必须在被删清单里（这是客户端清键的唯一依据）");
+  assert.deepEqual(store.emptyTrash(), [], "已经空了 ⇒ 回空列表（幂等，不是 undefined / 0）");
   assert.equal(store.listTrash().length, 0);
 });
 

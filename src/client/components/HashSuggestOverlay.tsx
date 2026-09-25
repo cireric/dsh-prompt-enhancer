@@ -25,7 +25,7 @@
  */
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
-import { canRender } from "../../overlay-claim.ts";
+import { canRender, canRetakeHash, canTakeHash } from "../../overlay-claim.ts";
 import type { Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import {
@@ -220,14 +220,17 @@ export function HashSuggestOverlay({
    * 可能落在同一拍上（F1-1 的 0/5/10ms），A 的 cleanup 晚于词库的取屏时**不得**把它清掉。
    */
   React.useEffect(() => {
-    if (visible) claimOverlay("hash");
+    // 守卫不是内联算式：它是 `overlay-claim.ts#canTakeHash`（T7 ③ 起与测试模型**同一份**，
+    // 见那里的注释：本函数刻意不收 claimed，A 的 deps 里没有寄存器）。
+    if (canTakeHash(visible)) claimOverlay("hash");
     return () => {
       releaseOverlay("hash");
     };
   }, [visible]);
 
   React.useEffect(() => {
-    if (visible && getOverlayClaimSnapshot() !== "hash") claimOverlay("hash");
+    // 同理：守卫 = `overlay-claim.ts#canRetakeHash`，第二个实参是**活寄存器**的读值。
+    if (canRetakeHash(visible, getOverlayClaimSnapshot())) claimOverlay("hash");
   }, [visible, claimed]);
 
   // R47：被点外部收起之后（仅当前这个令牌）不再渲染；令牌消失或变化即自动复位。

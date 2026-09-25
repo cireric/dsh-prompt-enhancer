@@ -289,6 +289,12 @@ export interface ExportEachInput {
    * 失败只 warn、不影响结局；调用方也可注入自己的实现（测试里必定注入，保持用例 hermetic）。
    * ⚠️ 名字**已锁定**的条目（T6 / D-1）传进来的是**宿主回执里的目录名**，不是 AI 那个没被使用的
    * 名字：徽标重导会用这份 meta 里的 `name` 当目录名候选（见 `exportOne` 的落库注释）。
+   *
+   * ⚠️ **不得 reject（T7 ④ 写明的契约）**：`exportOne` 在这里是**裸 await**（无 try/catch），一次
+   * reject 会穿出 `exportEach` 的循环、把整批**已经完成**的条目结局一并丢掉（调用方连
+   * `ExportOutcome[]` 都拿不到）——它是当前唯一会让整批炸掉的注入点。「失败不阻断批次」这条语义
+   * （见文件头的三条不变量）由**注入方**在此履约：缺省实现 `persistDescriptor` 已把任何写失败降级成
+   * `console.warn`，注入实现必须同样只 warn、不抛。
    */
   saveDescriptor?: (promptId: string, descriptor: SkillDescriptorPayload) => Promise<unknown>;
 }
@@ -474,6 +480,12 @@ export function parseStoredDescriptor(raw: string | undefined): SkillDescriptorP
  * 失败只 `console.warn`：它只是重导时的提质信息，不得让一次**已经成功**的导出变成失败、也不得中断批次。
  * 为什么写「每一次成功」而不是只写第一次：descriptor 里的 `name` 是重导时的目录名候选
  * （宿主按 `toKebab(descriptor.name)` 落盘），每次成功都覆盖 ⇒ 它与库里的 `skillName` 始终同步。
+ *
+ * ⚠️ `descriptor.name` 有**两种形态**，这不是不一致（T7 ⑧-④ 写明）：名字**已锁定**的条目落库前被换成
+ * 宿主回执里的**目录名**（见 `exportOne` 的 `used`），首次导出则原样落 **AI 名**。两种形态都只是
+ * **候选**——**唯一定名者是宿主的 `toKebab`**（`src/skill-name.ts`；路由对候选做 kebab 后落盘），
+ * 故「AI 名 → kebab → 目录名」与「目录名 → kebab → 同一个目录名」指向同一个目录：这里不需要、也不得
+ * 提前在客户端把两者归一（归一就会丢掉 T3 的「原样落库、原样回传」）。
  */
 export async function persistDescriptor(promptId: string, descriptor: SkillDescriptorPayload): Promise<void> {
   try {

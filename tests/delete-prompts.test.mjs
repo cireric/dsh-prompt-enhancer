@@ -76,7 +76,7 @@ test("O-1：单条永久删除 ⇒ 主删除之后为该 id 清两把键（先�
   const h = harness();
   const result = await deletePrompts({ ids: ["p1"], irreversible: true, remove: h.remove, deleteMeta: h.deleteMeta });
   assert.deepEqual(h.events, ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1"]);
-  assert.deepEqual(result, { cleared: 2, failed: 0 });
+  assert.deepEqual(result, { succeeded: 2, failed: 0 });
 });
 
 test("O-1：清空回收站 ⇒ 对**每条**被删 id 清两把键（批量编排，主删除仍是一次）", async () => {
@@ -96,7 +96,7 @@ test("O-1：清空回收站 ⇒ 对**每条**被删 id 清两把键（批量编�
     "meta:pl:refined-dir:c",
     "meta:pl:skill-descriptor:c",
   ]);
-  assert.deepEqual(result, { cleared: 6, failed: 0 });
+  assert.deepEqual(result, { succeeded: 6, failed: 0 });
 });
 
 // ── 反面对照：软删除一次都不发 ───────────────────────────────────────────────
@@ -105,7 +105,7 @@ test("O-1 反面对照：**软删除**（进回收站）⇒ 主删除照做，�
   const h = harness();
   const result = await deletePrompts({ ids: ["p1"], irreversible: false, remove: h.remove, deleteMeta: h.deleteMeta });
   assert.deepEqual(h.events, ["remove"], "回收站可恢复且复用同一 id：清了键，「删除 → 恢复」就会重演 I-1");
-  assert.deepEqual(result, { cleared: 0, failed: 0 }, "一次都没清 ⇒ 计数如实为 0");
+  assert.deepEqual(result, { succeeded: 0, failed: 0 }, "一次都没清 ⇒ 计数如实为 0");
 });
 
 test("O-1 反面对照：软删除哪怕涉及多条 id，也一条清键都不发", async () => {
@@ -130,7 +130,7 @@ test("O-1：清键失败**不得静默、也不得反噬**——warn + 计入 fa
   const { out, warns } = await withWarns(() =>
     deletePrompts({ ids: ["a", "b"], irreversible: true, remove: h.remove, deleteMeta: h.deleteMeta }),
   );
-  assert.deepEqual(out, { cleared: 3, failed: 1 }, "删除本身成功；只有清键有失败计数");
+  assert.deepEqual(out, { succeeded: 3, failed: 1 }, "删除本身成功；只有清键有失败计数");
   assert.equal(warns.length, 1, "至少一条 warn（错误必须可见）");
   assert.match(warns[0], /pl:refined-dir:a/, "warn 里带出残键名");
   assert.deepEqual(
@@ -145,13 +145,91 @@ test("O-1：清键失败**不得静默、也不得反噬**——warn + 计入 fa
   );
 });
 
+// ── ⑦：清谁的键以**主删除回执**为准（清空回收站的竞态窗口）───────────────────────
+
+test("⑦ 清空回收站竞态：回执给出被删 id ⇒ 清**回执里**的每一条（含面板列表里没有的那条）", async () => {
+  const h = harness();
+  // 面板打开时列出的只有 `a`；清空那一刻宿主删掉的是 `a` **和** `b`（窗口内新增的回收站行）。
+  const result = await deletePrompts({
+    ids: ["a"],
+    irreversible: true,
+    remove: async () => {
+      h.events.push("remove");
+      return { removed: ["a", "b"] }; // = store.emptyTrash() 的返回值，路由原样放进 removed
+    },
+    deleteMeta: h.deleteMeta,
+  });
+  assert.deepEqual(
+    h.events,
+    [
+      "remove",
+      "meta:pl:refined-dir:a",
+      "meta:pl:skill-descriptor:a",
+      "meta:pl:refined-dir:b",
+      "meta:pl:skill-descriptor:b",
+    ],
+    "b 不在面板列表（入参 ids）里，但它在**回执**里 ⇒ 必须清；「只清面板列表」那一版在这里必红",
+  );
+  assert.deepEqual(result, { succeeded: 4, failed: 0 });
+});
+
+test("⑦ 反面对照：回执没有 id 列表（单条路由回**条数**）⇒ 退回入参 ids，且不得把数值当 id", async () => {
+  const h = harness();
+  const result = await deletePrompts({
+    ids: ["p1"],
+    irreversible: true,
+    remove: async () => {
+      h.events.push("remove");
+      return { removed: 1 }; // 单条永久删除：removed 是条数，不是 id 列表
+    },
+    deleteMeta: h.deleteMeta,
+  });
+  assert.deepEqual(h.events, ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1"]);
+  assert.deepEqual(result, { succeeded: 2, failed: 0 });
+});
+
+test("⑦ 回执说「一条都没删」（空列表）⇒ 一把键也不清，**不得**退回入参 ids", async () => {
+  const h = harness();
+  const result = await deletePrompts({
+    ids: ["a", "b"],
+    irreversible: true,
+    remove: async () => {
+      h.events.push("remove");
+      return { removed: [] };
+    },
+    deleteMeta: h.deleteMeta,
+  });
+  assert.deepEqual(h.events, ["remove"], "空回执 = 宿主说没有行被删：清任何键都是凭空造事实");
+  assert.deepEqual(result, { succeeded: 0, failed: 0 });
+});
+
+test("⑦ 回执形状不认识（缺键 / 非字符串数组）⇒ 退回入参 ids（不猜）", async () => {
+  for (const receipt of [undefined, {}, { removed: "a" }, { removed: [1, 2] }, { removed: [""] }, { ids: ["a", "b"] }]) {
+    const h = harness();
+    await deletePrompts({
+      ids: ["p1"],
+      irreversible: true,
+      remove: async () => {
+        h.events.push("remove");
+        return receipt;
+      },
+      deleteMeta: h.deleteMeta,
+    });
+    assert.deepEqual(
+      h.events,
+      ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1"],
+      "形状不符的回执（" + JSON.stringify(receipt) + "）只能当作「回执没说」",
+    );
+  }
+});
+
 // ── 缺省实现真走 DELETE /meta/:key ───────────────────────────────────────────
 
 test("O-1：缺省 deleteMeta 真走 api.deleteMeta（DELETE /meta/<编码后的键>，无请求体）", async () => {
   const s = stubFetch(() => jsonRes({ ok: true, data: { key: "x", deleted: true } }));
   try {
     const result = await deletePrompts({ ids: ["p1"], irreversible: true, remove: async () => {} });
-    assert.deepEqual(result, { cleared: 2, failed: 0 });
+    assert.deepEqual(result, { succeeded: 2, failed: 0 });
     assert.equal(s.calls.length, 2, "两把键两次请求");
     assert.equal(s.calls[0].url, "/api/prompt-enhancer/meta/" + encodeURIComponent("pl:refined-dir:p1"));
     assert.equal(s.calls[0].init.method, "DELETE");

@@ -4,7 +4,8 @@
  * 数据面全部走既有 P6 客户端 API（`src/client/utils/api.ts`），**不新增宿主路由**：
  *   · 重命名 `PUT /tags/:from {to}`（宿主连带更新所有引用该标签的提示词）；
  *   · 删除 `DELETE /tags/:name`——**在用即宿主 400**（R37：这正是安全网），故本页把 400
- *     单独识别为「在用」并**显示用量**，不当通用错误；
+ *     单独识别为「在用」并**显示用量**，不当通用错误；用量取**宿主权威值**（重拉后的 `listTags`，
+ *     见 `inUseCount`），不拿列表快照当权威（T7 ⑥）；
  *   · 「清理无用标签」= 对 `count === 0` 的标签逐个调上面这条既有路由（逐个失败必须可见，
  *     不许静默跳过）。
  *
@@ -136,8 +137,14 @@ export function TagManagePanel({ t }: TagManagePanelProps): React.ReactElement {
         if (!aliveRef.current) return;
         setBusy(false);
         if (err instanceof ApiError && err.status === 400) {
-          // 在用标签（宿主 400「标签正在被 N 条提示词使用」）：显示用量并拒绝，不当通用错误；
-          // 顺手重拉一次让行内计数也跟上。
+          // 在用标签（宿主 400「标签正在被 N 条提示词使用」）：显示用量并拒绝，不当通用错误。
+          //
+          // ⚠️ N 必须取**宿主权威值**（T7 ⑥）：这里记下的 count 只是**触发那一刻**的列表快照，而
+          // 渲染期会优先读重拉后的列表（见下面的 `inUseCount`）——直接用快照会在列表过期时渲染出
+          // 「正在被 0 条提示词使用，无法删除」这种自相矛盾的文案。
+          // 删除**回执**（`ApiError`）里没有 `inUse` 字段（宿主 `fail()` 只回 `{ok:false,error}`，
+          // 缺口记在 task-7-report.md ⑥），也**不许**去解析那句本地化文案——故取宿主算出来的第二来源：
+          // 重拉一次 `listTags`（`count` 由宿主统计）。重拉失败时退回上面那个快照值（旧行为、不更糟）。
           setInUse({ name: item.name, count: item.count });
           setReloadSeq((n) => n + 1);
           return;
@@ -183,6 +190,17 @@ export function TagManagePanel({ t }: TagManagePanelProps): React.ReactElement {
     })();
   };
 
+  /**
+   * 「在用标签」的用量（T7 ⑥）：**渲染期**取宿主权威值。
+   *
+   * `tags` 是 `api.listTags()` 的结果（每条的 `count` 由**宿主**统计），而 400 分支已经推进
+   * `reloadSeq` ⇒ 这一格在 400 之后立刻跟上，屏上的数字不会再停留在过期快照上。
+   * 列表里找不到该标签（这段窗口里被改名 / 删除）时退回快照值——此时无从取权威值，且该不一致已在
+   * 400 那次 `console.warn` 里留了痕（不静默）。
+   */
+  const inUseCount =
+    inUse === null ? null : ((tags ?? []).find((item) => item.name === inUse.name)?.count ?? inUse.count);
+
   return (
     <>
       <div style={{ ...toolbar, justifyContent: "flex-end" }}>
@@ -193,7 +211,7 @@ export function TagManagePanel({ t }: TagManagePanelProps): React.ReactElement {
       {inUse !== null && (
         <span role="alert" style={errorText}>
           <span>
-            {t("manager.tags.inUseBefore")} {inUse.count} {t("manager.tags.inUseAfter")}
+            {t("manager.tags.inUseBefore")} {inUseCount} {t("manager.tags.inUseAfter")}
           </span>
           <span style={errorDetail} title={inUse.name}>
             {inUse.name}

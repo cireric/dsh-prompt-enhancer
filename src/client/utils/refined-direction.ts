@@ -128,7 +128,8 @@ export function readRefinedDirection(prompt: DirectionCarrier, stored: string | 
 
 /**
  * **落库闸门**：只有 `record` 来源的判定才可写（兜底 / 读取中一律不写）。
- * 「猜测不得被固化」在代码里就是这一行；组件与 `persistDirectionAfterToggle` 共用它，避免两处漂移。
+ * 「猜测不得被固化」在代码里就是这一行；`toggleDirectionWrite` / `applyToggleDirection` 与组件
+ * 共用它，避免两处漂移（T7 ⑧-②：旧注释里的 `persistDirectionAfterToggle` 早已不存在——同一处漂移的残留）。
  */
 export function canPersistDirection(reading: DirectionReading): boolean {
   return reading.source === "record";
@@ -265,25 +266,44 @@ export async function clearRefinedDirection(
 }
 
 /**
- * 切换成功后落库的**唯一入口**（组件只调它）：按 `toggleDirectionWrite` 的决策执行——
- * `persist` 写**翻转后的**方向并返回它；`clear` 写空串并返回 `undefined`（本地态应回到「没有记录」）；
- * `none` **一次 `setMeta` 都不发**。写失败只 warn（内部），绝不抛。
+ * `applyToggleDirection` 的返回（T7 ⑧-①）：**同步**拿到决策与其后果，落库在 `done` 里跑。
+ *
+ * 判别联合让「persist ⇒ 一定有一个方向值」成为类型事实：`next` 在 `persist` 分支是
+ * `RefinedDirection`，在 `clear` / `none` 分支是 `undefined`。
  */
-export async function applyToggleDirection(
+export type ToggleApply =
+  | { write: "persist"; next: RefinedDirection; done: Promise<void> }
+  | { write: "clear" | "none"; next: undefined; done: Promise<void> };
+
+/**
+ * 切换成功后落库的**唯一入口**（组件只调它）：决策 = `toggleDirectionWrite` **在这里求值一次**，
+ * 组件读返回值里的 `write` / `next` 更新本地态，**不再自己算第二遍**（T7 ⑧-①：同一纯决策两处求值
+ * 正是漂移的温床）。
+ *
+ * 为什么返回**同步的计划**而不是 `async` 的方向值：组件必须在同一次 state 更新里换掉「body」与
+ * 「哪一栏是原文」的标注，否则会出现一帧**错的标注**（R-P7-AE 记的正是这类闪帧：正文已经换过来、
+ * 标注还按旧方向渲染）；而落库**不得**阻塞 UI——`api.setMeta` 那条路由没有超时（非 AI 路由一律
+ * 不设 timeout），把 UI 等在一次库写上，一次挂住的写就是面板卡在 toggling。故拆成
+ * 「同步决策 + 不等它的 `done`」。
+ *
+ * 三种取值与 `ToggleWrite` 一一对应：
+ *   · `persist`：写**翻转后的**方向；`next` = 那个方向（本地态据此更新 ⇒ 与落库值**同一个值**）；
+ *   · `clear`：写空串（作废那条可能已陈旧的记录）；`next` = `undefined`（本地态回到「没有记录」）；
+ *   · `none`：**一次 `setMeta` 都不发**；`next` = `undefined`。
+ *
+ * `done` **绝不 reject**（两个写函数各自 try/catch + `console.warn`）⇒ 调用方可以安全地不等它。
+ */
+export function applyToggleDirection(
   promptId: string,
   prompt: DirectionCarrier,
   reading: DirectionReading,
   setMeta: MetaWriter = (key, value) => api.setMeta(key, value),
-): Promise<RefinedDirection | undefined> {
-  const action = toggleDirectionWrite(prompt, reading);
-  if (action === "none") return undefined;
-  if (action === "clear") {
-    await clearRefinedDirection(promptId, setMeta);
-    return undefined;
-  }
+): ToggleApply {
+  const write = toggleDirectionWrite(prompt, reading);
+  if (write === "none") return { write, next: undefined, done: Promise.resolve() };
+  if (write === "clear") return { write, next: undefined, done: clearRefinedDirection(promptId, setMeta) };
   const next = oppositeDirection(reading.direction);
-  await saveRefinedDirection(promptId, next, setMeta);
-  return next;
+  return { write, next, done: saveRefinedDirection(promptId, next, setMeta) };
 }
 
 /**

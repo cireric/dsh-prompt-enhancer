@@ -229,13 +229,14 @@ const ROUTES = [
   // 回收站
   { route: "GET /trash", client: "listTrash", call: (a) => a.listTrash(), method: "GET", url: "/api/prompt-enhancer/trash", data: [] },
   { route: "POST /trash/:id/restore", client: "restoreTrash", call: (a) => a.restoreTrash("a/b"), method: "POST", url: "/api/prompt-enhancer/trash/a%2Fb/restore", data: { restored: 1 } },
-  { route: "DELETE /trash", client: "emptyTrash", call: (a) => a.emptyTrash(), method: "DELETE", url: "/api/prompt-enhancer/trash", data: { removed: 2 } },
+  // T7 ⑦ 起：宿主 `store.emptyTrash()` 回的是**被删 id 列表**（客户端据此清键），路由原样放进 `removed`。
+  { route: "DELETE /trash", client: "emptyTrash", call: (a) => a.emptyTrash(), method: "DELETE", url: "/api/prompt-enhancer/trash", data: { removed: ["a/b"] } },
   { route: "DELETE /trash/:id", client: "deleteTrash", call: (a) => a.deleteTrash("a/b"), method: "DELETE", url: "/api/prompt-enhancer/trash/a%2Fb", data: { removed: 1 } },
   // AI
   { route: "GET /ai/providers", client: "listAiProviders", call: (a) => a.listAiProviders(), method: "GET", url: "/api/prompt-enhancer/ai/providers", data: [] },
   { route: "POST /ai/polish", client: "polishPrompt", call: (a) => a.polishPrompt("草稿", { keepVariables: true }), method: "POST", url: "/api/prompt-enhancer/ai/polish", body: { body: "草稿", keepVariables: true, withSummary: false }, data: { polished: "x" } },
   { route: "POST /ai/refine", client: "refinePrompt", call: (a) => a.refinePrompt("草稿"), method: "POST", url: "/api/prompt-enhancer/ai/refine", body: { body: "草稿" }, data: { title: "t", tags: [], summary: "", body: "b" } },
-  { route: "POST /ai/skill-descriptor", client: null },
+  { route: "POST /ai/skill-descriptor", client: "aiSkillDescriptor", call: (a) => a.aiSkillDescriptor({ body: "草稿" }), method: "POST", url: "/api/prompt-enhancer/ai/skill-descriptor", body: { body: "草稿" }, data: { name: "weekly-report", description: "把要点整理成周报" } },
   // 设置
   { route: "GET /settings", client: "getSettings", call: (a) => a.getSettings(), method: "GET", url: "/api/prompt-enhancer/settings", data: {} },
   { route: "PUT /settings", client: null },
@@ -247,14 +248,17 @@ const ROUTES = [
   { route: "PUT /meta/:key", client: "setMeta", call: (a) => a.setMeta("a/b", "v"), method: "PUT", url: "/api/prompt-enhancer/meta/a%2Fb", body: { value: "v" }, data: { key: "a/b", value: "v" } },
   // DELETE 是 T6 / O-1 新增的**通用**清键通道（键名约定归客户端，宿主不认识 pl: 前缀）。
   { route: "DELETE /meta/:key", client: "deleteMeta", call: (a) => a.deleteMeta("a/b"), method: "DELETE", url: "/api/prompt-enhancer/meta/a%2Fb", data: { key: "a/b", deleted: true } },
-  // 技能导出
-  { route: "POST /skills/export", client: null },
+  // 技能导出（T2 落地；T7 ②：本条与上面的 /ai/skill-descriptor 从「豁免」升级为**覆盖行**）
+  { route: "POST /skills/export", client: "exportPromptAsSkill", call: (a) => a.exportPromptAsSkill({ promptId: "p1" }), method: "POST", url: "/api/prompt-enhancer/skills/export", body: { promptId: "p1" }, data: { name: "weekly-report", path: "/skills/weekly-report/SKILL.md" } },
 ];
 
-/** 路由覆盖的**显式豁免清单**（照 T1 约束 F 节，逐条给理由，不得扩写）。 */
+/**
+ * 路由覆盖的**显式豁免清单**（照 T1 约束 F 节，逐条给理由，不得扩写）。
+ * T7 ②：T2 之后 `POST /ai/skill-descriptor` 与 `POST /skills/export` 都已有客户端方法
+ * （`aiSkillDescriptor` / `exportPromptAsSkill`），故两条陈旧豁免被上面的覆盖行取代并删除——
+ * 留在这里的只剩「本轮确实还没有客户端方法」与「已覆盖但保留说明」两类。
+ */
 const EXEMPT_ROUTES = [
-  { route: "POST /ai/skill-descriptor", why: "归 P7（技能导出）" },
-  { route: "POST /skills/export", why: "归 P7（技能导出）" },
   { route: "PUT /settings", why: "归 P8（设置页）" },
   { route: "PUT /meta/:key", why: "已由 P4 的 setMeta 覆盖（保留即可）", coveredBy: "setMeta" },
 ];
@@ -262,13 +266,13 @@ const EXEMPT_ROUTES = [
 /** 有客户端方法的路由（行为断言的输入）。 */
 const COVERED = ROUTES.filter((r) => r.client !== null);
 
-test("路由覆盖：宿主 26 条逻辑路由 = 客户端方法覆盖 + 显式豁免（R19，不看源码文本）", () => {
+test("路由覆盖：宿主 27 条逻辑路由 = 客户端方法覆盖 + 显式豁免（R19，不看源码文本）", () => {
   assert.equal(ROUTES.length, 27, "宿主路由表共 27 条逻辑路由");
   const gaps = ROUTES.filter((r) => r.client === null).map((r) => r.route);
   const exemptWithoutClient = EXEMPT_ROUTES.filter((e) => e.coveredBy === undefined).map((e) => e.route);
   // 顺序无关：两边只是同一批路由的两种枚举顺序，比集合而不是比序列。
   assert.deepEqual([...gaps].sort(), [...exemptWithoutClient].sort(), "未覆盖的路由必须逐条列在豁免清单里");
-  assert.equal(EXEMPT_ROUTES.length, 4, "豁免清单恰好 4 条（3 条无客户端方法 + 1 条已由 setMeta 覆盖）");
+  assert.equal(EXEMPT_ROUTES.length, 2, "豁免清单恰好 2 条（1 条归 P8 的设置页 + 1 条已由 setMeta 覆盖）");
   for (const e of EXEMPT_ROUTES) assert.ok(e.why.trim() !== "", e.route + " 的豁免理由不得为空");
   const noted = EXEMPT_ROUTES.filter((e) => e.coveredBy !== undefined);
   assert.equal(noted.length, 1, "只有 PUT /meta/:key 是「已覆盖但保留说明」");
@@ -324,7 +328,7 @@ test("api 表面：P6 的 12 个新方法都在，P4/P5 的 11 个不动", () =>
   ]) {
     assert.equal(typeof api[name], "function", name + " 应保留（P4/P5）");
   }
-  assert.equal(COVERED.length, 24, "27 条路由里 24 条有客户端方法");
+  assert.equal(COVERED.length, 26, "27 条路由里 26 条有客户端方法");
 });
 
 // P6-4 裁定：导入不自动淘汰，「确认」与否决定落库还是只预览——客户端只是信封封装，

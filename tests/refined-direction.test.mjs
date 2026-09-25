@@ -22,6 +22,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const {
   UNKNOWN_READING,
@@ -276,11 +278,56 @@ test("bodyIsOriginal：只有 original 为真（unknown 不得被当成原文）
 // 落库：有记录才写方向值；未知来源只写空串（作废）；只有一侧什么都不写
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("applyToggleDirection：有记录 ⇒ 写**翻转后的**方向并返回它（两个方向各一条）", async () => {
+/**
+ * T7 ⑧-①：`applyToggleDirection` 现在**同步**返回 `{ write, next, done }`（决策同步可得，落库在
+ * `done` 里跑）。本 helper 等落库落地后把「决策 + 后果」这一对取出来——与旧断言（返回方向 / undefined）
+ * 钉住的是同一批事实，只是形状换了：`next` 就是旧返回值，`write` 是它的决策来源。
+ */
+async function applyAndSettle(applied) {
+  await applied.done;
+  return { write: applied.write, next: applied.next };
+}
+
+/**
+ * T7 ⑧-① 的同源/单点锁：**第二个求值点必须不存在**。
+ *
+ * 组件（`.tsx`）在本仓库进不了 `node --test`（无 react-dom），能自动化的只有「源码里还有没有第二处
+ * 求值」这件事——与 ③ 的同源锁同一路数：它不假装覆盖组件行为，只断言「同一纯决策被求值的次数」。
+ * 变异（把 `const action = toggleDirectionWrite(current, reading)` 抄回组件）⇒ 本用例必红。
+ */
+test("⑧-① 单点锁：组件不再自己求值那个纯决策（只消费 applyToggleDirection 的返回值）", () => {
+  const component = readFileSync(
+    fileURLToPath(new URL("../src/client/components/PromptManagerModal.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.equal(
+    (component.match(/toggleDirectionWrite\s*\(/g) ?? []).length,
+    0,
+    "组件里**一次**都不许调用 toggleDirectionWrite（决策只在 applyToggleDirection 内部求值一次）",
+  );
+  assert.equal(
+    (component.match(/oppositeDirection\s*\(/g) ?? []).length,
+    0,
+    "组件也不许自己算翻转后的方向——它取返回值里的 applied.next（本地态与落库值必须是同一个值）",
+  );
+  assert.match(
+    component,
+    /const applied = applyToggleDirection\(id, current, reading\);/,
+    "组件读共用入口的返回值",
+  );
+});
+
+test("applyToggleDirection：有记录 ⇒ 写**翻转后的**方向并返回 {write:'persist', next}（两个方向各一条）", async () => {
   const r = recorder();
   const prompt = twoSides();
-  assert.equal(await applyToggleDirection("p1", prompt, readRefinedDirection(prompt, "original"), r.setMeta), "refined");
-  assert.equal(await applyToggleDirection("p1", prompt, readRefinedDirection(prompt, "refined"), r.setMeta), "original");
+  assert.deepEqual(
+    await applyAndSettle(applyToggleDirection("p1", prompt, readRefinedDirection(prompt, "original"), r.setMeta)),
+    { write: "persist", next: "refined" },
+  );
+  assert.deepEqual(
+    await applyAndSettle(applyToggleDirection("p1", prompt, readRefinedDirection(prompt, "refined"), r.setMeta)),
+    { write: "persist", next: "original" },
+  );
   assert.deepEqual(r.writes, [
     ["pl:refined-dir:p1", "refined"],
     ["pl:refined-dir:p1", "original"],
@@ -296,7 +343,11 @@ test("applyToggleDirection：未知来源 ⇒ **作废**（只写空串），绝
     UNKNOWN_READING, // 读取中 / 读失败
   ];
   for (const reading of unknowns) {
-    assert.equal(await applyToggleDirection("p1", prompt, reading, r.setMeta), undefined);
+    assert.deepEqual(
+      await applyAndSettle(applyToggleDirection("p1", prompt, reading, r.setMeta)),
+      { write: "clear", next: undefined },
+      "未知来源一律走作废（clear），且没有方向值可给",
+    );
   }
   assert.deepEqual(
     r.writes,
@@ -314,7 +365,10 @@ test("applyToggleDirection：未知来源 ⇒ **作废**（只写空串），绝
 
 test("applyToggleDirection：只有一侧 ⇒ none（一次 setMeta 都不发）", async () => {
   const r = recorder();
-  assert.equal(await applyToggleDirection("p1", singleSide(), UNKNOWN_READING, r.setMeta), undefined);
+  assert.deepEqual(await applyAndSettle(applyToggleDirection("p1", singleSide(), UNKNOWN_READING, r.setMeta)), {
+    write: "none",
+    next: undefined,
+  });
   assert.deepEqual(r.writes, [], "没有第二侧 ⇒ 没有需要作废的记录，也没有方向可写");
 });
 
@@ -479,7 +533,10 @@ test("I-1 主链（有记录）：播种 → 如实 → 切一次 → 重开仍�
   assert.equal(compareLabelKeys(first.direction).current, "manager.compare.refined");
 
   // ③ 点一次切换（宿主 swap）：落**翻转后**的方向。
-  assert.equal(await applyToggleDirection("p1", twoSides(), first, setMeta), "original");
+  assert.deepEqual(await applyAndSettle(applyToggleDirection("p1", twoSides(), first, setMeta)), {
+    write: "persist",
+    next: "original",
+  });
   assert.equal(meta.get(key), "original");
 
   // ④ 关面板 → 重开编辑：读回同一条记录 ⇒ 标注与实际一致（此刻 body 是原文）。
@@ -492,7 +549,10 @@ test("I-1 主链（有记录）：播种 → 如实 → 切一次 → 重开仍�
   });
 
   // ⑤ 再切一次（P6 的 C8 回归）：落回 refined，标注回到初始。
-  assert.equal(await applyToggleDirection("p1", twoSides(), reopened, setMeta), "refined");
+  assert.deepEqual(await applyAndSettle(applyToggleDirection("p1", twoSides(), reopened, setMeta)), {
+    write: "persist",
+    next: "refined",
+  });
   assert.deepEqual(
     compareLabelKeys(readRefinedDirection({ body: "优化稿", sourceBody: "原文" }, meta.get(key)).direction),
     compareLabelKeys(first.direction),
@@ -512,7 +572,10 @@ test("I-1 主链（无记录 / 旧记录）：中性 + 不写方向值，且重�
   assert.equal(compareLabelKeys(reading.direction).neutral, true, "两栏保持中性（P6 原状）");
 
   // 切换（宿主 swap）：**不写方向值**（作废只写空串）——反转一次猜测仍是一次猜测，不得固化成记录。
-  assert.equal(await applyToggleDirection("p1", p6Old, reading, setMeta), undefined);
+  assert.deepEqual(await applyAndSettle(applyToggleDirection("p1", p6Old, reading, setMeta)), {
+    write: "clear",
+    next: undefined,
+  });
   assert.equal(meta.get(key), "", "记录被作废（空串 = 没有记录）");
   assert.equal(parseStoredDirection(meta.get(key)), undefined, "作废后不得残留任何可采信的方向");
 
@@ -535,7 +598,10 @@ test("R-P7-AE 主链（读取中 / 读失败时切换）：陈旧记录必须被
 
   // 用户在读取回来之前点了切换：宿主 swap 了真值 ⇒ 那条记录**不再代表当前内容**（它没有翻转）。
   assert.equal(toggleDirectionWrite(twoSides(), loading), "clear");
-  assert.equal(await applyToggleDirection("p1", twoSides(), loading, setMeta), undefined);
+  assert.deepEqual(await applyAndSettle(applyToggleDirection("p1", twoSides(), loading, setMeta)), {
+    write: "clear",
+    next: undefined,
+  });
   assert.equal(meta.get(key), "", "陈旧记录必须被作废——留着它就是一条会反相的错记录");
   // 迟到的读结果（读到作废**之前**的值）必须被丢弃，不得贴到屏上。
   assert.equal(shouldAcceptLateRead(true), false);
