@@ -337,8 +337,22 @@ test("多余键丢弃（T7 ④ 补的用例）：meta 里多出来的字段一�
   );
   assert.deepEqual(twoFields, { name: "n", description: "d" });
   assert.deepEqual(Object.keys(twoFields), ["name", "description"]);
-  // 反面对照：多出键**不影响**合法判定（丢弃 ≠ 拒绝），否则「一律返回 undefined」也能让上面两条绿。
-  assert.ok(withExtras !== undefined, "有多余键 ≠ 形状不符：不得因此降级（降级是丢信息，不是安全）");
+});
+
+test("丢弃 ≠ 拒绝（P8 T5 独立反面对照）：未知键与缺必填字段分属两侧，各自单独可判假", () => {
+  // 修前这条「反面对照」挂在上面那条用例里、复用的正是它刚断言过的 `withExtras`：那条断言被前一条
+  // `deepEqual` 蕴含（withExtras 若是 undefined，上面先红），它自己永远不可能是首先失败的那条，等于
+  // 没断言。现在自己造输入、自己给期望值，且是**独立用例**——与任何前序用例无状态耦合。
+  assert.equal(
+    exportUtils.parseStoredDescriptor('{"extra":1,"whenToUse":"只有多余键、没有必填字段"}'),
+    undefined,
+    "拒绝侧：缺 name/description ⇒ 形状不符（不得因为「多了个 whenToUse」就放行）",
+  );
+  assert.deepEqual(
+    exportUtils.parseStoredDescriptor('{"name":"solo","description":"独立输入","nested":{"a":1}}'),
+    { name: "solo", description: "独立输入" },
+    "丢弃侧：必填字段齐全、只有多余键 ⇒ 形状合法、多余键逐字丢弃（丢弃 ≠ 拒绝）",
+  );
 });
 
 test("读写失败都不阻断：setMeta 抛错、getMeta 抛错都只告警（导出与重导各自成立）", async () => {

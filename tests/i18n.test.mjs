@@ -74,16 +74,27 @@ test("i18n：键名正则拒绝空段、首尾点与首字母大写的段（a..b
 const DYNAMIC_KEY_EXEMPTIONS = [];
 
 /**
- * 把 src/** （排除字典自身）的全部源码拼成一段文本，供字面量精确匹配。
- * R59（F-4）：**先剥注释再拼**——注释里的引号键名不得算作引用（负样本见文件末尾）。
+ * 参与拼接的 src/** **原文**（未剥注释）——`collectSourceText()` 的**输入**。
+ *
+ * P8 T5：前提断言必须落在「管线真读的那批文件」上，故把输入单独取出来。修前那条前提读的是
+ * `src/client/utils/i18n.ts`，而该文件被下面的过滤条件**排除在拼接之外**——前提与输入是两个集合，
+ * 抽取逻辑坏掉（读到空 / 读到别处）时前提照样绿（空转）。
  */
-function collectSourceText() {
+function collectSourceSources() {
   const srcDir = fileURLToPath(new URL("../src", import.meta.url));
   const files = readdirSync(srcDir, { recursive: true })
     .map(String)
     .filter((rel) => (rel.endsWith(".ts") || rel.endsWith(".tsx")) && !rel.endsWith("i18n.ts"));
   assert.ok(files.length > 0, "必须真的扫到 src/** 的源码（0 个文件 = 本检查是空转）");
-  return sourceHaystack(files.map((rel) => readFileSync(join(srcDir, rel), "utf8")));
+  return files.map((rel) => readFileSync(join(srcDir, rel), "utf8"));
+}
+
+/**
+ * 把 src/** （排除字典自身）的全部源码拼成一段文本，供字面量精确匹配。
+ * R59（F-4）：**先剥注释再拼**——注释里的引号键名不得算作引用（负样本见文件末尾）。
+ */
+function collectSourceText() {
+  return sourceHaystack(collectSourceSources());
 }
 
 /**
@@ -163,13 +174,15 @@ test("i18n：负样本——只在注释里出现的引号键名必须判为死�
   );
 });
 
-test("i18n：管线自带剥注释——collectSourceText 的产出**不含任何注释标记**（T7 ⑤：摘掉调用即红）", () => {
+test("i18n：管线自带剥注释——**输入**真含注释标记，产出不含任何注释标记（T7 ⑤：摘掉调用即红）", () => {
   // 与上一条共用 `sourceHaystack`：它断言的是**管线真的接了剥注释这一步**，而不是「有个函数能剥」。
-  // 反向证据（本仓库实测）：src/** 的原文里 `//` 与 `/*` 都在，剥完之后两个都不在。
-  const text = collectSourceText();
+  // P8 T5 加固（修前前提空转）：断言对象从「另一个文件」（i18n.ts 被过滤条件排除，根本不在拼接集合里）
+  // 换成**管线的输入本身** —— 前提若空转（抽取逻辑读到空 / 读到别处），这几条立刻变红。
+  const sources = collectSourceSources();
+  const raw = sources.join("\n");
+  assert.ok(raw.includes("//"), "前提：参与拼接的 src/** 原文里真的有行注释标记（否则下面两条是空转）");
+  assert.ok(raw.includes("/*"), "前提：参与拼接的 src/** 原文里真的有块注释开头（否则下面两条是空转）");
+  const text = sourceHaystack(sources); // 与 collectSourceText 同一条管线，不是另写一份判定
   assert.equal(text.includes("//"), false, "管线产出里仍有行注释标记 ⇒ 剥注释没接进管线");
   assert.equal(text.includes("/*"), false, "管线产出里仍有块注释开头 ⇒ 剥注释没接进管线");
-  // 反面对照：原文确实有这些标记（否则上面两条是空转——「恒不含 //」也可以来自「什么都没读到」）。
-  const raw = readFileSync(fileURLToPath(new URL("../src/client/utils/i18n.ts", import.meta.url)), "utf8");
-  assert.ok(raw.includes("//") && raw.includes("/*"), "前提：源码里真的有注释标记");
 });
