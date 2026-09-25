@@ -6,9 +6,11 @@
  * 锚点，故本组件自行绝对定位到锚点上方（与官方 `MenuView` 同款落点）。
  *
  * **D2（用户 2026-09-24 裁定）**：只做鼠标点击选择，**不接管键盘**——本文件
- * 没有任何 keydown/keyup 处理、没有 `tabIndex`、不挂任何键盘监听；唯一的关闭
- * 路径是「令牌消失」（用户删掉 `#` 或补了空格）。因此本组件**不需要**任何
- * document 级监听（连只读式的也不用）。
+ * 没有任何 keydown/keyup/keypress 处理、没有 `tabIndex`、不挂任何键盘监听。
+ * 关闭路径有两条：① 令牌消失（用户删掉 `#` 或补了空格）；② R47 起，点浮层**外部**收起自己——
+ * 与词库面板 / AI 面板同一套互斥约定（document 捕获阶段的 pointerdown **纯监听**，
+ * 不改宿主 DOM，见 `PromptLibraryButton` / `AIPolishButton`）。它只关自身、不抢键、不改草稿；
+ * 被关掉后令牌没变，故浮层保持收起，直到草稿被继续编辑（令牌位置或查询词变化 = 一次新的打开）。
  *
  * 职责单一：读草稿 → 判尾令牌 → 渲染候选 → 点击改草稿。纯逻辑一律复用既有
  * 函数：令牌检测/替换/过滤走 `../utils/hash-token.ts`，变量判定走
@@ -37,6 +39,15 @@ export function HashSuggestOverlay({
   const draft = useInput((s) => s.draft);
   const token = readHashToken(draft);
   const open = token !== null;
+  /** 令牌身份（start + 查询词）：用它记住「这一次打开被点浮层外部关掉了」。 */
+  const tokenKey = token === null ? null : `${token.start}:${token.query}`;
+  /**
+   * R47：已被点外部收起的令牌身份。只对**同一个令牌**生效——草稿继续被编辑（令牌位移或
+   * 查询词变化）就是一次新的打开，浮层重新出现。
+   */
+  const [dismissedKey, setDismissedKey] = React.useState<string | null>(null);
+  const visible = tokenKey !== null && dismissedKey !== tokenKey;
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
   /** null = 本次打开还没加载完。 */
   const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -72,6 +83,23 @@ export function HashSuggestOverlay({
     };
   }, [open]);
 
+  // R47：与词库面板 / AI 面板同一套互斥约定（P5 起沿用的 document 捕获阶段 pointerdown 纯监听，
+  // 不改宿主 DOM）——点浮层外部收起自己。于是「草稿带 `#` 令牌时点词库按钮」这一下先关掉本浮层、
+  // 再打开词库面板；两者 z-index 同级（30）且几何重叠，但不再同屏共存。
+  React.useEffect(() => {
+    if (!visible) return;
+    const onPointerDown = (ev: PointerEvent): void => {
+      const root = rootRef.current;
+      if (root !== null && ev.target instanceof Node && root.contains(ev.target)) return;
+      if (tokenKey !== null) setDismissedKey(tokenKey);
+      setPending(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [visible, tokenKey]);
+
   /** 落草稿（替换尾令牌）+ 上报用量（规格 §4.4：「# 选中」也算一次使用）。 */
   const apply = (prompt: Prompt, body: string): void => {
     inputActions.setDraft(replaceHashToken(draft, body));
@@ -82,12 +110,13 @@ export function HashSuggestOverlay({
     });
   };
 
-  if (token === null) return null;
+  // R47：被点外部收起之后（仅当前这个令牌）不再渲染；令牌消失或变化即自动复位。
+  if (token === null || !visible) return null;
 
   // 含变量的提示词：先开任务 5 的变量填窗，填完再落草稿。
   if (pending !== null) {
     return (
-      <div style={ANCHOR}>
+      <div ref={rootRef} style={ANCHOR}>
         <TemplateVariablesDialog
           body={pending.body}
           t={t}
@@ -101,7 +130,7 @@ export function HashSuggestOverlay({
   const filtered = filterPrompts(prompts ?? [], token.query);
 
   return (
-    <div style={ANCHOR}>
+    <div ref={rootRef} style={ANCHOR}>
       <div role="group" aria-label={t("hash.title")} style={PANEL}>
         <div style={HEADER}>{t("hash.title")}</div>
         {loadError !== null && (
@@ -151,7 +180,8 @@ export function HashSuggestOverlay({
  * `overlayBase`（任务 5 的 `TemplateVariablesDialog` 不接 style），把 `overlayBase`
  * 同时放在定位容器上会出现「双层卡片」（两层描边与阴影叠在一起）。故外观一律
  * 由内容自带，与任务 5 的 `PromptLibraryButton` 的 ANCHOR/PANEL 分工一致。
- * `left: 8` 对齐 composer 左缘；`zIndex: 30` 与词库面板同级（浮层互不重叠）。
+ * `left: 8` 对齐 composer 左缘。`zIndex: 30` 与词库面板同级；**两者不同屏共存**靠的是 R47
+ * 的互斥（各自都在「点浮层外」时收起自己，与词库面板 × AI 面板同一约定），z-index 不承担互斥职责。
  */
 const ANCHOR: React.CSSProperties = {
   position: "absolute",

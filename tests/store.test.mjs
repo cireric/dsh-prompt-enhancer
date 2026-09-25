@@ -346,9 +346,10 @@ test("淘汰：N5 未超限不删；N6 aiRefined=0 优先于更旧的 aiRefined=
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 淘汰的孤儿标签清理（D-P6-6 / R37）：与 enforceMaxCount 同事务，且不越界到软删除路径
+// 淘汰的孤儿标签清理（D-P6-6 / R37 / R46）：与 enforceMaxCount 同事务、只清本次受害者引用过的
+// 标签、不越界到软删除路径
 // ─────────────────────────────────────────────────────────────────────────────
-test("淘汰同事务清理孤儿标签：count===0 的被清掉，仍被引用的不被误删", () => {
+test("淘汰同事务清理孤儿标签：受害者引用过的 count===0 被清掉，仍被引用的不被误删", () => {
   // 自持数据集（不依赖上一条用例的残留）
   for (const p of store.listPrompts()) store.deletePrompt(p.id);
   store.emptyTrash();
@@ -376,6 +377,48 @@ test("淘汰同事务清理孤儿标签：count===0 的被清掉，仍被引用�
     "仍被引用的标签不得被误删（计数也不得漂移）",
   );
 });
+
+  test("淘汰只清受害者引用过的标签（R46）：与本次淘汰无关的既有 count=0 标签必须留存", () => {
+    // 自持数据集（不依赖上一条用例的残留）
+    for (const p of store.listPrompts()) store.deletePrompt(p.id);
+    store.emptyTrash();
+    assert.equal(store.listPrompts().length, 0);
+
+    // 造一个「既有孤儿标签」：先挂到一条记录上把字典行写进去，再摘掉引用 → count=0。
+    // 它与本次淘汰毫无关系（T7 活体验收里的 m3临时 / 验收临时 正是这种；当时为了不让全库清理
+    // 顺手删掉它，验收被迫自建一条「保护载体」记录——那个 workaround 就是本裁决（R46）的由来）。
+    const carrier = store.createPrompt({ title: "标签载体", body: "c", tags: ["无关既有孤儿"] });
+    store.updatePrompt(carrier.id, { tags: [] });
+    store.deletePrompt(carrier.id);
+    store.emptyTrash();
+    assert.equal(
+      store.listTags().find((t) => t.name === "无关既有孤儿")?.count,
+      0,
+      "构造前提：字典里存在一个 count=0 的既有孤儿标签（不受本次淘汰影响）",
+    );
+
+    // 本次淘汰的受害者：唯一引用「受害者标签」的那条
+    const doomed = store.createPrompt({ title: "注定淘汰", body: "d", tags: ["受害者标签"] });
+    const keeper = store.createPrompt({ title: "必须保留", body: "k", tags: ["在用候选"] });
+    store.updatePrompt(keeper.id, { body: "k2" }, { aiWriteBack: true }); // aiRefined=1 → 排序在后
+
+    const evicted = store.enforceMaxCount(1);
+    assert.deepEqual(evicted, [doomed.id], "构造前提：本次只淘汰 doomed 一条");
+
+    assert.ok(
+      !store.listTags().some((t) => t.name === "受害者标签"),
+      "R46①：受害者引用过的孤儿标签必须被清掉（收窄不得变成完全不清）",
+    );
+    assert.ok(
+      store.listTags().some((t) => t.name === "无关既有孤儿"),
+      "R46②：与本次淘汰无关的既有 count=0 标签必须留存（放宽回全库清理 → 本断言必红）",
+    );
+    assert.deepEqual(
+      store.listTags().find((t) => t.name === "在用候选"),
+      { name: "在用候选", count: 1 },
+      "R46③：仍被引用的标签不得被误删（计数也不得漂移）",
+    );
+  });
 
 test("孤儿标签清理不越界：软删除（进回收站）不清标签，恢复后标签仍在", () => {
   const p = store.createPrompt({ title: "软删除不动标签", body: "s", tags: ["软删标签"] });

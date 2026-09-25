@@ -1,12 +1,20 @@
 /**
- * 淘汰预检的「双跑对照」（§13.9 四 / T4 约束 E）：`previewEvictions` 与真实
- * `store.enforceMaxCount` 在同一组输入下必须**逐 id 相等**。
+ * 淘汰预检的「真实序列对照」（§13.9 四 / T4 约束 E、T8 约束 C/R45b）：`previewEvictions` 与宿主
+ * `store.enforceMaxCount` 必须**逐 id 相等**，且**刚保存的那一条必须存活**。
  *
  * 隔离：本文件在自己的进程里把 `DSH_HOME` 指向临时目录后再 import store
  * （与 tests/store.test.mjs 同一手法，生产代码无 test-only API）。
  *
- * 对照口径：`previewEvictions(prompts, max, incoming)` ≡ `enforceMaxCount(max - incoming)`
- * ——后者删掉的就是「先落库 incoming 条、再按 max 淘汰」会删掉的那一批。
+ * ⚠️ **对照口径（T8/R45b 订正）**：复刻 `POST /prompts` 的**真实调用序**——
+ *   ① `listPrompts()` 取插入前集合 → ② `previewEvictions(before, max, 1)` 预演
+ *   → ③ **真的插入**一条新项（`createPrompt`）→ ④ **真的** `enforceMaxCount(max, { exceptId: created.id })`。
+ *
+ * **旧口径已废止**：`previewEvictions(prompts, max, incoming) ≡ enforceMaxCount(max - incoming)`
+ * 把「在插入**前**集合上降低上限」当成了「先插入、再按 max 淘汰」的等价物——两者在**候选集合**上
+ * 根本不同：宿主读到的是插入**后**的集合（含新项），而新项的键
+ * `(aiRefined=false, lastUsedAt=0)` 是候选最小元，于是旧实现必然淘汰**刚保存的那条**，
+ * 预演却只能列出既有条目（T7 活体验收 C10 = FAIL / D-1）。这句错误的等价关系正是漏检的文字证据；
+ * R45 的 `exceptId` 豁免让本文件的用例第一次能钉住它。
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,36 +73,58 @@ async function buildDataset() {
   return { p1, p2, p3 };
 }
 
+/**
+ * 复刻 `POST /prompts` 的**真实调用序**（T8/R45b）：
+ *   ① `listPrompts()`（= 客户端预演看到的集合与顺序）→ ② `previewEvictions(before, max, 1)`
+ *   → ③ **真的插入**一条新项（`createPrompt`，键恒为 `aiRefined=false / lastUsedAt=0`）
+ *   → ④ **真的** `enforceMaxCount(max, { exceptId: created.id })`。
+ *
+ * `predicted` = 二次确认框会列出的受害者；`actual` = 宿主真正物理删除的 id（按淘汰次序）。
+ * 新项**不豁免**时 ④ 必然先删它自己 —— 这正是 D-1 的复现路径。
+ */
+function saveThroughRoute(maxCount) {
+  const before = store.listPrompts();
+  const predicted = previewEvictions(before, maxCount, 1).map((p) => p.id);
+  const created = store.createPrompt({ title: "刚刚保存的一条", body: "new" });
+  const actual = store.enforceMaxCount(maxCount, { exceptId: created.id });
+  return { before, predicted, actual, created };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 双跑对照
 // ─────────────────────────────────────────────────────────────────────────────
-test("双跑对照（incoming=1）：预演与真实淘汰逐 id 相等，且命中 lastUsedAt 最旧的 aiRefined=0 行", async () => {
+test("真实序列（max=3）：预演与真实淘汰逐 id 相等、新项存活，且命中 lastUsedAt 最旧的 aiRefined=0 行", async () => {
   const { p1, p2, p3 } = await buildDataset();
-  const maxCount = 3; // 3 条 + 1 条新 = 超 1 条
+  const maxCount = 3; // 3 条既有 + 1 条新 = 超 1 条
 
-  const before = store.listPrompts();
-  const predicted = previewEvictions(before, maxCount, 1).map((p) => p.id);
-  const actual = store.enforceMaxCount(maxCount - 1); // ≡ 先落库 1 条再按 maxCount 淘汰
+  const { predicted, actual, created } = saveThroughRoute(maxCount);
 
-  assert.deepEqual(predicted, [p1.id], "必须是 aiRefined=0 且 lastUsedAt 最旧的 P1");
-  assert.deepEqual(predicted, actual, "双跑对照：同一组输入下预演与实际受害者必须逐 id 相等");
+  assert.deepEqual(predicted, [p1.id], "必须是 aiRefined=0 且 lastUsedAt 最旧的 P1（不是刚保存的新项）");
+  assert.deepEqual(predicted, actual, "真实序列对照：确认框所列与实际受害者必须逐 id 相等");
+  assert.ok(store.getPrompt(created.id), "R45：刚保存的那条必须存活（去掉 exceptId 豁免后这里必红）");
   assert.equal(store.getPrompt(p1.id), undefined, "P1 已被真实淘汰");
   assert.ok(store.getPrompt(p2.id), "P2 仍在（只超 1 条）");
   assert.ok(store.getPrompt(p3.id), "aiRefined=1 的行不得被淘汰");
+  assert.deepEqual(
+    store.listPrompts().map((p) => p.id).sort(),
+    [created.id, p2.id, p3.id].sort(),
+    "存活集合必须恰好剩 maxCount 条（计数若按「剔除后的集合」算会少淘汰一条 → 这里必红）",
+  );
 });
 
-test("双跑对照（incoming>1）：多受害者时次序也逐 id 相等（aiRefined 升序 → lastUsedAt 升序）", async () => {
+test("真实序列（max=2，多受害者）：次序也逐 id 相等（aiRefined 升序 → lastUsedAt 升序）", async () => {
   const { p1, p2, p3 } = await buildDataset();
-  const maxCount = 4;
-  const incoming = 3; // 3 条 + 3 条新 - 4 = 2 名受害者
+  // 上限被（设置或导入后）压到 2：一次保存就超 2 条 —— 这是多受害者唯一可达的真实路径
+  // （每次 POST 只插入 1 条，故 incoming 恒为 1；旧用例的 incoming=3 不对应任何真实序列）。
+  const maxCount = 2;
 
-  const before = store.listPrompts();
-  const predicted = previewEvictions(before, maxCount, incoming).map((p) => p.id);
-  const actual = store.enforceMaxCount(maxCount - incoming);
+  const { predicted, actual, created } = saveThroughRoute(maxCount);
 
   assert.deepEqual(predicted, [p1.id, p2.id], "两名候选按 lastUsedAt 升序：先 P1、后 P2；P3 受保护");
   assert.deepEqual(predicted, actual, "多受害者时也必须逐 id 相等（含次序）");
+  assert.ok(store.getPrompt(created.id), "R45：多受害者场景下新项同样不得成为受害者");
   assert.ok(store.getPrompt(p3.id));
+  assert.deepEqual(store.listPrompts().map((p) => p.id).sort(), [created.id, p3.id].sort(), "存活集合 = maxCount 条");
 });
 
 test("未超限：length + incoming <= maxCount 时预演为空，真实淘汰也一条不删（边界含 length === maxCount）", async () => {
@@ -102,6 +132,7 @@ test("未超限：length + incoming <= maxCount 时预演为空，真实淘汰�
   const before = store.listPrompts();
 
   assert.deepEqual(previewEvictions(before, before.length + 1, 1), [], "未超限必须空结果");
+  // 恰好等于上限时，未超限的判定与 exceptId 无关（`all.length <= maxCount` 先短路），故这里不传 options。
   assert.deepEqual(store.enforceMaxCount(before.length), [], "对照：该情形下真实淘汰也必须为空");
   assert.equal(store.listPrompts().length, before.length, "一条都不许删");
 
@@ -188,7 +219,7 @@ async function flattenCreatedAt(value) {
   }
 }
 
-test("修复轮 1 ① 复现场景：客户端最新优先、存储层插入序，全并列下双跑仍逐 id 相等", async () => {
+test("修复轮 1 ① 复现场景：客户端最新优先、存储层插入序，全并列下真实序列仍逐 id 相等", async () => {
   wipe();
   const a = store.createPrompt({ title: "A 最旧", body: "a" });
   await pause();
@@ -196,7 +227,7 @@ test("修复轮 1 ① 复现场景：客户端最新优先、存储层插入序�
   await pause();
   const c = store.createPrompt({ title: "C 最新", body: "c" });
 
-  const clientOrder = store.listPrompts(); // = GET /prompts 的真实顺序
+  const { before: clientOrder, predicted, actual, created } = saveThroughRoute(3);
   assert.deepEqual(
     clientOrder.map((p) => p.id),
     [c.id, b.id, a.id],
@@ -207,30 +238,35 @@ test("修复轮 1 ① 复现场景：客户端最新优先、存储层插入序�
     "前提：新建的 lastUsedAt 恒为 0 → 三条在 (aiRefined, lastUsedAt) 上完全并列",
   );
 
-  const predicted = previewEvictions(clientOrder, 3, 1).map((p) => p.id);
-  const actual = store.enforceMaxCount(3 - 1); // ≡ 落库 1 条后按上限 3 淘汰
   assert.deepEqual(predicted, [a.id], "全序第三键 createdAt 升序 → 命中最旧的那条（不是客户端顺序的第一条）");
-  assert.deepEqual(predicted, actual, "双跑对照：弹窗列的受害者必须 = 实际被物理删除的对象");
+  assert.deepEqual(predicted, actual, "对照：弹窗列的受害者必须 = 实际被物理删除的对象");
+  assert.ok(store.getPrompt(created.id), "R45：刚保存的那条必须存活");
+  assert.deepEqual(store.listPrompts().map((p) => p.id).sort(), [created.id, b.id, c.id].sort(), "存活集合 = maxCount 条");
 });
 
-test("修复轮 1 ② 五条 lastUsedAt=0 / aiRefined=false 的并列集：双跑逐 id 相等，淘汰最旧的两条", async () => {
+test("修复轮 1 ② 五条 lastUsedAt=0 / aiRefined=false 的并列集：真实序列逐 id 相等，淘汰最旧的两条", async () => {
   wipe();
   const ids = [];
   for (let i = 0; i < 5; i += 1) {
     ids.push(store.createPrompt({ title: "并列 " + i, body: "x" + i }).id);
     await pause();
   }
-  const clientOrder = store.listPrompts();
+  // 上限 4 + 5 条既有 + 1 条新 = 2 名受害者（多受害者场景）。
+  const { before: clientOrder, predicted, actual, created } = saveThroughRoute(4);
   assert.equal(
     clientOrder.filter((p) => !p.aiRefined && p.lastUsedAt === 0).length,
     5,
     "前提：五条在 (aiRefined, lastUsedAt) 上全部并列（≥4 条）",
   );
 
-  const predicted = previewEvictions(clientOrder, 5, 2).map((p) => p.id);
-  const actual = store.enforceMaxCount(5 - 2); // 2 名受害者
   assert.deepEqual(predicted, [ids[0], ids[1]], "并列时按 createdAt 升序淘汰最旧的两条");
-  assert.deepEqual(predicted, actual, "双跑对照：并列集也必须逐 id 相等（含次序）");
+  assert.deepEqual(predicted, actual, "对照：并列集也必须逐 id 相等（含次序）");
+  assert.ok(store.getPrompt(created.id), "R45：新项不得进入受害者名单");
+  assert.deepEqual(
+    store.listPrompts().map((p) => p.id).sort(),
+    [created.id, ids[2], ids[3], ids[4]].sort(),
+    "存活集合 = maxCount 条",
+  );
 });
 
 test("修复轮 1 ③ createdAt 也全部并列（导入可达）：id 兜底键给出同一名受害者", async () => {
@@ -244,7 +280,7 @@ test("修复轮 1 ③ createdAt 也全部并列（导入可达）：id 兜底键
   // 早于 FRESH_MS：让 default 排序走 tail 分支（按 updatedAt desc），客户端顺序与插入序相反。
   await flattenCreatedAt(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-  const clientOrder = store.listPrompts();
+  const { before: clientOrder, predicted, actual, created } = saveThroughRoute(3);
   assert.equal(new Set(clientOrder.map((p) => p.createdAt)).size, 1, "前提：createdAt 全部并列");
   assert.deepEqual(
     clientOrder.map((p) => p.id),
@@ -252,8 +288,6 @@ test("修复轮 1 ③ createdAt 也全部并列（导入可达）：id 兜底键
     "前提：客户端顺序（最新更新优先）与存储层插入序相反",
   );
 
-  const predicted = previewEvictions(clientOrder, 3, 1).map((p) => p.id);
-  const actual = store.enforceMaxCount(3 - 1);
   assert.deepEqual(
     predicted,
     actual,
@@ -265,5 +299,6 @@ test("修复轮 1 ③ createdAt 也全部并列（导入可达）：id 兜底键
     "同输入必须给出同一结果（可重复）",
   );
   assert.equal(store.getPrompt(predicted[0]), undefined, "该受害者确实被物理删除");
+  assert.ok(store.getPrompt(created.id), "R45：createdAt 并列时新项同样存活");
 });
 

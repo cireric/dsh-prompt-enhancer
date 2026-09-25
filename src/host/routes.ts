@@ -122,8 +122,11 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         tags: asStringArray(body.tags),
         summary: asString(body.summary),
       });
-      // 超限淘汰按设置里的上限（上限不在 store 内读取：store 保持纯模块）
-      const evicted = store.enforceMaxCount(getSettings().maxPromptCount);
+      // 超限淘汰按设置里的上限（上限不在 store 内读取：store 保持纯模块）。
+      // R45：把刚创建的那条豁免出去——落库次序是「先 createPrompt 再淘汰」，新项的键
+      // (aiRefined=false, lastUsedAt=0) 是候选最小元，不豁免就会把刚保存的那条物理删除，
+      // 而客户端的二次确认只看得见插入前的集合（D-1：确认框撒谎 + 刚保存的记录被静默销毁）。
+      const evicted = store.enforceMaxCount(getSettings().maxPromptCount, { exceptId: created.id });
       return ok(res, { prompt: created, evicted });
     }
 

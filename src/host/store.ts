@@ -775,20 +775,29 @@ export function importPrompts(input: unknown, options: { confirm?: boolean } = {
 // ── 超限淘汰（规格 §4.4）───────────────────────────────────────────────────
 
 /**
- * 清理孤儿标签：`tags` 字典里没有任何 `prompts` 行引用的行（D-P6-6）。
+ * 清理**本次淘汰受害者引用过的**孤儿标签：仅当某个候选标签在淘汰后已无任何 `prompts` 行引用
+ * 时才从字典表删除（D-P6-6 / R46）。
+ *
+ * ⚠️ R46（收窄爆炸半径）：本函数**不得**扫全库 `count = 0` 的行。旧实现清掉的是**任何**零引用
+ * 标签——包括用户在标签页手动建的空标签，以及与本次淘汰毫不相干的既有孤儿行；于是「淘汰一条
+ * 记录」会顺带产生与淘汰无关的可见副作用（T7 活体验收被迫自建一条「保护载体」记录来保住两个
+ * 既有孤儿标签，这个 workaround 本身就是气味）。全库清理交给标签页已有的「清理无用标签」按钮
+ * （R37，逐个走既有 `DELETE /tags/:name`，由用户显式触发）。
  *
  * **只被 `enforceMaxCount` 在淘汰事务内调用**——软删除（进回收站）刻意**不**清标签：那条路要能
- * 「恢复后标签仍在」，而空标签的清理是 UI 上「清理无用标签」按钮的职责（R37，逐个走既有
- * `DELETE /tags/:name`）。用传入的连接（与淘汰同一事务），不经 `getDb()` 重入。
+ * 「恢复后标签仍在」。用传入的连接（与淘汰同一事务），不经 `getDb()` 重入。
  */
-function pruneOrphanTags(cur: DatabaseSync): void {
+function pruneOrphanTags(cur: DatabaseSync, candidateNames: Iterable<string>): void {
+  const candidates = new Set<string>();
+  for (const name of candidateNames) if (name) candidates.add(name);
+  if (candidates.size === 0) return;
+
   const used = new Set<string>();
   const rows = cur.prepare("SELECT tags FROM prompts").all() as unknown as Array<{ tags: string | null }>;
   for (const row of rows) for (const tag of parseTags(row.tags)) used.add(tag);
 
-  const names = cur.prepare("SELECT name FROM tags").all() as unknown as Array<{ name: string }>;
-  for (const row of names) {
-    if (!used.has(row.name)) cur.prepare("DELETE FROM tags WHERE name = ?").run(row.name);
+  for (const name of candidates) {
+    if (!used.has(name)) cur.prepare("DELETE FROM tags WHERE name = ?").run(name);
   }
 }
 
@@ -805,14 +814,33 @@ function pruneOrphanTags(cur: DatabaseSync): void {
  *
  * ⇄ **同源排序键**：`src/client/utils/eviction.ts#previewEvictions` 逐键复现这里的受害者
  * （宿主没有 dry-run 路由，§4.4 的二次确认靠客户端预演）。本键序是 §4.4 的**单一事实源**，
- * 改任一侧**必须**同改另一侧；一致性由 `tests/eviction.test.mjs` 的「双跑对照」逐 id 锁死。
+ * 改任一侧**必须**同改另一侧；一致性由 `tests/eviction.test.mjs` 的「真实序列」逐 id 锁死。
+ *
+ * **R45（T8，D-1 修复）：本次调用豁免一条 id。** `POST /prompts` 的落库顺序是「先 `createPrompt`
+ * 再调本函数」，故新项此刻已在库里，且它的键恒为 `(aiRefined=false, lastUsedAt=0, createdAt=最新)`——
+ * 在 §4.4 的键序下它是候选集的**最小元**，旧实现于是**必然淘汰刚保存的那一条**（T7 C10 实测
+ * `evicted:[刚建的那条]`），而客户端的二次确认只能看见**插入前**的集合、必然列出别的条目 →
+ * 确认框与真实淘汰对象逐 id 不等（D-1）。修法：调用方传 `exceptId`（= `created.id`），
+ * 新项**永不**成为本次创建的受害者。
+ *
+ * ⚠️ **计数仍按全集**（`all.length - maxCount`，`all` 含新项），**只有候选排序集**剔除 `exceptId`。
+ * 若把计数也改成剔除后集合的 `candidates.length - maxCount`，超限时会**少淘汰一条**——
+ * `tests/eviction.test.mjs` 的「真实序列」用例（存活集合断言）锁住这一点。
+ *
+ * ⚠️ `maxCount === 0` 是退化配置：受害者数（`all.length`）会大于候选数（`all.length - 1`），
+ * `slice` 静默截断 → 留下的恰是被豁免的那一条；旧实现在 `maxCount === 0` 时会清空全库，
+ * 故这一点的行为与旧版不同。**如实记录**（R45 明示），不为它加特判。
  */
-export function enforceMaxCount(maxCount: number): string[] {
+export function enforceMaxCount(maxCount: number, options: { exceptId?: string } = {}): string[] {
   const cur = getDb();
   const all = selectAllPrompts().map(rowToPrompt);
   if (all.length <= maxCount) return [];
 
-  const victims = [...all]
+  // R45：受害者**计数按全集**（含被豁免的那条）；候选**排序集**才把 exceptId 剔掉。
+  const over = all.length - maxCount;
+  const candidates = options.exceptId === undefined ? all : all.filter((p) => p.id !== options.exceptId);
+
+  const victims = [...candidates]
     // ⇄ 本键序是 §4.4 的**单一事实源**：与 src/client/utils/eviction.ts#previewEvictions 逐字同键同序，
     //   改任一侧必须同改另一侧。
     .sort(
@@ -822,12 +850,12 @@ export function enforceMaxCount(maxCount: number): string[] {
         a.createdAt - b.createdAt ||
         (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
     )
-    .slice(0, all.length - maxCount);
+    .slice(0, over);
 
   inTransaction(cur, () => {
     for (const victim of victims) cur.prepare("DELETE FROM prompts WHERE id = ?").run(victim.id);
-    // D-P6-6：淘汰后可能留下零引用的标签行 → 在**同一事务**内清理（回滚时一起回滚）。
-    pruneOrphanTags(cur);
+    // D-P6-6 / R46：只清**本次受害者引用过的**、淘汰后已无引用的标签行（同一事务，回滚时一起回滚）。
+    pruneOrphanTags(cur, victims.flatMap((victim) => victim.tags));
   });
   return victims.map((v) => v.id);
 }

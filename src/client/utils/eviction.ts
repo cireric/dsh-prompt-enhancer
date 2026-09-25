@@ -2,6 +2,14 @@
  * 淘汰预检（R9，纯函数）：客户端复现「再新增一条之后 store.enforceMaxCount 会删掉谁」，
  * 供 §4.4 的二次确认（D-P6-5 / TBD-P6-5 = 客户端预检）使用。
  *
+ * ⚠️ **R45（T8）之后本函数与宿主逐 id 精确一致**：宿主的真实序列是「先 createPrompt（插入）→
+ * 再 `enforceMaxCount(max, { exceptId: created.id })`」，即**新项永不成为本次创建的受害者**，
+ * 于是宿主实际参与排序的候选集**恰好就是本函数拿到的这个插入前集合**，受害者的**数量**
+ * 也按含新项的全集算（= `prompts.length + incoming - maxCount`）。
+ * 旧实现没有 `exceptId`：新项（`aiRefined=false`, `lastUsedAt=0`）是候选最小元 → 被删的
+ * 正是刚保存的那条，而本函数只能列出既有条目 → 确认框撒谎（T7 C10 = D-1）。
+ * 因此本函数**不需要**为新语义改动：它本来就是「插入前集合 + 含新项的计数」这个精确模型。
+ * 详见 `src/host/store.ts#enforceMaxCount` 的 R45 段。
  * ⚠️ 排序键**必须**与 `src/host/store.ts` 的 `enforceMaxCount` 同源，且**必须是全序**：
  *   `aiRefined` 升序 → `lastUsedAt` 升序 → `createdAt` 升序 → `id` 升序。
  * 前两键是 §4.4 的语义（未经人工确认的优先、最久未用的优先）；后两键是**去并列兜底**——
@@ -23,8 +31,9 @@ import type { Prompt } from "../../types.ts";
 /**
  * 模型化「再新增 `incoming` 条」之后 `enforceMaxCount` 会删掉谁（按淘汰先后返回）。
  *
- * 受害者数 = `max(0, prompts.length + incoming - maxCount)`——与宿主
- * 「先落库（`POST /prompts`）再 `enforceMaxCount(maxPromptCount)`」的执行顺序一致。
+ * 受害者数 = `max(0, prompts.length + incoming - maxCount)`——**含**新项（宿主 R45 的计数口径
+ * 就是全集：`all.length - maxCount`）；候选只从传入的这个插入前集合里取（新项被 `exceptId` 豁免，
+ * 本就不在集合里）。两者相加即宿主的真实语义，见文件头 R45 段。
  */
 export function previewEvictions(prompts: Prompt[], maxCount: number, incoming: number = 1): Prompt[] {
   const over = Math.max(0, prompts.length + incoming - maxCount);
