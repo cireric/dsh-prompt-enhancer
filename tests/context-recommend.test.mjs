@@ -68,3 +68,15 @@ test("scorePrompt：英文长词的词长加权高于中文二元组（命中位
   const zh = reco.scorePrompt(p("zh", "审查"), reco.extractKeywords("审查"), NOW);
   assert.ok(en > zh, "英文长词应比中文二元组得分更高，实为 " + en + " vs " + zh);
 });
+
+// 评审 R1-2：`CONTEXT_USER_COUNT`（规格 §7.1.1 的**确定参数**）此前只被组件的
+// `.slice(-CONTEXT_USER_COUNT)` 消费 ⇒ 参数在组件里没有任何自动化判据（改成 1、或删掉 slice，
+// 全部用例仍然全绿）。把「取最近 N 条」提到纯模块后它才有判据面；两条变异原文见报告。
+test("recentUserText：只取最近 N 条且保序；N 大于总数返回全部；N<=0 是空串（不是 slice(-0) 的全部）", () => {
+  const msgs = ["第一条", "第二条", "第三条", "第四条", "第五条"];
+  assert.equal(reco.recentUserText(msgs, 3), "第三条\n第四条\n第五条", "只取尾部 3 条，旧消息在前");
+  assert.equal(reco.recentUserText(msgs), "第三条\n第四条\n第五条", "缺省 = 规格 §7.1.1 的 CONTEXT_USER_COUNT = 3");
+  assert.equal(reco.recentUserText(msgs, 9), msgs.join("\n"), "N 大于总数 ⇒ 全部（不抛、不退化为空）");
+  assert.equal(reco.recentUserText(msgs, 0), "", "N<=0 ⇒ 空串");
+  assert.equal(reco.recentUserText([], 3), "", "空输入 ⇒ 空串");
+});

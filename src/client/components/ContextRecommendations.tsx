@@ -27,7 +27,7 @@ import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { clampTitle, type Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
-import { CONTEXT_USER_COUNT, recommend } from "../utils/context-recommend.ts";
+import { recentUserText, recommend } from "../utils/context-recommend.ts";
 import { useConversationTargetSnapshot } from "../utils/conversation-targets.ts";
 import { useDataChanged } from "../utils/data-sync.ts";
 import { composeDraft } from "../utils/insert.ts";
@@ -67,16 +67,17 @@ function textOf(content: readonly ChatContentBlockLike[]): string {
   return out.trim();
 }
 
-/** 最近 `CONTEXT_USER_COUNT` 条用户消息的正文（快照缺席 ⇒ 空串）。 */
-function recentUserText(snapshot: ChatSnapshotLike | undefined): string {
+/**
+ * 用户消息的可见文本（快照缺席 ⇒ 空数组，推荐退化为「只用当前草稿」）。
+ *
+ * 只做「节点 → 文本」这一半：那是宿主形状（`legacy.nodes` / `UserMessageNode`），留在组件里。
+ * 「取最近 `CONTEXT_USER_COUNT` 条」那一半在纯模块 `recentUserText()` 里——规格 §7.1.1 的确定参数
+ * 只有落进纯模块才拿得到自动化判据（无 react-dom，硬约束 5）。
+ */
+function userMessageTexts(snapshot: ChatSnapshotLike | undefined): string[] {
   const nodes = snapshot?.legacy?.nodes;
-  if (nodes === undefined) return "";
-  return nodes
-    .filter((node) => node.kind === "user")
-    .slice(-CONTEXT_USER_COUNT)
-    .map((node) => textOf(node.content ?? []))
-    .join("\n")
-    .trim();
+  if (nodes === undefined) return [];
+  return nodes.filter((node) => node.kind === "user").map((node) => textOf(node.content ?? []));
 }
 
 export function ContextRecommendations({
@@ -112,7 +113,7 @@ export function ContextRecommendations({
 
   // 设置经**订阅式** store 读（P8 T1）：关掉「上下文推荐」⇒ 下一次渲染立刻清空（验收 12 的即时生效）。
   const hits = settings.contextRecommendEnabled
-    ? recommend({ draft, contextText: recentUserText(chat), prompts: prompts ?? [], now: Date.now() })
+    ? recommend({ draft, contextText: recentUserText(userMessageTexts(chat)), prompts: prompts ?? [], now: Date.now() })
     : [];
 
   /**
@@ -137,14 +138,22 @@ export function ContextRecommendations({
   };
 
   if (pending !== null) {
+    // 落点：变量填窗**自身不做定位**（见 `TemplateVariablesDialog` 文件头——「落点由调用方决定」），故这里照
+    // `PromptLibraryButton` 那一处的**既有形状**：一行 `position: relative` 的容器 + 一枚
+    // `bottom: calc(100% + 6px)` 的绝对定位包装 ⇒ 卡片**浮在本行之上**（本行就是 composer 上方那一条），
+    // 而不是内联挤在这条 dock 行里。行内没有流内内容 ⇒ 行不占高 ⇒ composer 不发生位移。
+    // 不照搬 `HashSuggestOverlay` 的 `bottom: 8 / left: 8`：那是宿主零高 `.overlayAnchor` 内的相对坐标，
+    // 本组件没有那个容器。不新增座位、不新增依赖、不另造第三套定位方案。
     return (
-      <div style={BAR}>
-        <TemplateVariablesDialog
-          body={pending.body}
-          t={t}
-          onCancel={() => setPending(null)}
-          onFilled={(filled) => apply(pending, filled)}
-        />
+      <div style={ROW_ANCHOR}>
+        <div style={DIALOG_ANCHOR}>
+          <TemplateVariablesDialog
+            body={pending.body}
+            t={t}
+            onCancel={() => setPending(null)}
+            onFilled={(filled) => apply(pending, filled)}
+          />
+        </div>
       </div>
     );
   }
@@ -179,6 +188,21 @@ export function ContextRecommendations({
     </div>
   );
 }
+
+/** 填窗打开时的行容器：只提供定位上下文（行内没有流内内容 ⇒ 行不占高，composer 不位移）。 */
+const ROW_ANCHOR: React.CSSProperties = { position: "relative" };
+
+/**
+ * 填窗浮层落点：贴本行上沿。值与语义照 `PromptLibraryButton` 的 ANCHOR（「只负责定位，卡片外观由
+ * 内容自带」——卡片的 `overlayBase` 在 `TemplateVariablesDialog` 里），是本仓库既有的写法。
+ */
+const DIALOG_ANCHOR: React.CSSProperties = {
+  position: "absolute",
+  bottom: "calc(100% + 6px)",
+  left: 0,
+  zIndex: 30,
+  maxWidth: "calc(100vw - 24px)",
+};
 
 /**
  * 整行容器：与 composer 卡片同宽同左缘（宿主变量 `--dsh-composer-card-max-width`，

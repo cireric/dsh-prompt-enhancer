@@ -88,8 +88,16 @@ export function useConversationTargetSnapshot<T>(sessionId: string | undefined, 
     let unsubscribe: () => void = () => {};
     try {
       const face = svc.binding(sessionId).target(target);
-      // 订阅**之前**先对齐当前值：目标可能是本次订阅才被激活装配的（宿主 subscribe 会 activate）。
       unsubscribe = face.subscribe(() => setValue(readTargetSnapshot<T>(svc, sessionId, target)));
+      // **必须显式对齐一次当前值**（这一行不可省）：宿主 `subscribe` 只在**该目标首次被激活**时同步推送。
+      // 实测语义：`assembly.ts:74-78` 的订阅体是「先 `this.snapshot.subscribe(listener)`，再
+      // `this.activate(target)`」；`activate`（`:85-87`）只在 `assembler.activateTarget()` 返回 true 时
+      // `snapshot.set(currentSnapshot())`；而 `activateTarget`（`assembler.ts:385-393`）对**已在活跃集里的
+      // 目标**直接 `return false`。⇒ 回访一个本会话此前已激活过 `chat` 的会话时，订阅**不产生任何通知**，
+      // 而 `useState` 的惰性初值只在首次挂载求值、会话切换又不会重挂载本组件
+      // （`ConversationRoot.tsx:350` 未按 sessionId 换 key）——缺这一行就会拿**上一个会话**的聊天文本当上下文。
+      // 同值 `setValue` 被 React 跳过（`Object.is` 相等），故挂载路径上不产生额外渲染。
+      setValue(readTargetSnapshot<T>(svc, sessionId, target));
     } catch {
       // 会话尚未绑定 / 目标未注册：订阅退化成空，不抛（与上游语义一致）
       unsubscribe = () => {};

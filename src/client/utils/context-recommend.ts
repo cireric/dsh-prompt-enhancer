@@ -70,6 +70,22 @@ export function scorePrompt(p: Prompt, kw: Map<string, number>, now: number): nu
 }
 
 /**
+ * 取最近 `count` 条消息的上下文文本：**保序**取尾部 `count` 条，换行拼接后整体 trim。
+ *
+ * 为什么这半步必须在纯模块里：规格 §7.1.1 把「最近 **3** 条用户消息」写成**确定参数**。参数若只活在
+ * 组件的 `.slice(-CONTEXT_USER_COUNT)` 里，它就**没有任何自动化判据**（本仓库无 react-dom / jsdom，
+ * 硬约束 5）——改成 1 或删掉 slice，全部用例仍然全绿。这与 D-P8-5 把打分提到纯模块是同一个理由。
+ * 「节点 → 文本」那一半是宿主形状（`legacy.nodes` / `UserMessageNode`），仍留在组件里。
+ *
+ * `count <= 0` 必须是空串：`Array.prototype.slice(-0)` 等价于 `slice(0)`，会返回**全部**——这正是这条
+ * 守卫要挡的陷阱。`count` 大于总数时返回全部（`slice` 的自然语义：不抛、不退化为空）。
+ */
+export function recentUserText(messages: readonly string[], count: number = CONTEXT_USER_COUNT): string {
+  if (count <= 0) return "";
+  return messages.slice(-count).join("\n").trim();
+}
+
+/**
  * 推荐入口。**草稿为空（或只有空白）时一律返回空数组**——这是触发条件，不是优化。
  * 关键词来源 = 当前草稿（主）+ 最近聊天上下文（叠加）。
  */
