@@ -26,9 +26,13 @@ export type SidebarPromptEntryProps = PropsRuntime<"sidebar.footer.action"> &
 
 /**
  * 宽窄两态：`wide === false` 是 56px 收起轨道，只放图标（正方形点击区）；`wide === true` 出文字。
- * 宽态几何与宿主条目同形（P8 T8，反馈 F1；R1 两条修复 + R2 由活体读数驱动的一处纠正）：内容左对齐、
- * 行高 42、宿主实测的非对称内边距 `0 10px 0 8px`（内容起始 x 与宿主相同）、无自绘描边、`overflow: hidden`、
- * `line-height: 22`（后两项同宿主 `.trigger`）。
+ * 宽态几何与宿主条目同形（P8 T8，反馈 F1；R1 两条修复 + R2/R3 由活体读数驱动）：内容左对齐、行高 42、
+ * 宿主实测的非对称内边距 `0 10px 0 8px`（内容起始 x 与宿主相同）、无自绘描边、`overflow: hidden`、
+ * `line-height: "22px"`、`marginInline: -2`（后三项同宿主 `.trigger` / `.triggerRow`）。
+ * `line-height` **必须带单位**：React 对无单位数字按「倍数」处理，写 22 会被解析成 22 × 12px = 264px
+ * （活体实测：内层 span 盒高 264px、按钮 scrollHeight 153 > clientHeight 42），与宿主 `22px` 不一致。
+ * `marginInline: -2` 抵掉侧栏 `padding: 6px 12px` 的内缩，使按钮左缘 12→10、宽 256→260（与宿主条目同宽）；
+ * 2px 仍落在 12px 内边距之内，不越出侧栏列、不产生横向溢出（论证见报告 R3）。
  * 横向填满该行用 `alignSelf: "stretch"`（交叉轴填满，flex 原生）而**不是** `flex: "1"`：本按钮的宿主容器
  * `footerActions` 是 **column** 容器（活体实测：`flex: "1"` = `1 1 0%` 的 flex-basis 走纵轴，直接盖掉
  * `height: 42`，行高塌成 15px），故 `flex` 恒为 `"0 0 auto"`；`alignSelf: "stretch"` 在 column 容器里
@@ -46,11 +50,12 @@ function entryStyle(wide: SidebarFooterActionOwnerProps["wide"]): React.CSSPrope
     height: wide ? 42 : 28,
     width: wide ? undefined : 28,
     alignSelf: wide ? "stretch" : undefined,
+    marginInline: wide ? -2 : undefined,
     padding: wide ? "0 10px 0 8px" : 0,
     flex: "0 0 auto",
     minWidth: wide ? 0 : undefined,
     overflow: wide ? "hidden" : undefined,
-    lineHeight: wide ? 22 : undefined,
+    lineHeight: wide ? "22px" : undefined,
     fontSize: 12,
     color: TOKEN.fg,
     background: "transparent",
