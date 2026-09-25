@@ -565,7 +565,7 @@ prompt-library:
 
 ### 6.5 建议的最终 `dsh-prompt-enhancer` host 面
 
-- **路由**：64 → **26 条** = 提示词 5 + 标签 4 + 回收站 4 + 导入导出 4 + meta 2 + `/ai/providers` 1 + `/ai/polish` 1 + `/settings` GET/PUT 2 + `/version` 1 + `/fs/list`/`/fs/mkdir` 2。
+- **路由**：64 → **27 条** = 提示词 5 + 标签 4 + 回收站 4 + 导入导出 4 + meta **3**（GET/PUT + P7 新增的 `DELETE /meta/:key`）+ `/ai/providers` 1 + `/ai/polish` 1 + `/ai/skill-descriptor` 1 + `/skills/export` 1 + `/settings` GET/PUT 2 + `/version` 1 + `/fs/list`/`/fs/mkdir` 2。（P1/P3 期此处为 26 条；P7 加 `DELETE /meta/:key` 后为 27，事实源 = `src/host/routes.ts` 的分发表，`tests/api.test.mjs` 断言 27。）
 - **表**：12 → **4 张**（`prompts`、`trash`、`tags`、`meta`）。
 - **`store.ts`**：1928 行 → 预计约 950 行（删 I/J/K/L/M 组 + 两个行映射 + `migrateMdContentToDb`，保留 A/B/C/D/E/F 组）。
 - **WS**：0 条通道。
