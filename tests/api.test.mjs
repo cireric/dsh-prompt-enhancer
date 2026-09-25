@@ -205,7 +205,7 @@ test("PROMPT_WRITABLE_KEYS：恰好是宿主 PUT 白名单的 6 个键，且不�
 
 // ── P6 客户端 HTTP 面：路由覆盖（R19）─────────────────────────────────────
 //
-// 宿主共 26 条逻辑路由（事实源 src/host/routes.ts 的分发表）。这里逐条对照：
+// 宿主共 27 条逻辑路由（事实源 src/host/routes.ts 的分发表）。这里逐条对照：
 //   · 有对应客户端方法的 → 逐条断言「HTTP 方法 + 路径」（打桩 fetch 看真实请求的行为断言；
 //     不做源码文本解析——P5 已把 smoke 从文本扫描升级为行为断言，倒退不可接受）
 //   · 没有对应方法的 → 必须逐条进下面的豁免清单，且每条写明理由
@@ -245,6 +245,8 @@ const ROUTES = [
   // meta（模板变量记忆）
   { route: "GET /meta/:key", client: "getMeta", call: (a) => a.getMeta("a/b"), method: "GET", url: "/api/prompt-enhancer/meta/a%2Fb", data: { key: "a/b", value: "v" } },
   { route: "PUT /meta/:key", client: "setMeta", call: (a) => a.setMeta("a/b", "v"), method: "PUT", url: "/api/prompt-enhancer/meta/a%2Fb", body: { value: "v" }, data: { key: "a/b", value: "v" } },
+  // DELETE 是 T6 / O-1 新增的**通用**清键通道（键名约定归客户端，宿主不认识 pl: 前缀）。
+  { route: "DELETE /meta/:key", client: "deleteMeta", call: (a) => a.deleteMeta("a/b"), method: "DELETE", url: "/api/prompt-enhancer/meta/a%2Fb", data: { key: "a/b", deleted: true } },
   // 技能导出
   { route: "POST /skills/export", client: null },
 ];
@@ -261,7 +263,7 @@ const EXEMPT_ROUTES = [
 const COVERED = ROUTES.filter((r) => r.client !== null);
 
 test("路由覆盖：宿主 26 条逻辑路由 = 客户端方法覆盖 + 显式豁免（R19，不看源码文本）", () => {
-  assert.equal(ROUTES.length, 26, "宿主路由表共 26 条逻辑路由");
+  assert.equal(ROUTES.length, 27, "宿主路由表共 27 条逻辑路由");
   const gaps = ROUTES.filter((r) => r.client === null).map((r) => r.route);
   const exemptWithoutClient = EXEMPT_ROUTES.filter((e) => e.coveredBy === undefined).map((e) => e.route);
   // 顺序无关：两边只是同一批路由的两种枚举顺序，比集合而不是比序列。
@@ -322,7 +324,7 @@ test("api 表面：P6 的 12 个新方法都在，P4/P5 的 11 个不动", () =>
   ]) {
     assert.equal(typeof api[name], "function", name + " 应保留（P4/P5）");
   }
-  assert.equal(COVERED.length, 23, "26 条路由里 23 条有客户端方法");
+  assert.equal(COVERED.length, 24, "27 条路由里 24 条有客户端方法");
 });
 
 // P6-4 裁定：导入不自动淘汰，「确认」与否决定落库还是只预览——客户端只是信封封装，

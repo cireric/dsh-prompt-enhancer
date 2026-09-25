@@ -59,7 +59,10 @@ export interface SkillCandidate {
   body: string;
   summary?: string;
   tags?: string[];
-  /** 已导出的技能名（重导时的名字候选，序与宿主 routes.ts 的 `body.name ?? descriptor?.name ?? prompt.skillName` 一致）。 */
+  /**
+   * 已导出的技能名（= 该技能在官方根下的**目录名**）。非空即**锁定**：T6 / D-1 起它优先于 AI 名，
+   * 无论 AI 这次给出什么名字，导出的都是它（见 `exportNameLocked` / `precheckExport`）。
+   */
   skillName?: string;
 }
 
@@ -150,15 +153,30 @@ export type SkillPrecheck =
   | { ok: false; errorKey: SkillExportErrorKey; detail: string };
 
 /**
+ * 该条目的技能名**是否已锁定**（T6 / D-1）：已导出过一次（`skillName` 非空）⇒ 目录名恒为它。
+ *
+ * 目录名是该技能在官方根下的**身份**，而徽标本来就写着「已导出技能 <name>」：用户从技能页再走一次
+ * 导出流程，**不得**在没有提示的情况下把它改掉（旧目录会变成没人认领的孤儿，且后续对旧名 409）。
+ * 故 AI 生成的名字只是「**尚未导出**条目」的候选——UI 与预校验都读这个谓词，不各自判一次。
+ */
+export function exportNameLocked(prompt: SkillCandidate): boolean {
+  return Boolean(prompt.skillName?.trim());
+}
+
+/**
  * 导出前的预校验（规格 §7.6 的「校验」步）：名字必须先过 `toKebab` + `isValidSkillName`，
  * 描述必须非空（兜底链全空 ⇒ 宿主一定拒绝，这里提前给可读错误，不把请求发出去白跑一趟）。
  *
- * 名字候选的序与宿主一致：`descriptor.name → prompt.skillName`（客户端不发 `name` 时宿主也这么算）；
- * 通过后客户端会把 kebab 后的名字**显式**发出去，于是「宿主算出来的名字」与预检结果是同一个。
+ * 名字候选的序是**客户端自己的**（T6 / D-1）：`prompt.skillName → descriptor.name`——
+ * 已导出条目的名字已锁定（见 `exportNameLocked`），AI 名只在其后兜底。
+ * ⚠️ 不能靠「不下发 `name`」来实现这一点：宿主的候选序是
+ * `body.name ?? descriptor?.name ?? prompt.skillName`，`descriptor?.name` 排在 `skillName` **之前**，
+ * AI 名会赢 ⇒ 另建目录。故这里算出的名字必须由 `exportOne` **显式**发出去（见那里的请求体）。
  * `detail` 只承载**纯数据**（措辞一律由 errorKey 的 i18n 键承担，A10：en 语言下不得混排中文）。
  */
 export function precheckExport(prompt: SkillCandidate, descriptor?: SkillDescriptorPayload): SkillPrecheck {
-  const raw = descriptor?.name ?? prompt.skillName ?? "";
+  // 顺序由谓词决定而非 `??` 链：`skillName` 是空白串时「锁定」不成立，此时不得取它当候选（会算出空名）。
+  const raw = exportNameLocked(prompt) ? (prompt.skillName ?? "") : (descriptor?.name ?? "");
   const name = toKebab(raw);
   if (!isValidSkillName(name)) {
     // 「还没补全过」与「补全了但名字非法」是两种处境，给不同的键（用户要做的事不同）。
@@ -269,6 +287,8 @@ export interface ExportEachInput {
    * 每条**成功**导出后，把这一次用过的 descriptor 落 meta（R-P7-AA）：重导要原样回传它，否则
    * `whenToUse` 会消失、`description` 会降级成兜底链。缺省实现 = `persistDescriptor`（走 `api.setMeta`），
    * 失败只 warn、不影响结局；调用方也可注入自己的实现（测试里必定注入，保持用例 hermetic）。
+   * ⚠️ 名字**已锁定**的条目（T6 / D-1）传进来的是**宿主回执里的目录名**，不是 AI 那个没被使用的
+   * 名字：徽标重导会用这份 meta 里的 `name` 当目录名候选（见 `exportOne` 的落库注释）。
    */
   saveDescriptor?: (promptId: string, descriptor: SkillDescriptorPayload) => Promise<unknown>;
 }
@@ -359,7 +379,23 @@ async function exportOne(prompt: SkillCandidate, input: ExportEachInput): Promis
    * description 降级成兜底链）。放在广播**之后**：广播是「导出成功」的可见信号，不得被一次库写
    * 拖后腿；而写入失败由默认实现内部兜住（只 warn），绝不改变本条已经尘埃落定的结局。
    */
-  if (descriptor) await (input.saveDescriptor ?? persistDescriptor)(prompt.id, descriptor);
+  if (descriptor) {
+    /**
+     * D-1（T6）：落库的 descriptor 里 `name` 必须与**这一次真正写下的目录名**一致。
+     *
+     *   · 名字**已锁定**（已导出过 ⇒ 目录名恒为 `prompt.skillName`）时，AI 名这一次**没有被使用**
+     *     ⇒ 用宿主回执的名字覆盖它。为什么非改不可：徽标重导只带 `promptId` + **这份 meta**
+     *     （`src/skill-badge.ts#reExportSkill`），而宿主的候选序把 `descriptor?.name` 排在
+     *     `prompt.skillName` **之前**——存了 AI 名，重导就会另建目录、把旧目录留成孤儿（正是 D-1）。
+     *   · 名字**未锁定**（首次导出）时**原样落库**：这一次用的就是 AI 名（宿主统一 `toKebab`，
+     *     重导再 kebab 一次仍是同一个目录），而 T3 的「写进去的 descriptor 逐字读回来、原样进重导
+     *     请求体」依赖这份原样——不得为了让两种情形长得一样而动它。
+     *
+     * `description` / `whenToUse` 两种情况都原样保留：T3 的「重导保留 AI descriptor」不受影响。
+     */
+    const used = exportNameLocked(prompt) ? { ...descriptor, name: exported.name } : descriptor;
+    await (input.saveDescriptor ?? persistDescriptor)(prompt.id, used);
+  }
   return exported;
 }
 

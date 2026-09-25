@@ -7,6 +7,10 @@
  * 「永久删除」「清空」是**不可恢复**的物理删除，故都走共享的二次确认
  * （`confirm.ts#requestConfirm`，唯一渲染点在 `PromptSurfaceHost`，压在管理面板之上）：
  * 用户取消 → promise 落地 false → 直接返回（不发起请求、不渲染错误）。
+ *
+ * 不可逆删除是 per-prompt meta 的**唯一**清理点（T6 / O-1）：两条路径都经
+ * `ai-flow.ts#deletePrompts({ irreversible: true })`，为每条真正删掉的 id 清
+ * `pl:refined-dir:` / `pl:skill-descriptor:` 两把键（宿主侧幂等）。**恢复**（restore）不涉及清理。
  * 零 DOM 注入、不新引入依赖。
  */
 import * as React from "react";
@@ -14,6 +18,7 @@ import type { TrashItem } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import { requestConfirm } from "../utils/confirm.ts";
 import { notifyDataChanged, useDataChanged } from "../utils/data-sync.ts";
+import { deletePrompts } from "../utils/ai-flow.ts";
 import {
   actions,
   button,
@@ -132,7 +137,11 @@ export function RecycleManagePanel({ t }: RecycleManagePanelProps): React.ReactE
           if (aliveRef.current) setBusy(null);
           return;
         }
-        await api.deleteTrash(item.id);
+        /**
+         * 不可逆删除：主删除成功后清该提示词的 per-prompt meta（T6 / O-1）。清键失败只 warn、
+         * 不影响这条删除的结局——决策与理由都在 `ai-flow.ts#deletePrompts` 里（一处，不在此复制）。
+         */
+        await deletePrompts({ ids: [item.id], irreversible: true, remove: () => api.deleteTrash(item.id) });
         if (!aliveRef.current) return;
         setBusy(null);
         setNotice(t("manager.trash.purged"));
@@ -164,7 +173,12 @@ export function RecycleManagePanel({ t }: RecycleManagePanelProps): React.ReactE
           if (aliveRef.current) setBusy(null);
           return;
         }
-        await api.emptyTrash();
+        // 清空 = 不可逆：为**本次列出的每一条** id 清键（主删除仍是一次 emptyTrash）。
+        await deletePrompts({
+          ids: (items ?? []).map((it) => it.id),
+          irreversible: true,
+          remove: () => api.emptyTrash(),
+        });
         if (!aliveRef.current) return;
         setBusy(null);
         setNotice(t("manager.trash.emptied"));

@@ -44,6 +44,7 @@ import {
   createSkillRun,
   describeEach,
   exportEach,
+  exportNameLocked,
   filterByTag,
   isAllSelected,
   pickSelected,
@@ -299,6 +300,11 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
             const recorded = descriptors[prompt.id];
             const descriptor = recorded?.ok ? recorded.descriptor : undefined;
             const pre = precheckExport(prompt, descriptor);
+            /**
+             * D-1（T6）：已导出条目的目录名已锁定 ⇒ 行内必须看得出「落盘就是这个名字」，
+             * 否则「AI 补全显示的名字」与「最终目录名」不一致本身就是误导。
+             */
+            const locked = exportNameLocked(prompt);
             return (
               <div key={prompt.id} role="listitem" aria-label={prompt.title} style={listRow}>
                 <input
@@ -317,11 +323,16 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
                       </span>
                     ))}
                     <span style={muted}>
-                      {t("manager.skill.nameLabel")}：{pre.ok ? pre.name : (descriptor?.name ?? prompt.skillName ?? "—")}
+                      {t("manager.skill.nameLabel")}：{pre.ok ? pre.name : (prompt.skillName ?? descriptor?.name ?? "—")}
+                      {locked ? " · " + t("manager.skill.nameLocked") : ""}
                     </span>
                   </span>
                   {recorded !== undefined && recorded.ok && (
-                    <span style={muted}>{recorded.descriptor.name} — {recorded.descriptor.description}</span>
+                    <span style={muted}>
+                      {recorded.descriptor.name} — {recorded.descriptor.description}
+                      {/* 名字已锁定时说清楚：这个 AI 名不会改目录（描述与 whenToUse 仍会用它）。 */}
+                      {locked ? " · " + t("manager.skill.aiNameIgnored") : ""}
+                    </span>
                   )}
                   {recorded !== undefined && !recorded.ok && (
                     <span role="alert" style={errorText}>

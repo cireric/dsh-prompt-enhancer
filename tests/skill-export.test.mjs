@@ -13,6 +13,10 @@
  * 修复轮 1（R-P7-X）追加（在同一批用例里做的变异验证）：
  *   ④ 去掉「离开即停止」的条目边界检查 → 「不再启动新条目」必红；
  *   ⑤ 去掉 onExported 回调 → 「完成即广播（组件卸载后仍广播）」必红。
+ *
+ * T6（修复轮 2）追加（同一批用例里做的变异验证）：
+ *   ⑥ 名字候选退回 `descriptor.name → prompt.skillName` → 「D-1：显式下发 name = skillName」必红；
+ *   ⑦ 落库的 descriptor 名字退回 AI 名 → 「用过的名字与库里 skillName 同步」必红。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,6 +26,7 @@ const {
   createSkillRun,
   describeEach,
   exportEach,
+  exportNameLocked,
   filterByTag,
   isAllSelected,
   pickSelected,
@@ -554,3 +559,83 @@ test("exportEach + run：**批次开始前**就已取消 ⇒ 一条请求都不�
   assert.equal(s.calls.length, 0);
   assert.deepEqual(outcomes, []);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T6 / D-1：已导出条目的目录名**恒为 prompt.skillName**（AI 名只是「尚未导出」条目的候选）
+//
+// 实测缺陷：技能页以 `descriptor.name` 优先于 `prompt.skillName` ⇒ 对已导出条目
+// 「AI 补全 → 导出」一换名就**另建目录**，旧目录从此无主（后续对旧名 409）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("D-1：exportNameLocked —— skillName 非空即锁定（空白串不算名字）", async () => {
+  assert.equal(exportNameLocked(prompt({ skillName: "mine" })), true);
+  assert.equal(exportNameLocked(prompt()), false, "从未导出 ⇒ 未锁定（AI 名是候选）");
+  assert.equal(exportNameLocked(prompt({ skillName: "   " })), false, "空白串不构成锁定");
+});
+
+test("D-1：precheckExport —— skillName 非空时优先于 AI 名（AI 换名不改它）", () => {
+  const pre = precheckExport(prompt({ skillName: "mine" }), descriptor({ name: "ai-renamed" }));
+  assert.equal(pre.ok, true);
+  assert.equal(pre.name, "mine", "已导出条目的名字已锁定：AI 名不得胜出");
+  assert.notEqual(pre.name, "ai-renamed");
+});
+
+test("D-1 请求形状：skillName 非空 ⇒ **显式**带 name = skillName（且 ≠ AI 名）", async () => {
+  const s = scriptedSend([{ name: "mine", path: "/h/skills/mine/SKILL.md" }]);
+  const ai = descriptor({ name: "ai-renamed", description: "AI 描述", whenToUse: "当你要改名时" });
+  const outcomes = await exportEach({
+    prompts: [prompt({ skillName: "mine" })],
+    descriptors: { p1: { ok: true, descriptor: ai } },
+    send: s.send,
+    saveDescriptor: noSave,
+    confirmConflict: async () => {
+      throw new Error("没有 409 时不得弹确认");
+    },
+  });
+  assert.equal(s.calls.length, 1);
+  assert.equal(s.calls[0].request.name, "mine", "必须显式下发 skillName（宿主候选序把 descriptor.name 排在它之前，只靠「不下发」AI 名会赢）");
+  assert.notEqual(s.calls[0].request.name, ai.name, "下发的是锁定名，不是 AI 名");
+  assert.deepEqual(s.calls[0].request.descriptor, ai, "descriptor 仍原样下发：description / whenToUse 照旧提质");
+  assert.equal(outcomes[0].status, "exported");
+  assert.equal(outcomes[0].name, "mine", "导出名取宿主回执（与锁定名一致）");
+});
+
+test("D-1 反面对照：skillName 为空 ⇒ 仍用 AI 名（AI 名是「尚未导出」条目的候选）", async () => {
+  const s = scriptedSend([{ name: "ai-name", path: "/h/skills/ai-name/SKILL.md" }]);
+  await exportEach({
+    prompts: [prompt()],
+    descriptors: { p1: { ok: true, descriptor: descriptor({ name: "AI Name" }) } },
+    send: s.send,
+    saveDescriptor: noSave,
+    confirmConflict: async () => {
+      throw new Error("没有 409 时不得弹确认");
+    },
+  });
+  assert.equal(s.calls[0].request.name, "ai-name", "未导出条目：kebab 后的 AI 名就是这次的目录名");
+});
+
+test("D-1 落库：descriptor.name 存**这一次真正用过的**名字（否则徽标重导会另建目录）", async () => {
+  const saved = [];
+  const s = scriptedSend([{ name: "mine", path: "/h/skills/mine/SKILL.md" }]);
+  await exportEach({
+    prompts: [prompt({ skillName: "mine" })],
+    descriptors: {
+      p1: { ok: true, descriptor: descriptor({ name: "ai-renamed", description: "AI 描述", whenToUse: "当你要改名时" }) },
+    },
+    send: s.send,
+    saveDescriptor: async (id, d) => saved.push({ id, d }),
+    confirmConflict: async () => {
+      throw new Error("没有 409 时不得弹确认");
+    },
+  });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, "p1");
+  assert.equal(
+    saved[0].d.name,
+    "mine",
+    "存进 meta 的目录名候选必须与库里的 skillName 同步——徽标重导只带 promptId + 这份 descriptor，宿主仍按 descriptor.name 优先",
+  );
+  assert.equal(saved[0].d.description, "AI 描述", "description 原样保留（T3：重导保留 AI descriptor 不受影响）");
+  assert.equal(saved[0].d.whenToUse, "当你要改名时", "whenToUse 也原样保留");
+});
+

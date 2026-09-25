@@ -412,6 +412,20 @@ export function setMetaValue(key: string, value: string): void {
     .run(key, value);
 }
 
+/**
+ * 删一条 meta KV（T6 / O-1），返回这次是否真的删掉了行。
+ *
+ * **键不存在也成功**（幂等）：调用方要的是「键不在了」这个**目标状态**，重复清一次不该失败；
+ * 返回值只如实说明「这次删掉了没有」，供上层的清理计数（不是失败信号）。
+ *
+ * 形态刻意**通用**：meta 是宿主的中立 KV 表，键名约定（`pl:` 前缀、`<用途>:<promptId>` 分段）
+ * 全归客户端；宿主不认识任何具体键名，也不为此做特判——否则两处就耦合成一份隐式契约。
+ */
+export function deleteMetaValue(key: string): boolean {
+  const res = getDb().prepare("DELETE FROM meta WHERE key = ?").run(key);
+  return res.changes !== undefined && Number(res.changes) > 0;
+}
+
 // ── 提示词 ─────────────────────────────────────────────────────────────────
 
 /** 列表：`q` 大小写不敏感子串（title / body / tags），`tag` 精确过滤，`sort` 见 {@link PromptSort}。 */

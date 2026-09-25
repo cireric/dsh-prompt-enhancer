@@ -21,7 +21,7 @@ import {
   type PromptSort,
   type PromptWritablePatch,
 } from "../../types.ts";
-import { canToggle } from "../utils/ai-flow.ts";
+import { canToggle, deletePrompts } from "../utils/ai-flow.ts";
 import { ApiError, api } from "../utils/api.ts";
 import { createFromCapture } from "../utils/capture.ts";
 import { notifyDataChanged, useDataChanged } from "../utils/data-sync.ts";
@@ -420,13 +420,20 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
     };
   }, [reloadSeq]);
 
-  /** 软删除（进回收站，可恢复）→ 成功后广播数据变更让所有消费者重拉。 */
+  /**
+   * 软删除（进回收站，可恢复）→ 成功后广播数据变更让所有消费者重拉。
+   *
+   * 走 `deletePrompts({ irreversible: false })` 而不是直接 `api.deletePrompt`（T6 / O-1）：
+   * 那条路径**一次 meta 清键都不发**——回收站可恢复且复用同一 id，清了键，「删除 → 恢复」会让
+   * 方向记录与技能 descriptor 一起消失（重演 I-1）。决策只在 `ai-flow.ts#deletePrompts` 一处，
+   * 本面板不自己复制那条例外。
+   */
   const remove = (prompt: Prompt): void => {
     if (busyId !== null) return;
     setBusyId(prompt.id);
     setNotice(null);
     setDeleteError(null);
-    api.deletePrompt(prompt.id).then(
+    deletePrompts({ ids: [prompt.id], irreversible: false, remove: () => api.deletePrompt(prompt.id) }).then(
       () => {
         if (!aliveRef.current) return;
         setBusyId(null);

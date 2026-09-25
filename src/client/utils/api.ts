@@ -93,6 +93,13 @@ export const api = {
   getMeta: (key: string) => call<{ key: string; value: string }>("GET", `/meta/${encodeURIComponent(key)}`).then((r) => r.value),
   setMeta: (key: string, value: string) =>
     call<{ key: string; value: string }>("PUT", `/meta/${encodeURIComponent(key)}`, { value }),
+  /**
+   * 删一条 meta KV（`DELETE /meta/:key`，T6 / O-1）。**幂等**：键不存在时宿主同样回 ok
+   * （`deleted: false` 只说明「这次没删到行」，不是失败）。**通用通道**：键名约定（`pl:...`）
+   * 归调用方，宿主不认识它——故这里也不做任何键名特判，调用方拼好键名传进来即可。
+   */
+  deleteMeta: (key: string) =>
+    call<{ key: string; deleted: boolean }>("DELETE", `/meta/${encodeURIComponent(key)}`),
 
   createPrompt: (input: { title: string; body: string; tags?: string[]; summary?: string }) =>
     call<{ prompt: Prompt; evicted: string[] }>("POST", "/prompts", input),

@@ -1,5 +1,5 @@
 /**
- * Host HTTP API：单条 prefix 路由 + 手写分发（规格 §5，共 26 条逻辑路由）。
+ * Host HTTP API：单条 prefix 路由 + 手写分发（规格 §5，共 27 条逻辑路由）。
  *
  * 本文件是**薄路由层**：只做「解析请求 → 调 store / ai / skills / settings → 组装信封 → 错误映射」，
  * 业务语义全部在各自模块里且已有测试。响应信封固定 `{ ok, data?, error? }`——
@@ -326,6 +326,15 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         store.setMetaValue(b!, value);
         return ok(res, { key: b, value });
       }
+      /**
+       * DELETE（T6 / O-1）：清键通道。**通用形态**——宿主不认识 `pl:` 这类客户端键名约定，
+       * 也不做任何特判（键名归客户端，写进宿主就是两处耦合）。**幂等**：键不存在同样回 200，
+       * `deleted` 只如实说明这次是否真的删掉了行。
+       *
+       * 客户端只在**不可逆删除点**（单条永久删除 / 清空回收站）用它清 per-prompt 残键；
+       * **软删除（进回收站）绝不清**——回收站可恢复且复用同一 id，清了键会让「删除 → 恢复」重演 I-1。
+       */
+      if (method === "DELETE") return ok(res, { key: b, deleted: store.deleteMetaValue(b!) });
     }
 
     // ── 技能导出 ──────────────────────────────────────────────────────────

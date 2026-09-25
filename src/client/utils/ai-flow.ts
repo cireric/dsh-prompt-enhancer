@@ -1,13 +1,19 @@
 /**
- * AI 优化 / 完善的纯逻辑层：不触达 fetch、不依赖 React，可直接脱离宿主单测。
+ * AI 优化 / 完善的纯逻辑层 **+ per-prompt meta 的生命周期编排**（写回时播种、不可逆删除时清理）：
+ * 不触达 fetch、不依赖 React，可直接脱离宿主单测。
  *
- * 只以 `import type` 引用 api.ts 的类型——运行期值一律不 import，避免把 HTTP 依赖带进本模块；
+ * `api.ts` 只 import 两样：**类型**（`import type`）与 `api` 这一个对象——后者仅作
+ * `deletePrompts` 清键的**缺省**实现（调用方可注入替代实现，测试据此保持 hermetic）；
+ * 其余 HTTP 一律由调用方注入（见 `WriteBackInput.update` / `DeletePromptsInput.remove`）。
  * 错误分类按「HTTP status / err.name」判定，不匹配 message 文本（宿主文案可改）。
  */
 import type { Prompt, PromptWritablePatch } from "../../types.ts";
 import type { AiRefineResult } from "./api.ts";
+import { api } from "./api.ts";
 import { clampTitle } from "../../types.ts";
 import { needsValues } from "./template.ts";
+import { refinedDirectionMetaKey } from "./refined-direction.ts";
+import { skillDescriptorMetaKey } from "./skill-export.ts";
 
 /** keepVariables 开关口径：草稿含 `{{变量}}` 才勾选；`{{}}` / `{{   }}` 不算（复用 parseVariables 口径）。 */
 export function keepVariablesFor(draft: string): boolean {
@@ -101,4 +107,83 @@ export function aiErrorKey(err: unknown): "ai.timeout" | "ai.unavailable" | "ai.
   if (errorName(err) === "TimeoutError") return "ai.timeout";
   if (statusOf(err) === 503) return "ai.unavailable";
   return "ai.fail";
+}
+
+// ── per-prompt meta 的清理（T6 / O-1）──────────────────────────────────────
+//
+// 要修的问题：宿主只有「键值对」这一层（GET / PUT / 现在多了 DELETE /meta/:key），它**不认识**
+// `pl:refined-dir:` / `pl:skill-descriptor:` 这类**客户端**键名约定——把这份约定写进宿主就是把两处
+// 耦合成一份隐式契约。于是「提示词真的没了 ⇒ 它的键也该没了」只能由客户端**在正确的时刻**说出来。
+
+/** 删一条 meta KV（真实现 = `api.deleteMeta`；幂等，键不存在也算成功）。 */
+export type MetaDeleter = (key: string) => Promise<unknown>;
+
+/**
+ * 某条提示词在 meta 里的两把「AI 派生」键：方向（`pl:refined-dir:<id>`）与技能 descriptor
+ * （`pl:skill-descriptor:<id>`）。**键的形态归各自的主模块**（`refined-direction.ts` /
+ * `skill-export.ts`），这里只做枚举——不另抄一份键名字符串，否则约定就有了第二处真源。
+ */
+export function perPromptMetaKeys(promptId: string): string[] {
+  return [refinedDirectionMetaKey(promptId), skillDescriptorMetaKey(promptId)];
+}
+
+/** `deletePrompts` 的入参。 */
+export interface DeletePromptsInput {
+  /** 涉及删除的提示词 id（单条永久删除通常 1 条；清空回收站是本次列出的全部）。 */
+  ids: readonly string[];
+  /**
+   * **是否不可逆**：true = 单条永久删除 / 清空回收站（回收站里的行被物理删除）；
+   * false = 软删除（进回收站，可恢复）。
+   * 这个布尔量是「清键只发生在不可逆删除点」的**唯一决策点**——调用方不得再自己判一次。
+   */
+  irreversible: boolean;
+  /**
+   * 主删除（先做、做成功才谈收尾）：真实现 = `api.deleteTrash`（单条）/ `api.emptyTrash`（整批）/
+   * `api.deletePrompt`（软删）。一次调用即代表「本次要删的都删了」。
+   * 返回类型是 `unknown`：宿主那三个路由各回各的回执（`{deleted}` / `{removed}`），
+   * 收尾只关心「它有没有抛」，不看回执内容。
+   */
+  remove: () => Promise<unknown>;
+  /** 清键实现；缺省 = `api.deleteMeta`。测试注入假实现以保持 hermetic。 */
+  deleteMeta?: MetaDeleter;
+}
+
+/** 收尾结果：`cleared` = 成功删掉的键数；`failed` = 清键失败数（每次失败都有 `console.warn`）。 */
+export interface DeletePromptsResult {
+  cleared: number;
+  failed: number;
+}
+
+/**
+ * 删除提示词的**唯一收尾编排**（T6 / O-1）：先做主删除，再**仅当不可逆时**清 per-prompt meta。
+ * 两个删除面板（回收站的「永久删除」/「清空回收站」、列表页的软删除）都只经它收尾。
+ *
+ * 三条语义（每条都有对应用例，且都做过变异验证）：
+ *
+ *  1. **软删除绝不清键**（`irreversible: false` ⇒ 一次清键请求都不发）。回收站可恢复且**复用同一
+ *     id**，清了键，「删除 → 恢复」就会重演 I-1：方向记录消失（详情页退回中性标注）、descriptor
+ *     消失（重导丢掉 `whenToUse` 且 description 降级成兜底链）。这是本函数存在的主要理由。
+ *  2. **不可逆删除后逐条清**：每条 id × 每个键一次 `DELETE /meta/:key`（宿主幂等，重复清不失败）。
+ *  3. **主操作先行，清键不得反噬**：主删除失败 ⇒ 原样抛出、**一行 meta 都不动**（提示词还在，键
+ *     必须还在）；清键失败 ⇒ 只 `console.warn` + 计入 `failed`，绝不把已经成功的删除变成失败
+ *     （删除是主操作、清键是收尾），也绝不静默（A11：错误必须可见）。
+ */
+export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePromptsResult> {
+  await input.remove();
+  if (!input.irreversible) return { cleared: 0, failed: 0 };
+  const deleteMeta = input.deleteMeta ?? ((key: string) => api.deleteMeta(key));
+  let cleared = 0;
+  let failed = 0;
+  for (const id of input.ids) {
+    for (const key of perPromptMetaKeys(id)) {
+      try {
+        await deleteMeta(key);
+        cleared++;
+      } catch (err) {
+        failed++;
+        console.warn("[prompt-enhancer] 清理提示词的 meta 键失败（提示词已删除，残留键：" + key + "）", err);
+      }
+    }
+  }
+  return { cleared, failed };
 }
