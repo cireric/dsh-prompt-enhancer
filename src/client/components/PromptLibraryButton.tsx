@@ -16,7 +16,7 @@ import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { openManager, pushCapture, useHashSuggestVisible } from "../utils/ui-state.ts";
+import { openManager, pushCapture, shouldShowLibraryPanel, useHashSuggestVisible } from "../utils/ui-state.ts";
 import { SelectionAddPrompt } from "./SelectionAddPrompt.tsx";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 
@@ -69,6 +69,13 @@ export function PromptLibraryButton({
   const [pending, setPending] = React.useState<PendingUse | null>(null);
   const rootRef = React.useRef<HTMLSpanElement | null>(null);
 
+  /**
+   * R55：面板此刻是否真的渲染 = 「用户打开了它」**且**「`#` 浮层没在屏上」（不变式走渲染门，
+   * 见 `ui-state.ts#shouldShowLibraryPanel`）。两处渲染门与 `aria-expanded` **共用**它，
+   * 避免「面板没渲染但 aria 说展开了」。下方订阅边沿（`hashVisible` 上升沿那条）是**互补**的一条：
+   * 它把 `open` 也收回 false，使按钮的「再点一次收起」与浮层消失后的自动重现都保持自洽。
+   */
+  const panelOpen = shouldShowLibraryPanel({ open, hashSuggestVisible: hashVisible });
   // 设置只读一次；读失败退回默认值（按钮照常可用），原因留在 console。
   React.useEffect(() => {
     let alive = true;
@@ -156,6 +163,9 @@ export function PromptLibraryButton({
    * - 面板开着、草稿无令牌时敲出 `#`：信号 false→**true**（上升沿）→ 面板收起（R49 的效果保住）；
    * - 浮层已被收起（令牌仍在）时：信号恒 false，库侧无需关，也不存在上升沿。
    *
+   * R55 起这条是**互补**的：同屏已由渲染门 `panelOpen = open && !hashVisible` 在结构上挡死，
+   * 本 effect 负责把 `open` 也收回 false（按钮的「再点一次收起」与浮层消失后自动重现都靠它自洽）。
+   *
    * R54：这里**只关面板、不清 pending**——浮层抢屏不是用户放弃变量填窗，清掉会让「已点动作、
    * 正等回填」的填窗选择静默消失。显式关闭路径（`close()`：点按钮/点浮层外/取消/已插入）才连
    * `pending` 一起丢弃。
@@ -216,7 +226,7 @@ export function PromptLibraryButton({
         title={t("button.tip")}
         aria-label={t("button.tip")}
         aria-haspopup="dialog"
-        aria-expanded={open}
+        aria-expanded={panelOpen}
         onClick={() => {
           if (open) close();
           else setOpen(true);
@@ -236,7 +246,7 @@ export function PromptLibraryButton({
           {notice.text}
         </span>
       )}
-      {open && pending !== null && (
+      {panelOpen && pending !== null && (
         <span style={ANCHOR}>
           <TemplateVariablesDialog
             body={pending.prompt.body}
@@ -246,7 +256,7 @@ export function PromptLibraryButton({
           />
         </span>
       )}
-      {open && pending === null && (
+      {panelOpen && pending === null && (
         <span style={ANCHOR}>
           <span role="dialog" aria-label={t("list.title")} style={PANEL}>
             <span style={PANEL_HEADER}>

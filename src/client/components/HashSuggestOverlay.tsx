@@ -127,8 +127,12 @@ export function HashSuggestOverlay({
   // R53：把「浮层此刻是否真的可见」发布为共享信号（唯一订阅方 = 词库面板）。
   // 依赖 `visible` 而不是 `token`：被点外部收起时令牌仍在，但浮层已不可见，不得再算「可见」。
   // **卸载必须清除**（cleanup 置 false）：令牌消失/被收起时本组件只是 `return null`（仍挂载，
-  // effect 照跑）；真正卸载发生在宿主收走插槽时——信号若留在 true，词库面板会被**永久压住**，
-  // 这是本修法最容易造成的回归。
+  // effect 照跑）；真正卸载发生在宿主收走插槽时。信号若停在 true 的后果（R55 后复核）：
+  // 渲染门 `open && !hashVisible` 恒不通过 ⇒ 词库面板**再也渲染不出来**（按钮点了没反应），
+  // 同时 `setHashSuggestVisible` 的幂等守卫会把下一次「可见」的边沿一并吞掉。
+  // 注：R55 **之前**面板的渲染只看 `open`，那时残留的后果轻得多（只吞掉一次上升沿、同类重叠
+  // 可再复现一次，直到下一次 visible→false 自愈）——评审实测的正是那一版的后果；渲染门落地后，
+  // 这条 cleanup 由「防复发」升级为「面板能不能渲染」的必要条件。
   React.useEffect(() => {
     setHashSuggestVisible(visible);
     return () => {

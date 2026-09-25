@@ -145,3 +145,18 @@ export function useHashSuggestVisible(): boolean {
   useEffect(() => subscribeHashSuggestVisible(() => setSnapshot(getHashSuggestVisibleSnapshot())), []);
   return snapshot;
 }
+
+/**
+ * 词库面板此刻是否该渲染（R55 的**渲染不变式**）：用户打开了它 **且** `#` 候选浮层没在屏上。
+ *
+ * 为什么是「渲染门」而不是「边沿动作」：边沿动作只覆盖订阅得到的那几次跳变，盖不住「面板已开时
+ * 条件如何变化」的全部入口——键盘把焦点移到词库按钮后按 Enter/Space 激活，**没有任何 pointerdown**，
+ * R47 不触发、信号不产生下降沿，面板就会直接开在仍然可见的浮层上面（与 O-1(c) 同类）。条件放进
+ * 渲染门后，同屏在**结构上**不可能，而不是依赖「先渲染出来再收回」。
+ *
+ * 抽成纯函数的理由与 `hash-token.ts#shouldShowSuggest` 同：组件面没有渲染测试通道（无 react-dom，
+ * 全局硬约束 5），判定留在组件里就只能靠活体验收，变异无从证起。
+ */
+export function shouldShowLibraryPanel(input: { open: boolean; hashSuggestVisible: boolean }): boolean {
+  return input.open && !input.hashSuggestVisible;
+}

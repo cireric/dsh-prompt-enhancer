@@ -10,6 +10,7 @@ const {
   openManager,
   pushCapture,
   setHashSuggestVisible,
+  shouldShowLibraryPanel,
   subscribe,
   subscribeHashSuggestVisible,
   takeCapture,
@@ -116,11 +117,33 @@ test("subscribe 快照引用：状态未变不换引用（useSyncExternalStore �
 
 // ---- R53：`#` 浮层可见性共享信号（库侧订阅的就是它，取代 R49 的 hashOpen 边沿） ----
 
-// 本用例断言模块级初值，故必须在任何 setHashSuggestVisible(true) 之前跑：node:test 同文件内
-// 顶层用例按声明顺序串行，且此前所有用例的 settle() 只会把它收敛为 false。
-test("getHashSuggestVisibleSnapshot：模块初值为 false（首屏 `#` 浮层未渲染）", () => {
-  assert.equal(getHashSuggestVisibleSnapshot(), false);
-  assert.equal(typeof getHashSuggestVisibleSnapshot(), "boolean");
+// R55 修复轮 1（轻微 3）：原写法断言的是**共享单例**的「初值」，而本文件每个用例开头都走
+// settle()（含 setHashSuggestVisible(false)），断言恒真、证明力低于标题。改为带 query 的
+// 动态 import 取**新模块实例**测量初值 ⇒ 与用例顺序、与其它用例的 settle() 都无关。
+test("getHashSuggestVisibleSnapshot：模块初值为 false（新实例实测，与用例顺序无关）", async () => {
+  const fresh = await import("../src/client/utils/ui-state.ts?fresh=initial");
+  assert.equal(fresh.getHashSuggestVisibleSnapshot(), false);
+  assert.equal(typeof fresh.getHashSuggestVisibleSnapshot(), "boolean");
+  // 反向确认该实例确实独立于本文件其余用例操作的共享单例（否则上面的断言还是恒真）。
+  setHashSuggestVisible(true);
+  assert.equal(fresh.getHashSuggestVisibleSnapshot(), false, "新实例不得受共享单例影响");
+  setHashSuggestVisible(false);
+});
+
+// R55：渲染不变式（这条把「键盘激活词库按钮」那条同屏路径从「边沿动作盖不住」变成结构上不可能）。
+test("shouldShowLibraryPanel：浮层可见 ⇒ 词库面板根本不渲染（R55 不变式）", () => {
+  assert.equal(shouldShowLibraryPanel({ open: false, hashSuggestVisible: false }), false, "没打开就不渲染");
+  assert.equal(
+    shouldShowLibraryPanel({ open: true, hashSuggestVisible: false }),
+    true,
+    "(a)：浮层已被 pointerdown 收起（信号 false）⇒ 面板照常渲染，不得被吞",
+  );
+  assert.equal(
+    shouldShowLibraryPanel({ open: true, hashSuggestVisible: true }),
+    false,
+    "核心不变式：浮层可见时词库面板不得渲染（键盘 Enter/Space 激活路径靠这条闭合）",
+  );
+  assert.equal(shouldShowLibraryPanel({ open: false, hashSuggestVisible: true }), false, "没打开时与浮层无关");
 });
 
 test("setHashSuggestVisible：真实变更才通知（幂等）；退订后不再通知；与面板订阅互不串扰", () => {
