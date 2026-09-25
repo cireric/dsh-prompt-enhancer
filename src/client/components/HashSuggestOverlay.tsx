@@ -33,6 +33,7 @@ import {
 import { promptSummary } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
+import { setHashSuggestVisible } from "../utils/ui-state.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 
 /** `#` 候选浮层（任务 6 落地完整行为）。 */
@@ -122,6 +123,18 @@ export function HashSuggestOverlay({
       console.warn("[prompt-enhancer] " + t("error.use"), err);
     });
   };
+
+  // R53：把「浮层此刻是否真的可见」发布为共享信号（唯一订阅方 = 词库面板）。
+  // 依赖 `visible` 而不是 `token`：被点外部收起时令牌仍在，但浮层已不可见，不得再算「可见」。
+  // **卸载必须清除**（cleanup 置 false）：令牌消失/被收起时本组件只是 `return null`（仍挂载，
+  // effect 照跑）；真正卸载发生在宿主收走插槽时——信号若留在 true，词库面板会被**永久压住**，
+  // 这是本修法最容易造成的回归。
+  React.useEffect(() => {
+    setHashSuggestVisible(visible);
+    return () => {
+      setHashSuggestVisible(false);
+    };
+  }, [visible]);
 
   // R47：被点外部收起之后（仅当前这个令牌）不再渲染；令牌消失或变化即自动复位。
   if (token === null || !visible) return null;

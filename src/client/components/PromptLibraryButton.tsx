@@ -13,11 +13,10 @@ import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots
 import { DEFAULT_SETTINGS, type PluginSettings, type Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
-import { readHashToken } from "../utils/hash-token.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { openManager, pushCapture } from "../utils/ui-state.ts";
+import { openManager, pushCapture, useHashSuggestVisible } from "../utils/ui-state.ts";
 import { SelectionAddPrompt } from "./SelectionAddPrompt.tsx";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 
@@ -48,11 +47,14 @@ export function PromptLibraryButton({
 }: PromptLibraryButtonProps): React.ReactElement | null {
   const draft = useInput((s) => s.draft);
   /**
-   * R49：草稿此刻是否处于「会触发 `#` 候选浮层」的状态。判定复用 `hash-token.ts` 的既有纯函数，
-   * 组件不重写令牌解析。门与 `HashSuggestOverlay` 的显示门**同源**（当前 = 令牌存在；P8 把
-   * `hashTriggerEnabled` 接进浮层时两处同改）。
+   * R53：`#` 候选浮层**此刻是否真的可见**——由浮层自己发布到 `ui-state.ts` 的共享信号，
+   * 本组件订阅它（P8 把 `hashTriggerEnabled` 接进浮层时，两侧自动同改，无需再维护第二个判定）。
+   *
+   * 不再自算「草稿里是否有令牌」：那个判定拿不到浮层的 `dismissedKey`（浮层被「点浮层外部」
+   * 收起后令牌仍在草稿里），于是两侧的「门」不同源——R49 的边沿因此漏掉「面板已开着时在同一
+   * 令牌内就地改写查询词」（令牌一直在 → 无边沿可观察 → 面板不关 → 两浮层同屏重叠）。
    */
-  const hashOpen = readHashToken(draft) !== null;
+  const hashVisible = useHashSuggestVisible();
   /** null = 设置未就绪：先不渲染按钮，避免「本该隐藏却又闪一下」。 */
   const [settings, setSettings] = React.useState<PluginSettings | null>(null);
   const [open, setOpen] = React.useState(false);
@@ -133,22 +135,35 @@ export function PromptLibraryButton({
     };
   }, [notice]);
 
+  /**
+   * **用户显式关闭**面板（点按钮/点浮层外/取消/已插入/存为提示词/去管理）：连未提交的变量填窗
+   * 选择一起丢弃。R54：浮层抢屏的那条收起路径走下面信号边沿的 `setOpen(false)`，**不**经过这里，
+   * 故「已点动作、正等回填」的选择不会被静默丢弃。
+   */
   const close = (): void => {
     setOpen(false);
     setPending(null);
   };
 
   /**
-   * R49：草稿**进入**「会触发 `#` 浮层」的状态时收起词库面板——R47 只覆盖了「点词库按钮」这一个
-   * 指针入口，反向入口（输入框仍持焦点时直接敲 `#`、或程序化改草稿）会让两个浮层同屏。
+   * R53：`#` 候选浮层**此刻真实可见**时收起词库面板（R47 只覆盖「点词库按钮」这一个指针入口，
+   * 反向入口——输入框仍持焦点时敲 `#`、或浮层在同一令牌内被改写查询词后重现——会让两浮层同屏）。
    *
-   * 只观察**边沿**（依赖 `hashOpen`，不依赖 `open`）：草稿里本就有 `#令牌` 时点词库按钮
-   * **不得**被立刻收掉，否则按钮看起来坏了（P4 既有行为劣化）。`close` 只调两个稳定的 setState，
-   * 不捕获可变值，故不必进依赖。
+   * 订阅的是浮层自己发布的可见性（取代 R49 的 `hashOpen` 边沿：**一个门而不是两个**），
+   * 且只观察 **false→true 边沿**（effect 依赖该布尔值，同值不重跑）：
+   * - 草稿里本就有 `#令牌` 时点词库按钮：浮层在自己的捕获阶段 pointerdown 里先收起自己 →
+   *   信号 true→**false**（下降沿）→ 面板打开时没有上升沿，**不得**被当场收掉（P4 既有行为）；
+   * - 面板开着、草稿无令牌时敲出 `#`：信号 false→**true**（上升沿）→ 面板收起（R49 的效果保住）；
+   * - 浮层已被收起（令牌仍在）时：信号恒 false，库侧无需关，也不存在上升沿。
+   *
+   * R54：这里**只关面板、不清 pending**——浮层抢屏不是用户放弃变量填窗，清掉会让「已点动作、
+   * 正等回填」的填窗选择静默消失。显式关闭路径（`close()`：点按钮/点浮层外/取消/已插入）才连
+   * `pending` 一起丢弃。
    */
   React.useEffect(() => {
-    if (hashOpen) close();
-  }, [hashOpen]);
+    if (!hashVisible) return;
+    setOpen(false);
+  }, [hashVisible]);
 
   /**
    * 沉淀入口 B 的落库前段（R4：pushCapture 由本组件调用）：选中正文推进 store，再打开管理面板。
