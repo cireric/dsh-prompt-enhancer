@@ -563,7 +563,7 @@ bash "$SKILL/review-package" "$PLAN" "$BASE" "$HEAD" "$WS/review-$BASE..$HEAD.di
 ### 交接
 
 - **P7**：① **首项 = I-2**——其余两对浮层（AI×`#`、AI×词库）仍靠指针边沿；同类路径已对第一对**实测证明可达**，故**先做活体复现**（照 O-1(c) 的 `Shift+Tab` 手法），可达则按 `ui-state` 的 `none|hash|library|ai` 枚举 + claim/release 收口。② 详情页「原文／优化稿」的方向持久化（I-1 的根治；M6 只做到不再用错误标签断言）。③ 技能导出 + 过期徽标。④ **复用** P6 的 `PromptSurfaceHost` 与 `ui-state`，**不要**新建第二个 `shell.overlay` 条目。
-- **P8**：设置页即时生效与两个 `*IconOnly` 语义统一；i18n 键集收口（含死键检查的注释剥离）；其余 deferred minor 按最终评审的分拣表处理。
+- **P8**：设置页即时生效与两个 `*IconOnly` 语义统一；i18n 键集收口（含死键检查的注释剥离）；其余 deferred minor（类别，按需归入 P7/P8）：测试断言强度（`api.test` 不校验返回值、i18n 死键检查的**管线接线**缺永久回归网）· 文案与注释（Tag 400 用量取本地缓存而非宿主权威 `inUse`、`reasonOf` 三处重复、若干注释/行号过期）· 行为细节（各面板 `busy` 用渲染闭包值可同 tick 双发、并发清理把 404 记成失败、`data-sync` 的 throw 未带 `cause`、`pruneOrphanTags` 的 SELECT 不含回收站、`SelectionAddPrompt` 的 `enabled:true` 与滚动期 setState、`previewEvictions` 的 `incoming>1` 为有意保留）· 纯格式项。**取舍类 5 条**已单独立档于规格 §13.10-五。
 
 ### 过程教训（写给后续里程碑）
 
