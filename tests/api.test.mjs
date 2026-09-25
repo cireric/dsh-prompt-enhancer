@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeDispatch } from "./helpers/fake-http.mjs";
 
-const { api, ApiError, AI_TIMEOUT_MS, AI_PROBE_TIMEOUT_MS } = await import("../src/client/utils/api.ts");
+const { api, ApiError, AI_TIMEOUT_MS, AI_PROBE_TIMEOUT_MS, CLEAR_TIMEOUT_MS } = await import(
+  "../src/client/utils/api.ts"
+);
 
 /**
  * D（批一第二条）：本文件被加载那一刻的 `DSH_HOME`。下面那条**真分发**用例会在进程里覆盖它，
@@ -176,6 +178,48 @@ test("listAiProviders：探测请求带未中断的 AbortSignal，且超时常�
   }
 });
 
+// T7-7 的**探测**那一支（此前只有一次性 node 探针 + T10 活体判据，P8 二审 I4 指出它零常驻判据）：
+// DOMException 身上没有「这是探测」这条信息 ⇒ call() 必须把探测超时换成带 probe 标记的 ApiError，
+// 分类器才分得开「探测超时（去查模型配置 / 网络）」与「AI 调用超时（模型太慢）」。零等待，不伪造 15s。
+test("listAiProviders：探测超时 ⇒ 带 probe 标记的 ApiError，分类器给 ai.probeTimeout（不落回 ai.timeout）", async () => {
+  const { aiErrorKey } = await import("../src/client/utils/ai-flow.ts");
+  const s = stubFetch(() => {
+    throw new DOMException("signal timed out", "TimeoutError");
+  });
+  try {
+    await assert.rejects(api.listAiProviders(), (err) => {
+      assert.ok(err instanceof ApiError, "无 probe 标记的 DOMException ⇒ 分类器只能给 ai.timeout（探测支被抹平）");
+      assert.equal(err.probe, true, "probe 标记是分类器唯一的判据（不按 name / 文案猜）");
+      assert.equal(aiErrorKey(err), "ai.probeTimeout");
+      return true;
+    });
+    assert.equal(s.calls.length, 1);
+  } finally {
+    s.restore();
+  }
+});
+
+// P7 §10.4-1 / T7-1：清 per-prompt meta 键的那条路由必须有**有界**超时——一次挂住的
+// `DELETE /meta` 会让 `deletePrompts` 的 `Promise.allSettled` 永不落定（既无 warn 也无 UI 信号）。
+// 零等待判据：请求带未触发的 AbortSignal + 用的是**独立于 AI 调用**的清键常量
+// （变异：删掉 call() 的第 4 实参 ⇒ signal 断言必红）。
+test("deleteMeta：挂未触发的 AbortSignal，超时取独立的 CLEAR_TIMEOUT_MS（不是 AI 调用超时）", async () => {
+  const s = stubFetch(() => jsonRes({ ok: true, data: { key: "k", deleted: true } }));
+  try {
+    await api.deleteMeta("pl:refined-dir:p1");
+    assert.equal(s.calls.length, 1);
+    const { url, init } = s.calls[0];
+    assert.equal(url, "/api/prompt-enhancer/meta/" + encodeURIComponent("pl:refined-dir:p1"));
+    assert.equal(init.method, "DELETE");
+    assert.ok(init.signal instanceof AbortSignal, "无 signal ⇒ 挂住的 DELETE 让收尾永不落定");
+    assert.equal(init.signal.aborted, false);
+    assert.equal(CLEAR_TIMEOUT_MS, 15000, "清键超时 15s（有界）");
+    assert.notEqual(CLEAR_TIMEOUT_MS, AI_TIMEOUT_MS, "不得复用 AI 调用超时（那是真的在等模型）");
+  } finally {
+    s.restore();
+  }
+});
+
 // 非探测路径的超时靠「call() 的 catch 不改形、原样 throw e」这一结构成立：一旦有人为统一错误面把
 // fetch 包进 try/catch 重抛 ApiError，DOMException("TimeoutError") 会被降级成 "ai.fail"。
 // 这条零等待用例把该结构钉死（不伪造 120s 真实超时）。
@@ -183,8 +227,7 @@ test("listAiProviders：探测请求带未中断的 AbortSignal，且超时常�
 // ⚠️ **该不变量按路径成立，不按整个函数成立**（T7-7 / R1 修正表述）：call() 的 catch **只对探测路径**
 // （probe === true，即 GET /ai/providers）特殊处理——那一条把「到点」换成带 probe 标记的 ApiError
 // （ai-flow.ts#aiErrorKey 据此给「探测超时」的专属文案）；其余路径（含本用例的 /ai/polish）仍是 throw e。
-// 故本用例钉的是**非探测**那一支；探测那一支目前**没有**常驻用例（一次性 node 探针 + T10 活体判据，
-// 见 task-7-report.md §T7-7）。
+// 故本用例钉的是**非探测**那一支；探测那一支由**上面那条**常驻用例覆盖（I4 之后两条支路都常驻）。
 test("polishPrompt：超时异常原样穿过 call() 抵达分类器（TimeoutError → ai.timeout）", async () => {
   const { aiErrorKey } = await import("../src/client/utils/ai-flow.ts");
   const s = stubFetch(() => {

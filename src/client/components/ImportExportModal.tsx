@@ -29,7 +29,7 @@ import * as React from "react";
 import type { ImportStats } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import { notifyDataChanged } from "../utils/data-sync.ts";
-import { getSettingsSnapshot } from "../utils/settings-store.ts";
+import { getSettingsSnapshot, isSettingsReady } from "../utils/settings-store.ts";
 import { actions, button, errorDetail, errorText, muted, primaryButton, toolbar } from "../utils/dialog-style.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import {
@@ -221,6 +221,12 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
           const list = await api.listPrompts();
           if (!aliveRef.current) return;
           const settings = getSettingsSnapshot();
+          // P8 二审 I2：上限不可信时**不得**按默认值算超限提示（默认 300 高估 ⇒ 真超限却不提示）。
+          // 抛出即落进本块既有的 catch：`console.warn` + 行内 `manager.transfer.countsFailed`
+          // （可见，复用既有失败通道，不新造一套）；「导入成功」的结局不受影响。
+          if (!isSettingsReady()) {
+            throw new Error("设置尚未就绪，无法确认存储上限");
+          }
           if (list.length > settings.maxPromptCount) {
             setOverflow({ imported: done.total, total: list.length, max: settings.maxPromptCount });
           }

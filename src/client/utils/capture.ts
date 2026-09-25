@@ -3,6 +3,8 @@
  * 四个入口都走这里（R31 把 AI 面板从直连 `api.createPrompt` 收回）。
  *
  * 它负责 §4.4 的**淘汰二次确认（客户端预检）**与落库：
+ *   0. **就绪闸门**：`isSettingsReady()` 为假 ⇒ **抛出**可读错误（失败**关闭**；调用方的既有失败
+ *      分支呈现它），绝不按快照里的默认上限继续——见下面 `createFromCapture` 第 0 条的完整理由；
  *   1. 读现状与上限：`await api.listPrompts()` + `getSettingsSnapshot()`（设置唯一真源，D-P8-2）；
  *   2. `previewEvictions(prompts, maxPromptCount, 1)` → 非空则弹确认（明细 = 将淘汰的标题）；
  *   3. 用户取消 → `{ ok: false, reason: "cancelled" }`：**不创建、不留半成品、不渲染成错误**；
@@ -23,7 +25,7 @@ import { api } from "./api.ts";
 import { requestConfirm } from "./confirm.ts";
 import { notifyDataChanged } from "./data-sync.ts";
 import { previewEvictions } from "./eviction.ts";
-import { getSettingsSnapshot } from "./settings-store.ts";
+import { getSettingsSnapshot, isSettingsReady } from "./settings-store.ts";
 
 /** 沉淀载荷：标题可省（B/C 两个入口只有正文），正文必填。 */
 export interface CaptureInput {
@@ -49,11 +51,28 @@ function fallbackTitle(body: string): string {
 
 /** 创建一条提示词（超限时先二次确认）并广播数据变更。 */
 export async function createFromCapture(input: CaptureInput): Promise<CaptureOutcome> {
+  // 0) **就绪闸门**（P8 二审 I2：修掉失败开放的回归）。快照不可信 ⇒ **抛出**（调用方既有的失败分支
+  //    呈现可读原因），**不得**按快照里的默认上限继续。
+  //
+  //    为什么这是承重的：宿主真实上限（如 20）低于快照默认值（300）时，`previewEvictions` 得到**空**
+  //    受害者 ⇒ 跳过二次确认 ⇒ 宿主 `store.enforceMaxCount` **静默淘汰**，且**不可逆**（被淘汰的行
+  //    不进回收站）。改造前这里读的是**宿主设置路由**（`GET /settings`）——读失败即**抛出**
+  //    （失败**关闭**、可见报错）；改读快照后，快照拿不到真值时会用默认值顶上，于是同一场景从
+  //    「可见报错」退化成「静默数据损失」。
+  //
+  //    就绪面由 `settings-store.ts#isSettingsReady` 提供：有 scope ⇒ 宿主镜像 `status === "ready"`；
+  //    无 scope ⇒ 那次降级读**已成功落地**（失败或仍在途 ⇒ 永远不就绪）。窗口窄（无 scope 部署且
+  //    降级读失败、或有 scope 但镜像首推之前），但后果不可逆，故此处**失败关闭**。
+  //    `getSettingsSnapshot()` 仍照旧调用：它同时是「首次消费」那一次降级读的触发入口。
+  const settings = getSettingsSnapshot();
+  if (!isSettingsReady()) {
+    throw new Error("设置尚未就绪，无法确认存储上限；已中止本次沉淀，以免提示词被宿主静默淘汰");
+  }
+
   // 1) 读现状与上限——宿主没有 dry-run 路由，预检只能在客户端做（规格 §13.9 四）。
   //    上限改读**设置唯一真源**（D-P8-2）：同一个值不再留第二条读路径；命令式读取即此处的正确形状
   //    （它要的是「此刻生效的上限」，不是一份需要跟随重渲染的快照）。
   const prompts = await api.listPrompts();
-  const settings = getSettingsSnapshot();
 
   // 2) 预演「再新增 1 条」的受害者；排序键与 store.enforceMaxCount 同源。
   const victims = previewEvictions(prompts, settings.maxPromptCount, 1);

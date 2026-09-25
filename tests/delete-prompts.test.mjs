@@ -232,6 +232,39 @@ test("⑦ 回执形状不认识（缺键 / 非字符串数组）⇒ 退回入参
   }
 });
 
+// T7-5①（P7 §10.4-5）的**同步**失败面：注入实现若在**同步阶段**抛出，旧写法
+// （`keys.map((key) => deleteMeta(key))`）会让异常当场炸穿整个 `deletePrompts`——一次已经成功的
+// 主删除被变成失败（第 3 条语义）。现在每个调用推迟到一个微任务里发起 ⇒ 同步抛出变成「被拒绝的
+// promise」，由 allSettled 逐键收下（记 failed + warn）。变异：退回同步直调 ⇒ 本用例必红。
+test("O-1：deleteMeta 在**同步阶段**抛出 ⇒ 逐键记 failed，其余键照清，主操作不被反噬", async () => {
+  const events = [];
+  const boom = new Error("宿主同步拒绝：pl:refined-dir:p1");
+  const { out, warns } = await withWarns(() =>
+    deletePrompts({
+      ids: ["p1"],
+      irreversible: true,
+      remove: async () => {
+        events.push("remove");
+        return { removed: 1 };
+      },
+      deleteMeta: (key) => {
+        events.push("meta:" + key);
+        // 第一把键**同步**抛出（不是返回被拒绝的 promise）：这正是旧写法炸穿的地方。
+        if (key === perPromptMetaKeys("p1")[0]) throw boom;
+        return { key, deleted: true };
+      },
+    }),
+  );
+  assert.deepEqual(
+    events,
+    ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1"],
+    "主删除先行；两把键都被发起（一个同步抛出不阻断另一个）",
+  );
+  assert.deepEqual(out, { succeeded: 1, failed: 1 }, "同步抛出记 failed，其余键照清");
+  assert.equal(warns.length, 1, "同步抛出同样必须可见（warn）");
+  assert.match(warns[0], /pl:refined-dir:p1/, "warn 里带出残键名");
+});
+
 // ── 缺省实现真走 DELETE /meta/:key ───────────────────────────────────────────
 
 test("O-1：缺省 deleteMeta 真走 api.deleteMeta（DELETE /meta/<编码后的键>，无请求体）", async () => {

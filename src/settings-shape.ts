@@ -9,6 +9,18 @@
  */
 import { DEFAULT_SETTINGS, type PluginSettings } from "./types.ts";
 
+/**
+ * 设置命名空间（写入 `settings.yaml` 的顶层 key）——**唯一真源**（P8 二审 I3）。
+ *
+ * 宿主 `host/settings.ts` 用它注册 schema，客户端 `client/index.ts` 用它做
+ * `SettingsScopeBinder.bind({ namespace })`。此前两侧各持一份**字面量**：漂移是**静默**的——
+ * 写会落进宿主不认识的命名空间，UI 反而显示写成功、设置完全不生效，且无任何自动化判据。
+ *
+ * 为什么放得住：本模块**零依赖**（只 import `types.ts` 的默认值与类型），客户端 import 它不会
+ * 拉进 `@deepseek-ai/schemastery` 或任何 host 侧代码——这正是 D-P8-1 分出本模块的理由。
+ */
+export const SETTINGS_NAMESPACE = "prompt-enhancer";
+
 /** 13 个字段的规范序（设置页的渲染顺序也读它）。 */
 export const SETTINGS_KEYS = [
   "aiProvider", "aiModel",

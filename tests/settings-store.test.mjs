@@ -167,3 +167,56 @@ test("settings-store：updateSettings 逐字段调 scope.set（一次写 13 键�
   await store.updateSettings({ hashTriggerEnabled: false, panelWidth: 600 });
   assert.deepEqual(f.sets, [["hashTriggerEnabled", false], ["panelWidth", 600]]);
 });
+
+// ── 就绪面（P8 二审 I2）───────────────────────────────────────────────────────
+//
+// 「当前快照是否可信」是命令式消费者（淘汰预检 / 导入后超限提示）按快照行事之前必须问的一句：
+// 有 scope ⇒ 看宿主镜像的 `status`（此前被整个丢掉）；无 scope ⇒ 看那次降级读有没有**成功落地**。
+// 两条无 scope 用例正负成对——「失败开放」的写法在反面那条必红。
+
+/** 假 scope 的 status 可变体：就绪面的唯一判据是 status，不是 value。 */
+function scopedWithStatus(status) {
+  return {
+    getSnapshot: () => ({ status, value: { panelWidth: 640 } }),
+    subscribe: () => () => {},
+    set: () => Promise.resolve(),
+  };
+}
+
+test("settings-store：有 scope ⇒ 就绪看宿主快照的 status（ready 为真；非 ready 为假）", () => {
+  store.setSettingsScope(scopedWithStatus("syncing"));
+  assert.equal(store.isSettingsReady(), false, "镜像未就绪 ⇒ 快照不可信（status 被丢掉正是缺陷形态之一）");
+  store.setSettingsScope(scopedWithStatus("ready"));
+  assert.equal(store.isSettingsReady(), true);
+});
+
+test("settings-store：无 scope + 降级读成功 ⇒ 就绪为真（快照按真实值落地，不是默认值）", async () => {
+  getImpl = () => Promise.resolve({ maxPromptCount: 20 });
+  try {
+    store.setSettingsScope(null); // 显式进入缺失期并触发那一次降级读
+    await tick();
+    assert.equal(store.isSettingsReady(), true, "成功落地 ⇒ 快照可信");
+    assert.equal(store.getSettingsSnapshot().maxPromptCount, 20, "落地的是宿主真值");
+  } finally {
+    getImpl = realGetSettings;
+  }
+});
+
+test("settings-store：无 scope + 降级读失败 ⇒ **永远**不就绪（失败关闭，绝不拿默认值当权威）", async () => {
+  const { seen, restore } = spyWarn();
+  getImpl = () => Promise.reject(new Error("模拟降级读取失败"));
+  try {
+    store.setSettingsScope(null);
+    await tick();
+    assert.equal(store.isSettingsReady(), false);
+    // 再多消费几轮也不得翻转：本期「至多一次」，失败即定论。
+    store.getSettingsSnapshot();
+    store.subscribeSettings(() => {})();
+    await tick();
+    assert.equal(store.isSettingsReady(), false, "失败后反复消费不得把就绪翻转成真");
+    assert.equal(seen.length, 1, "只有跃迁那一条可读 warn");
+  } finally {
+    getImpl = realGetSettings;
+    restore();
+  }
+});

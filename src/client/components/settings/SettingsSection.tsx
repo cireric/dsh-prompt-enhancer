@@ -278,11 +278,14 @@ function AiModelRow({ t, provider, model }: AiModelRowProps): React.ReactElement
     api.listAiProviders().then(
       (value) => { if (alive) setList(value); },
       (err: unknown) => {
+        // P8 二审 m1（硬规则「错误可见」）：**日志先于存活守卫**。探测最长挂 15s，期间设置页被切走是
+        // 常态；从前 `if (!alive) return;` 挡在 warn 之前 ⇒ 这种失败**连一条日志都没有**。
+        // 状态回写仍留在守卫之后（卸载后写 state 没有意义）。
+        console.warn("[prompt-enhancer] AI 可选模型探测失败，设置页的 AI 模型行只保留「自动发现」", err);
         // 卸载后不回写：探测可能要挂满 15s，期间本页可能已被切走（AnimatePresence 之外的现实）。
         if (!alive) return;
         setList([]);
         setProbeError(err instanceof Error ? err.message : String(err));
-        console.warn("[prompt-enhancer] AI 可选模型探测失败，设置页的 AI 模型行只保留「自动发现」", err);
       },
     );
     return () => { alive = false; };

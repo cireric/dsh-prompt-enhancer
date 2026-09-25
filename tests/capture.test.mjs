@@ -17,7 +17,7 @@ const { API_PREFIX, DEFAULT_SETTINGS } = await import("../src/types.ts");
 const { ApiError } = await import("../src/client/utils/api.ts");
 const { createFromCapture } = await import("../src/client/utils/capture.ts");
 const { getConfirmSnapshot, resolveConfirm } = await import("../src/client/utils/confirm.ts");
-const { setSettingsScope } = await import("../src/client/utils/settings-store.ts");
+const { setSettingsScope, isSettingsReady } = await import("../src/client/utils/settings-store.ts");
 const { subscribeDataChanged } = await import("../src/client/utils/data-sync.ts");
 const { previewEvictions } = await import("../src/client/utils/eviction.ts");
 
@@ -37,6 +37,14 @@ function stubFetch(handler) {
 
 function jsonRes(body, status = 200) {
   return { status, ok: status >= 200 && status < 300, json: async () => body };
+}
+
+/** 捕获 console.warn：降级读失败是**被断言的行为**，不是散落噪声。 */
+function spyWarn() {
+  const seen = [];
+  const real = console.warn;
+  console.warn = (...args) => { seen.push(args.map((a) => String(a)).join(" ")); };
+  return { seen, restore: () => { console.warn = real; } };
 }
 
 /** 只数「创建」那一次 POST /prompts（预检用的 GET /prompts 不算）。 */
@@ -421,6 +429,71 @@ test("出口 6（重要-4）：一条 DELETE 永远挂着，保存反馈照样�
     assert.equal(s.calls.filter(isMetaDelete).length, 2, "清键请求照发（不阻塞 ≠ 不做）");
   } finally {
     resolveConfirm(false);
+    s.restore();
+  }
+});
+
+// ── C1（P8 二审 I2）：就绪闸门——失败**关闭**，绝不按默认上限静默继续 ────────────────
+//
+// 缺陷形态（改造后回归出来的「失败开放」）：淘汰预检读 `getSettingsSnapshot()`，快照拿不到真值时
+// 按默认值（`maxPromptCount: 300`）顶上 ⇒ 宿主真实上限更低（如 20）时 `previewEvictions` 得到**空**
+// 受害者 ⇒ 跳过二次确认 ⇒ 宿主 `enforceMaxCount` **静默淘汰**，且不可逆（淘汰者不进回收站）。
+// 改造前是 `await api.getSettings()`：读失败即抛出（失败关闭 + 可见报错）——下面两条正负成对复原
+// 那一性质，负条在「无闸门 / 按默认值继续」的写法下必红。
+
+test("C1 正面：无 scope + 降级读成功 ⇒ isSettingsReady() 为真，预检按**真实上限**弹确认", async () => {
+  const { prompts, settings } = overLimitFixture(); // maxPromptCount: 3、条数 3 ⇒ 再存一条必然超限
+  const created = mk("new", "新的一条");
+  const s = stubFetch(
+    routes({ prompts, settings, create: () => jsonRes({ ok: true, data: { prompt: created, evicted: [prompts[0].id] } }) }),
+  );
+  try {
+    setSettingsScope(null); // 显式进入「无 scope 缺失期」并触发那一次降级读
+    await tick(); // 让它落地
+    assert.equal(isSettingsReady(), true, "降级读成功 ⇒ 快照可信");
+    const pending = createFromCapture({ body: "新正文" });
+    await tick();
+    const confirm = getConfirmSnapshot();
+    assert.ok(confirm !== null, "就绪 + 真实上限 3 ⇒ 必须弹二次确认（按默认 300 会静默跳过）");
+    assert.deepEqual(confirm.detail, ["最久未用"], "受害者按快照里的**真实**上限算出");
+    resolveConfirm(true);
+    const outcome = await raceTimeout(pending, 2000, "确认后必须落地");
+    assert.equal(outcome.ok, true);
+  } finally {
+    resolveConfirm(false);
+    s.restore();
+  }
+});
+
+test("C1 反面（回归钉）：无 scope + 降级读失败 ⇒ 不就绪，createFromCapture 抛出可读错误且**不创建**", async () => {
+  const { prompts, settings } = overLimitFixture();
+  const created = mk("new", "新的一条");
+  const warn = spyWarn();
+  const s = stubFetch((url, init) => {
+    const method = init?.method ?? "GET";
+    if (url === API_PREFIX + "/settings" && method === "GET") {
+      return jsonRes({ ok: false, error: "宿主读取设置失败（模拟）" }, 500);
+    }
+    return routes({ prompts, settings, create: () => jsonRes({ ok: true, data: { prompt: created, evicted: [] } }) })(url, init);
+  });
+  try {
+    setSettingsScope(null);
+    await tick();
+    assert.equal(isSettingsReady(), false, "降级读失败 ⇒ 永远不就绪（本期不重试）");
+    let caught = null;
+    try {
+      await raceTimeout(createFromCapture({ body: "新正文" }), 2000, "不就绪必须立刻抛出，不得挂住");
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught instanceof Error, "不就绪必须抛出（失败关闭），不得静默继续");
+    assert.match(caught.message, /设置尚未就绪/, "错误必须可读——调用方原样呈现 err.message");
+    assert.equal(s.calls.filter(isCreate).length, 0, "一条也不得创建（静默创建正是被修掉的那个缺陷）");
+    assert.equal(getConfirmSnapshot(), null, "不得用「空受害者」跳过确认后继续");
+    assert.equal(warn.seen.length, 1, "降级读失败仍留一条可读 warn（错误可见）");
+    assert.match(warn.seen[0], /降级读取设置失败/);
+  } finally {
+    warn.restore();
     s.restore();
   }
 });

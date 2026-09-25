@@ -21,6 +21,14 @@ let unsubscribeScope: (() => void) | undefined;
  * 故它重新武装——否则该触发点在首次尝试之后就永远是死代码。
  */
 let fallbackAttempted = false;
+/**
+ * 无 scope 时那次降级读是否**已成功落地**（P8 二审 I2：失败开放回归的修复）。
+ *
+ * 语义是「当前快照可信」的无 scope 一半：成功采纳过 ⇒ true；**失败或仍在途 ⇒ 永远 false**
+ * （本缺失期内不再重试，故真假一旦定下就不再变）。有 scope 时本标记不参与判定（权威镜像在场，
+ * 就绪与否由 `getSnapshot().status` 说了算）。
+ */
+let fallbackLanded = false;
 let snapshot: PluginSettings = { ...DEFAULT_SETTINGS };
 const listeners = new Set<() => void>();
 
@@ -49,6 +57,7 @@ function readSettingsFallback(): void {
       // 在途期间拿到了真 scope（权威镜像已接管）⇒ 丢弃这次 HTTP 结果，绝不用它盖住权威值。
       if (scope !== null) return;
       snapshot = normalizeSettings(value);
+      fallbackLanded = true; // 成功后快照才可信（isSettingsReady 的那一半）
       emit();
     },
     (err: unknown) => {
@@ -89,8 +98,10 @@ export function setSettingsScope(next: ClientSettingsScope | null): void {
   if (next !== null) unsubscribeScope = next.subscribe(derive);
   derive();
   if (next === null) {
-    // 服务被运行时撤下 ⇒ 重新武装一次降级读（快照重新取真值）。
+    // 服务被运行时撤下 ⇒ 重新武装一次降级读（快照重新取真值）；就绪标记同时归零——上一期的
+    // 「已落地」不能替这一期担保。
     fallbackAttempted = false;
+    fallbackLanded = false;
     tryFallbackRead();
   }
 }
@@ -99,6 +110,31 @@ export function setSettingsScope(next: ClientSettingsScope | null): void {
 export function getSettingsSnapshot(): PluginSettings {
   tryFallbackRead();
   return { ...snapshot };
+}
+
+/**
+ * **当前快照是否可信**（P8 二审 I2 的就绪面）：命令式消费者（落库前的淘汰预检、导入后的超限提示）
+ * 必须先用它，再决定要不要把快照当成「此刻生效的设置」。
+ *
+ *   · 有宿主 scope ⇒ 宿主快照 `status === "ready"`。`ClientSettingsScope.getSnapshot()` 一向回
+ *     `{ status, value }`，此前 value 被读、status 被丢——丢了 status 就等于把「还没就绪」的
+ *     镜像当成权威值；
+ *   · 无 scope ⇒ 那次**降级读是否已成功落地**。失败（或仍在途）⇒ **永远**不就绪，绝不因为
+ *     快照里恰好是默认值而假装可信。
+ *
+ * 为什么必须有这一面：淘汰预检此前读到的若是默认值（`maxPromptCount: 300`）而宿主真实上限更低
+ * （如 20），`previewEvictions` 会得到空受害者 ⇒ **跳过二次确认** ⇒ 宿主静默淘汰，且不可逆。
+ * 改造前那条**宿主设置路由**（`GET /settings`）读失败即抛出（**失败关闭**、可见报错），改造后必须恢复同一
+ * 性质——故消费者在不就绪时**抛出**，而不是按默认上限继续。
+ *
+ * **只服务命令式消费者**：渲染路径**不得**引入「未就绪 null 态」（本里程碑明确移除的设计）。
+ *
+ * 本函数**不**触发降级读：那一次读由「首次消费」（`getSettingsSnapshot` / `subscribeSettings` /
+ * `updateSettings`）触发，否则一个纯粹的就绪查询会变成 I/O 副作用。
+ */
+export function isSettingsReady(): boolean {
+  if (scope !== null) return scope.getSnapshot().status === "ready";
+  return fallbackLanded;
 }
 
 /** 订阅快照替换（返回退订函数；重复退订安全）。**首次消费**即触发那一次降级读。 */

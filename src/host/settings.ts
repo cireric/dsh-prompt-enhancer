@@ -12,8 +12,12 @@ import z from "@deepseek-ai/schemastery";
 import { normalizeSettings } from "../settings-shape.ts";
 import { DEFAULT_SETTINGS, type PluginSettings } from "../types.ts";
 
-/** 设置命名空间（写入 `settings.yaml` 的顶层 key）。 */
-export const SETTINGS_NAMESPACE = "prompt-enhancer";
+/**
+ * 设置命名空间（写入 `settings.yaml` 的顶层 key）——**转发** `../settings-shape.ts` 的唯一真源
+ * （P8 二审 I3），本文件不再持有第二份字面量：它与客户端 `client/index.ts` 那个绑定是**同一个**，
+ * 谁改都一起改。之所以转发而不是让下游各自 import：既有消费点 `src/index.ts` 的 import 面不变。
+ */
+export { SETTINGS_NAMESPACE } from "../settings-shape.ts";
 
 /** 宿主 `SettingsScope` 中我们真正用到的那一部分。 */
 export interface SettingsScopeLike {

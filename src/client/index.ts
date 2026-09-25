@@ -43,14 +43,15 @@ import { setUiConversation, type UiConversationService } from "./utils/conversat
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
 import { setSettingsScope } from "./utils/settings-store.ts";
 import { setDirectoryCapability } from "./utils/workspace-dir.ts";
-
 /**
- * 设置命名空间（与宿主 `src/host/settings.ts#SETTINGS_NAMESPACE` 同值）。
+ * 设置命名空间：**取零依赖共用模块的导出**（P8 二审 I3），不再在此重述字面量。
  *
- * 此处**重述而非 import**：`host/settings.ts` 拉 `@deepseek-ai/schemastery` 且属 host 侧，
- * 引进 client bundle 会跨 host/client 边界（与 api.ts 里「响应形状在客户端重述」同一纪律）。
+ * 「不 import `host/settings.ts`（它会拉 `@deepseek-ai/schemastery`、把 host 侧代码带进 client
+ * bundle）」这条理由对 `../settings-shape.ts` **不成立**——那正是 D-P8-1 建出的零依赖共用模块，
+ * 本侧（`utils/settings-store.ts`）与宿主均已在 import。两份字面量的漂移是**静默**的：写落进宿主
+ * 不认识的命名空间，UI 反而显示写成功、设置完全不生效。
  */
-const SETTINGS_NAMESPACE = "prompt-enhancer";
+import { SETTINGS_NAMESPACE } from "../settings-shape.ts";
 
 declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface LocaleNamespaceMap {
