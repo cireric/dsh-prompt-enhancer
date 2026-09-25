@@ -91,11 +91,13 @@
 
 | TBD | 裁定 |
 | --- | ---- |
-| P7-1 | 待定 |
-| P7-2 | 待定 |
-| P7-3 | 待定 |
-| P7-4 | 待定 |
-| P7-5 | 待定 |
+| P7-1 | **(a)** `ui-state` 加 `none|x|hash|library|ai` 的共享 claim（`claimOverlay`/`releaseOverlay`/`useOverlayClaim`），三处渲染门与 `aria-expanded` 统一读它 |
+| P7-2 | **(a)** 每提示词一个 `meta` 键（`pl:refined-dir:<id>`），客户端在每次切换后写入 |
+| P7-3 | **(a)** 严格按规格 §7.6：管理面板工具栏按钮 → 多选批量导出弹窗 |
+| P7-4 | **(a)** 手动「一键重新导出」（复用同 `skillName` 覆盖同目录，不新增目录） |
+| P7-5 | **(a)** 并入两条：i18n 死键检查的**管线回归网** + `TagManagePanel` 的 400 分支取宿主权威 `inUse` |
+
+**用户原话：** 「全按建议执行（推荐）」（2026-09-24）。
 
 ---
 
