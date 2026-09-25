@@ -142,6 +142,8 @@ export function ContextRecommendations({
     // `PromptLibraryButton` 那一处的**既有形状**：一行 `position: relative` 的容器 + 一枚
     // `bottom: calc(100% + 6px)` 的绝对定位包装 ⇒ 卡片**浮在本行之上**（本行就是 composer 上方那一条），
     // 而不是内联挤在这条 dock 行里。行内没有流内内容 ⇒ 行不占高 ⇒ composer 不发生位移。
+    // 本行与推荐条**共用横向几何**（`CARD_ROW`）⇒ `left: 0` 落在**卡片**左缘而不是整栈左缘
+    // （T10a 活体实测的 139px 偏差正是缺了那三条横向几何）。
     // 不照搬 `HashSuggestOverlay` 的 `bottom: 8 / left: 8`：那是宿主零高 `.overlayAnchor` 内的相对坐标，
     // 本组件没有那个容器。不新增座位、不新增依赖、不另造第三套定位方案。
     return (
@@ -189,8 +191,40 @@ export function ContextRecommendations({
   );
 }
 
-/** 填窗打开时的行容器：只提供定位上下文（行内没有流内内容 ⇒ 行不占高，composer 不位移）。 */
-const ROW_ANCHOR: React.CSSProperties = { position: "relative" };
+/**
+ * 推荐条与填窗锚点行**共用**的横向几何：与 composer 卡片同宽同左缘（宿主变量 + 居中，兜底 780px
+ * 与上游一致）。**只此一份**——R1 时锚点行只带了 `position: "relative"`、把这三条留在了 `BAR` 里，
+ * 结果 T10a 活体实测填窗左缘落在**栈**左缘（x=280）而不是卡片左缘（x=419）：差 139px 正是居中余量的
+ * 一半。这与 `overlay-claim.ts` 的教训同型——同一个判定的第二份实现迟早与第一份分叉。
+ */
+const CARD_ROW: React.CSSProperties = {
+  boxSizing: "border-box",
+  width: "100%",
+  maxWidth: "var(--dsh-composer-card-max-width, 780px)",
+  margin: "0 auto",
+};
+
+/** 整行容器（推荐条本体）：共用横向几何 + 行内布局，故它「贴着输入框上方」而不是整行拉满。 */
+const BAR: React.CSSProperties = {
+  ...CARD_ROW,
+  display: "flex",
+  alignItems: "center",
+  flexWrap: "wrap",
+  gap: 6,
+  padding: "0 2px 6px",
+  fontSize: 12,
+  color: TOKEN.muted,
+};
+
+/**
+ * 填窗打开时的行容器：**同一份横向几何**（`CARD_ROW`）+ 定位上下文。
+ *
+ * 为什么横向几何必须共用：`DIALOG_ANCHOR` 的 `left: 0` 是相对**本行**的 padding box 定位的，
+ * 本行只有与卡片同宽同左缘，`left: 0` 才落在**卡片**左缘；只带 `position: "relative"` 时本行是
+ * 普通块级 div、被拉成整栈宽 ⇒ 填窗落在**栈**左缘（T10a 的 139px 偏差）。
+ * 行内没有流内内容 ⇒ 行不占高、composer 不位移。
+ */
+const ROW_ANCHOR: React.CSSProperties = { ...CARD_ROW, position: "relative" };
 
 /**
  * 填窗浮层落点：贴本行上沿。值与语义照 `PromptLibraryButton` 的 ANCHOR（「只负责定位，卡片外观由
@@ -202,24 +236,6 @@ const DIALOG_ANCHOR: React.CSSProperties = {
   left: 0,
   zIndex: 30,
   maxWidth: "calc(100vw - 24px)",
-};
-
-/**
- * 整行容器：与 composer 卡片同宽同左缘（宿主变量 `--dsh-composer-card-max-width`，
- * 兜底 780px 与上游一致），故它看起来「贴着输入框上方」而不是整行拉满。
- */
-const BAR: React.CSSProperties = {
-  boxSizing: "border-box",
-  display: "flex",
-  alignItems: "center",
-  flexWrap: "wrap",
-  gap: 6,
-  width: "100%",
-  maxWidth: "var(--dsh-composer-card-max-width, 780px)",
-  margin: "0 auto",
-  padding: "0 2px 6px",
-  fontSize: 12,
-  color: TOKEN.muted,
 };
 
 /** 行首标签（纯文字，不引图标依赖）。 */
