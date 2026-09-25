@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { makeDispatch } from "./helpers/fake-http.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "dpe-meta-"));
 process.env.DSH_HOME = home; // ← 必须在 import store / routes / paths 之前
@@ -27,39 +28,8 @@ const { API_PREFIX } = await import("../src/types.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-/** 假 IncomingMessage：`readBody` 用 `for await` 读它，故实现 async 迭代器。 */
-function fakeReq(method, url, body) {
-  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body), "utf8")];
-  return {
-    method,
-    url,
-    async *[Symbol.asyncIterator]() {
-      for (const chunk of chunks) yield chunk;
-    },
-  };
-}
-
-/** 假 ServerResponse：只实现分发层真正用到的三件事。 */
-function fakeRes() {
-  return {
-    statusCode: 0,
-    headers: {},
-    body: "",
-    setHeader(name, value) {
-      this.headers[name] = value;
-    },
-    end(chunk) {
-      this.body = chunk;
-    },
-  };
-}
-
-/** 真跑一次分发（路径相对 API_PREFIX），返回 `{ status, envelope }`。 */
-async function call(method, path, body) {
-  const res = fakeRes();
-  await makeRoutes()[0].handler(fakeReq(method, API_PREFIX + path, body), res);
-  return { status: res.statusCode, envelope: JSON.parse(res.body) };
-}
+/** 真跑一次分发（路径相对 API_PREFIX），返回 `{ status, envelope }`；假 req/res 在 tests/helpers/fake-http.mjs。 */
+const call = makeDispatch({ makeRoutes, API_PREFIX });
 
 const metaPath = (key) => "/meta/" + encodeURIComponent(key);
 

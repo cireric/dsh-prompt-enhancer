@@ -30,7 +30,8 @@ import { ApiError, api, type SkillDescriptorPayload, type SkillExportReceipt } f
  *
  *  · **不再启动新条目**（要求 1）——已经开始的那条让它跑完，不硬断 HTTP；
  *  · **不再弹出同名冲突确认**（要求 3）——离开后确认框没有上下文来源，用户不知道它在问什么；
- *  · **已完成的条目照旧回调**（要求 2）——广播不能因为组件没了就被跳过（验收 16 的徽标依赖它）。
+ *  · **已完成的条目照旧回调**（要求 2 的承重点）——「这一次成功」的事实不能因为组件没了就被跳过
+ *    （验收 16 的徽标依赖它；广播的**粒度**见 `ExportEachInput.onExported` 的注释）。
  *
  * 为什么不直接 `AbortSignal`：条目的 HTTP 是 `api.*` 内部的信封调用，且「取消」在这里的语义是
  * 「别再开新的」而不是「掐断写盘」——写盘是宿主的**副作用**，中途掐断既拦不住已发出的请求，
@@ -276,12 +277,17 @@ export interface ExportEachInput {
   /** 取消令牌：置位后**不再启动新条目**、也不再弹同名冲突确认（见 `SkillRun`）。 */
   run?: SkillRun;
   /**
-   * 每条**成功落盘之后**立即回调（真实现 = `notifyDataChanged()`）。
+   * 每条**成功落盘之后**立即回调（当前真实现 = 技能页的 `onExported`：**就地更新本页那一条**）。
    *
-   * 为什么做成回调而不是「批次结束后由调用方统一广播」：用户可能在批次跑到一半时离开技能页
-   * （组件卸载），若广播挂在批次末尾的组件回调里，就会随组件一起消失——宿主的 `skillName` /
-   * `skillExportedAt` 已写库，而列表页不重拉 ⇒ **验收 16 的徽标不出现**（「导出成功但什么都没发生」）。
-   * 回调在**每条成功的那一刻**触发，因此与组件在世与否无关（要求 2）。
+   * 为什么是**回调**而不是「批次结束后由调用方统一处理」：用户可能在批次跑到一半时离开技能页
+   * （组件卸载），若把「让宿主已回写的 `skillName` / `skillExportedAt` 变得可见」整个挂到批次末尾的
+   * **组件**回调里，它就会随组件一起消失 ⇒ **验收 16 的徽标不出现**（「导出成功但什么都没发生」）。
+   * 故「这一次成功」的**事实**必须在成功那一刻交出去（本回调与组件在世与否无关）。
+   *
+   * ⚠️ **拿到这个事实之后做什么，由调用方决定（T7-4 / P7 §10.4-4）**：技能页在这里做的是
+   * **就地更新该条**（只换本地列表里那一条的名字，不再「每条成功都重拉整库」）；整库重拉与跨组件
+   * 广播退到**批末一次**——广播仍写在编排的异步收尾（`runExport` 的 `finally`）里，与组件在世与否无关。
+   * ⇒ 「批末一次广播」是**刻意收窄的粒度**，不是违约。
    */
   onExported?: (outcome: ExportedOutcome) => void;
   /**
@@ -310,11 +316,12 @@ export interface ExportEachInput {
  *     确认后重试仍失败 → failed（**不再二次询问**，否则用户确认一次就够，不该陷入循环）。
  *  3. **目标目录只取宿主回执**：`receipt.path` 缺席时显式报 `manager.skill.pathMissing`——
  *     客户端不知道 `DSH_HOME`，**不得**自己拼路径（这条同时挡住「假成功」）。
- *  4. **离开即停 + 完成即广播**（R-P7-X 修复轮 1）：`run` 置位后不启动新条目、不再弹确认；
- *     而每条**成功落盘**都立刻走 `onExported`（即使这一刻组件已经卸载）——见 `ExportEachInput`。
+ *  4. **离开即停 + 完成即交事实**（R-P7-X 修复轮 1；T7-4 改名——「完成即广播」已不成立）：
+ *     `run` 置位后不启动新条目、不再弹确认；而每条**成功落盘**都立刻走 `onExported`
+ *     （即使这一刻组件已经卸载）——见 `ExportEachInput`。
  *  5. **成功即记住 descriptor**（R-P7-AA 修复轮 1）：`saveDescriptor`（缺省 = `persistDescriptor`）把
- *     这一次用过的 descriptor 落 meta。广播之后才写：广播是「导出成功」的可见信号，不得被一次库写拖慢；
- *     而 meta 只是重导时的提质信息，写入失败只 warn、不改结局。
+ *     这一次用过的 descriptor 落 meta。**回调之后**才写：那次回调是「导出成功」的可见信号，不得被一次
+ *     库写拖慢；而 meta 只是重导时的提质信息，写入失败只 warn、不改结局。
  */
 export async function exportEach(input: ExportEachInput): Promise<ExportOutcome[]> {
   const outcomes: ExportOutcome[] = [];
@@ -376,14 +383,15 @@ async function exportOne(prompt: SkillCandidate, input: ExportEachInput): Promis
   // 名字取**宿主回执**（它才是最终判定者），而不是预检算出来的那个。
   const exported: ExportedOutcome = { status: "exported", id: prompt.id, title: prompt.title, name: receipt.name, path: receipt.path };
   /**
-   * 要求 2：**完成即广播**。宿主此刻已经把 `skillName` / `skillExportedAt` 写库，
-   * 数据变更必须让消费者知道——否则列表页不重拉、验收 16 的徽标不出现（「导出成功但什么都没发生」）。
-   * 回调里不得有任何依赖组件在世的东西（真实现只是 `notifyDataChanged()`）。
+   * 要求 2：**完成即交事实**（T7-4 起不再等于「完成即广播」）。宿主此刻已经把 `skillName` /
+   * `skillExportedAt` 写库，这一次成功的**事实**必须立刻交出去——否则消费者可能永远不知道
+   * （「导出成功但什么都没发生」）。真实现（技能页）在这一刻**就地更新该条**，跨组件广播归
+   * **批末一次**（`runExport` 的 `finally`）；回调里不得有任何依赖组件在世的东西。
    */
   input.onExported?.(exported);
   /**
    * R-P7-AA：把这一次**用过的** descriptor 落 meta，重导才拿得回来（否则 whenToUse 消失、
-   * description 降级成兜底链）。放在广播**之后**：广播是「导出成功」的可见信号，不得被一次库写
+   * description 降级成兜底链）。放在**回调之后**：那次回调是「导出成功」的可见信号，不得被一次库写
    * 拖后腿；而写入失败由默认实现内部兜住（只 warn），绝不改变本条已经尘埃落定的结局。
    */
   if (descriptor) {

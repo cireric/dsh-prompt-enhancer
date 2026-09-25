@@ -92,7 +92,9 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
    * 点遮罩关闭都换掉本页 ⇒ 卸载），此刻必须 `cancel()`：
    *  · 要求 1：后续条目**不再启动**（在途那条不硬断——写盘是宿主的副作用，见 `SkillRun` 注释）；
    *  · 要求 3：已经发出的 409 **不再弹**无上下文的确认框；
-   *  · 要求 2 不受影响：**已完成**的条目各自在成功那一刻广播（见下面的 `onExported`）。
+   *  · 要求 2 不受影响（T7-4 改的是广播的**粒度**，不是这条性质）：**已完成**的条目在成功那一刻
+   *    就地更新本页那一条（见下面的 `onExported`），宿主已回写的名字仍由 `runExport` 的 `finally`
+   *    **批末广播一次**——那次广播与组件在世与否无关，故用户中途离开也不会让徽标缺席。
    */
   const runRef = React.useRef<SkillRun | null>(null);
 

@@ -201,9 +201,15 @@ test("listAiProviders：探测请求带未中断的 AbortSignal，且超时常�
   }
 });
 
-// 超时靠「call() 不包裹 fetch」这一结构成立：一旦有人为统一错误面把 fetch 包进
-// try/catch 重抛 ApiError，DOMException("TimeoutError") 会被降级成 "ai.fail"。
+// 非探测路径的超时靠「call() 的 catch 不改形、原样 throw e」这一结构成立：一旦有人为统一错误面把
+// fetch 包进 try/catch 重抛 ApiError，DOMException("TimeoutError") 会被降级成 "ai.fail"。
 // 这条零等待用例把该结构钉死（不伪造 120s 真实超时）。
+//
+// ⚠️ **该不变量按路径成立，不按整个函数成立**（T7-7 / R1 修正表述）：call() 的 catch **只对探测路径**
+// （probe === true，即 GET /ai/providers）特殊处理——那一条把「到点」换成带 probe 标记的 ApiError
+// （ai-flow.ts#aiErrorKey 据此给「探测超时」的专属文案）；其余路径（含本用例的 /ai/polish）仍是 throw e。
+// 故本用例钉的是**非探测**那一支；探测那一支目前**没有**常驻用例（一次性 node 探针 + T10 活体判据，
+// 见 task-7-report.md §T7-7）。
 test("polishPrompt：超时异常原样穿过 call() 抵达分类器（TimeoutError → ai.timeout）", async () => {
   const { aiErrorKey } = await import("../src/client/utils/ai-flow.ts");
   const s = stubFetch(() => {

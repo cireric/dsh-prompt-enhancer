@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { makeDispatch } from "./helpers/fake-http.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "dpe-skill-route-"));
 process.env.DSH_HOME = home; // ← 必须在 import store / routes / paths 之前
@@ -30,37 +31,11 @@ const { API_PREFIX } = await import("../src/types.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-/** 假 IncomingMessage / ServerResponse（同 tests/meta-delete.test.mjs：够分发层用即可）。 */
-function fakeReq(method, url, body) {
-  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body), "utf8")];
-  return {
-    method,
-    url,
-    async *[Symbol.asyncIterator]() {
-      for (const chunk of chunks) yield chunk;
-    },
-  };
-}
+/** 真跑一次分发的调用器（假 req/res 在 tests/helpers/fake-http.mjs）。 */
+const dispatch = makeDispatch({ makeRoutes, API_PREFIX });
 
-function fakeRes() {
-  return {
-    statusCode: 0,
-    headers: {},
-    body: "",
-    setHeader(name, value) {
-      this.headers[name] = value;
-    },
-    end(chunk) {
-      this.body = chunk;
-    },
-  };
-}
-
-async function post(path, body) {
-  const res = fakeRes();
-  await makeRoutes()[0].handler(fakeReq("POST", API_PREFIX + path, body), res);
-  return { status: res.statusCode, envelope: JSON.parse(res.body) };
-}
+/** 真跑一次 POST（路径相对 API_PREFIX）。 */
+const post = (path, body) => dispatch("POST", path, body);
 
 /** 建一条**已导出**的提示词（skillName = 目录名身份）。 */
 function exportedPrompt(title, skillName) {

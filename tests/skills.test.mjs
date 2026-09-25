@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
+import { makeDispatch } from "./helpers/fake-http.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "dpe-skills-"));
 process.env.DSH_HOME = home;
@@ -216,38 +217,11 @@ test("isSkillStale：导出后改动才算过期；从未导出不算", () => {
 //
 // **变异靶**：把归属查询退回单个 `find` ⇒ 第二次导出必红（409）。
 
-/** 假 IncomingMessage（同 tests/skill-export-route.test.mjs：够分发层用即可）。 */
-function fakeReq(method, url, body) {
-  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body), "utf8")];
-  return {
-    method,
-    url,
-    async *[Symbol.asyncIterator]() {
-      for (const chunk of chunks) yield chunk;
-    },
-  };
-}
-
-function fakeRes() {
-  return {
-    statusCode: 0,
-    headers: {},
-    body: "",
-    setHeader(name, value) {
-      this.headers[name] = value;
-    },
-    end(chunk) {
-      this.body = chunk;
-    },
-  };
-}
+/** 真跑一次分发的调用器（假 req/res 在 tests/helpers/fake-http.mjs）。 */
+const dispatch = makeDispatch({ makeRoutes, API_PREFIX });
 
 /** 真的走一遍 POST /skills/export 的分发（单条 prefix 路由）。 */
-async function postSkillExport(body) {
-  const res = fakeRes();
-  await makeRoutes()[0].handler(fakeReq("POST", API_PREFIX + "/skills/export", body), res);
-  return { status: res.statusCode, envelope: JSON.parse(res.body) };
-}
+const postSkillExport = (body) => dispatch("POST", "/skills/export", body);
 
 test("T7-2：两条提示词同名（目录属于本插件）⇒ 各自导出都不 409，且写在同一个目录", async () => {
   const NAME = "dup-owner";
