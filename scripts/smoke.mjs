@@ -24,6 +24,8 @@ const EXPECTED_SLOTS = [
   // P6 T2 追加的两个 root 座位：弹窗宿主（root 作用域 → 无会话也能开面板）与左栏入口。
   ["shell.overlay", "prompt-enhancer", 100],
   ["sidebar.footer.action", "prompt-enhancer", 100],
+  // P8 T3 追加：composer 上方的上下文推荐条。order 是 10，但**注册在最后**——本账本是注册顺序。
+  ["conversation.input.dock", "prompt-enhancer-recommend", 10],
 ];
 
 let failures = 0;
@@ -177,19 +179,21 @@ if (clientSrc === null) {
           if (unregistered.length > 0) fail("有 inject 未配对到任何 register：" + JSON.stringify(unregistered));
           else if (injects.length > 0) ok("每条 inject 的座位名都有对应 register");
 
-          // 3c) 目录能力与设置真源走**条件注入**（P6 裁决 R2 / P8 T1 / 硬约束「inject 导出数组不扩张」）：
-          //     根 ctx 的 inject 调用逐条记录在此，**顺序即账本顺序**。任务 3 会把 ["uiConversation"]
-          //     插在 ["uiWorkspace"] 与 ["settingsScope"] 之间（P8 计划 T1 步骤 13 定的段序）。
-          //     假 scope 没有 uiWorkspace / settingsScope，故这条同时覆盖「服务缺席时安全降级」的路径。
+          // 3c) 目录能力、聊天快照与设置真源走**条件注入**（P6 裁决 R2 / P8 T1 / P8 T3 /
+          //     硬约束「inject 导出数组不扩张」）：根 ctx 的 inject 调用逐条记录在此，**顺序即账本顺序**。
+          //     T3 起 ["uiConversation"] 插在 ["uiWorkspace"] 与 ["settingsScope"] 之间
+          //     （P8 计划 T1 步骤 13 定的段序）。
+          //     假 scope 没有 uiWorkspace / uiConversation / settingsScope，故这条同时覆盖
+          //     「服务缺席时安全降级」的路径。
           const injectDeps = records.filter((rec) => rec[0] === "injectDeps").map((rec) => rec[1]);
-          const EXPECTED_INJECT_DEPS = [["slots"], ["uiWorkspace"], ["settingsScope"]];
+          const EXPECTED_INJECT_DEPS = [["slots"], ["uiWorkspace"], ["uiConversation"], ["settingsScope"]];
           if (!same(injectDeps, EXPECTED_INJECT_DEPS)) {
             fail(
               "ctx.inject 依赖记录不符（期望按调用顺序）\n" +
                 "      期望 " + JSON.stringify(EXPECTED_INJECT_DEPS) + "\n" +
                 "      实为 " + JSON.stringify(injectDeps),
             );
-          } else ok('ctx.inject 记录 deep-equal [["slots"],["uiWorkspace"],["settingsScope"]]（导出数组仍为 ["slots","locale"]）');
+          } else ok('ctx.inject 记录 deep-equal [["slots"],["uiWorkspace"],["uiConversation"],["settingsScope"]]（导出数组仍为 ["slots","locale"]）');
 
           // 4) 字典注册恰好 1 次，且 zh / en 键集相等且非空
           const locale = records.filter((rec) => rec[0] === "locale");

@@ -36,6 +36,7 @@ import {
   shouldShowSuggest,
 } from "../utils/hash-token.ts";
 import { promptSummary } from "../utils/insert.ts";
+import { useSettings } from "../utils/settings-store.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 import {
@@ -57,6 +58,11 @@ export function HashSuggestOverlay({
   inputActions,
 }: HashSuggestOverlayProps): React.ReactElement | null {
   const draft = useInput((s) => s.draft);
+  /**
+   * 设置改读**订阅式** store（P8 T1 的唯一真源）：宿主 scope 每次已提交变更都推一次快照 ⇒ 关掉
+   * `#` 触发开关时本组件下一次渲染就读到新值（验收 12 的「不刷新页面即时生效」）。
+   */
+  const settings = useSettings();
   const token = readHashToken(draft);
   const open = token !== null;
   /** 令牌身份（start + 查询词）：用它记住「这一次打开被点浮层外部关掉了」。 */
@@ -72,8 +78,18 @@ export function HashSuggestOverlay({
    * 浮层**自己想不想在场**（R47/R48 的判定）：令牌在 **且** 这个令牌没被「点浮层外部」收起过。
    * 它与下面两件事的关系是 T1 定下的：① 它是 P6 的**可见性信号**（R53）的输入；② 它同时是**抢屏**
    * （claim）的输入——可见即抢（见下面的 claim 接线）。
+   *
+   * **P8 T3（TBD-P8-3 选 (a)）：`#` 触发开关并进渲染门。** 关闭 ⇒ 本面**根本不成立**：同一个
+   * `visible` 既喂 R53 的可见性信号（词库按钮的非指针闸门读它），又喂 claim 的两条守卫
+   * （`canTakeHash` / `canRetakeHash`）与渲染门 `onScreen`，故开关写在这里——关掉那一刻
+   * `visible` 转假 ⇒ 在屏浮层**立刻收起**、寄存器与信号一并退场，**没有新增 effect / effect cleanup**。
+   *
+   * 为什么不只加在 `onScreen` 上（渲染门字面）：那样 `visible` 仍为真 ⇒ A 段照抢 `hash`、R53 照发
+   * true，而浮层什么都不渲染 ⇒ 寄存器停在 `hash`，且词库按钮取屏后 B 段会把它重取回去
+   * （`canRetakeHash(true, "library") === true`）⇒ **词库面板再也打不开**——P7 反复修过的静默形态。
+   * 默认值 true 时 `true && x === x`，与接线前**逐字同值**。
    */
-  const visible = shouldShowSuggest({ open, tokenKey, dismissedKey });
+  const visible = settings.hashTriggerEnabled && shouldShowSuggest({ open, tokenKey, dismissedKey });
   /** 共享 claim（T1 的接线）：`claimed` 是**当前占屏的那个面**，与另外两面读同一帧的同一个值。 */
   const claimed = useOverlayClaim();
   /**

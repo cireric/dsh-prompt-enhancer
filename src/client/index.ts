@@ -5,18 +5,20 @@
  *   window.__ModuleLoader__.load({ id, factory: (require) => {...} })
  * 模块 id 由 scripts/build.mjs 从 package.json.name 派生，不得硬编码。
  *
- * P4 起在此注册插槽（规格 §7.1）；至今落下五个座位——
+ * P4 起在此注册插槽（规格 §7.1）；至今落下六个座位——
  *   conversation.input.left（词库按钮，order 10）
  *   conversation.input.overlay（`#` 候选浮层，order 20）
  *   conversation.input.left（AI 优化按钮，order 11）
  *   shell.overlay（管理面板弹窗宿主，order 100）—— P6
  *   sidebar.footer.action（左侧下方入口，order 100）—— P6
- * 其余两个座位（recommend / settings.section）按路线图属 P7/P8。i18n 字典随本 fiber 注册，卸载即撤。
+ *   conversation.input.dock（上下文推荐条，order 10）—— P8 T3
+ * 余下一个座位（settings.section）按路线图属 P8 后续任务。i18n 字典随本 fiber 注册，卸载即撤。
  * 注册顺序即产物内注册顺序，也是 scripts/smoke.mjs 行为断言的账本顺序。
  * P6 追加：目录选择能力（ctx.uiWorkspace）经**条件注入**持有，inject 导出数组不扩张。
- * P8 T1 追加：设置唯一真源（ctx.settingsScope）同走条件注入——段序固定为
- *   ["slots"] → ["uiWorkspace"] → ["settingsScope"]（smoke 按此顺序断言；任务 3 会把
- *   ["uiConversation"] 插在 uiWorkspace 与 settingsScope 之间）。
+ * P8 T1/T3 追加：设置唯一真源（ctx.settingsScope）与聊天快照（ctx.uiConversation）同走条件注入
+ * ——段序固定为
+ *   ["slots"] → ["uiWorkspace"] → ["uiConversation"] → ["settingsScope"]
+ *   （smoke 按此顺序断言；T3 的 ["uiConversation"] 插在 uiWorkspace 与 settingsScope 之间）。
  */
 
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
@@ -30,10 +32,12 @@ import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 // ctx.settingsScope 的 Context 增强与服务类型（设置命名空间绑定的入口）
 import type { SettingsScopeBinder } from "@deepseek-ai/dsh-client-ui-settings/client";
 import { AIPolishButton } from "./components/AIPolishButton.tsx";
+import { ContextRecommendations } from "./components/ContextRecommendations.tsx";
 import { HashSuggestOverlay } from "./components/HashSuggestOverlay.tsx";
 import { PromptLibraryButton } from "./components/PromptLibraryButton.tsx";
 import { PromptSurfaceHost } from "./components/PromptSurfaceHost.tsx";
 import { SidebarPromptEntry } from "./components/SidebarPromptEntry.tsx";
+import { setUiConversation, type UiConversationService } from "./utils/conversation-targets.ts";
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
 import { setSettingsScope } from "./utils/settings-store.ts";
 import { setDirectoryCapability } from "./utils/workspace-dir.ts";
@@ -91,6 +95,14 @@ export function apply(ctx: ClientContext): void {
         SidebarPromptEntry,
       ),
     );
+    // 上下文推荐条（P8 T3 / 验收 11）：composer 卡片上方的整行 dock（list / session / InputZone）。
+    // **必须排在最后**：注册顺序即 scripts/smoke.mjs 的 EXPECTED_SLOTS 账本顺序，挪位即红。
+    scope.slots.inject("conversation.input.dock", () =>
+      scope.slots.register(
+        { name: "conversation.input.dock", id: "prompt-enhancer-recommend", order: 10, locale: NS },
+        ContextRecommendations,
+      ),
+    );
   });
 
   // 目录选择能力走**条件注入**（P6-7 / R2）：inject 导出数组保持 ["slots","locale"] 不扩张。
@@ -99,6 +111,14 @@ export function apply(ctx: ClientContext): void {
   ctx.inject(["uiWorkspace"], (scope: ClientContext) => {
     setDirectoryCapability(scope.uiWorkspace ?? null);
     return () => setDirectoryCapability(null);
+  });
+
+  // 聊天快照（P8 T3 / 规格 §7.1：conversation-targets.ts 是读「最近聊天」的唯一活数据源，**必需**）。
+  // 服务缺席 ⇒ 推荐条退化为「只用当前草稿」，不崩（TBD-P8-4 的降级）。
+  // **段序固定**：本段在 uiWorkspace 与 settingsScope **之间**（smoke 的 injectDeps 账本按调用顺序断言）。
+  ctx.inject(["uiConversation"], (scope: ClientContext) => {
+    setUiConversation((scope as unknown as { uiConversation?: UiConversationService }).uiConversation ?? null);
+    return () => setUiConversation(null);
   });
 
   ctx.effect(() => {

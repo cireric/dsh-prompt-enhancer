@@ -12,6 +12,8 @@ export const zh = {
   "action.send": "插入并发送",
   "hash.title": "选择提示词",
   "hash.empty": "没有匹配的提示词",
+  // 上下文推荐条（P8 T3 / 验收 11）：行首标签，同时用作 role="group" 的无障碍名。
+  "recommend.title": "推荐",
   "vars.title": "填充模板变量",
   "vars.hint": "{{变量}} 会在插入时替换为下面的内容",
   "vars.fill": "填入",
@@ -229,6 +231,8 @@ export const en: Record<keyof typeof zh, string> = {
   "action.send": "Insert & send",
   "hash.title": "Pick a prompt",
   "hash.empty": "No matching prompt",
+  // Context recommendation strip (P8 T3 / acceptance 11): row label, also the group's accessible name.
+  "recommend.title": "Suggested",
   "vars.title": "Fill template variables",
   "vars.hint": "Each {{name}} below is substituted when inserted",
   "vars.fill": "Fill in",
