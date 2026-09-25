@@ -217,6 +217,32 @@ export const zh = {
   "manager.skill.reExported": "已重新导出（同名覆盖，未新增技能目录）",
   "sidebar.entry.title": "提示词",
   "sidebar.entry.tip": "打开提示词管理面板",
+  // ── P8 T4：设置页（验收 12 / 19 的一半）──────────────────────────────────
+  // 座位名（宿主设置页左栏的导航行）与页内标题；label 是 thunk ⇒ 语言切换后导航行自动跟随。
+  "settings.nav": "提示词增强",
+  "settings.title": "提示词增强设置",
+  "settings.saveFailed": "保存设置失败",
+  "settings.numberInvalid": "请输入范围内的整数：",
+  "settings.ai.title": "AI 模型",
+  "settings.ai.provider": "提供方",
+  "settings.ai.model": "模型",
+  "settings.ai.auto": "自动发现",
+  "settings.ai.loading": "正在探测可用模型…",
+  "settings.ai.probeFailed": "探测可用模型失败，本行只保留「自动发现」：",
+  "settings.ai.noModels": "宿主未返回任何可用模型，本行只保留「自动发现」",
+  "settings.ai.stored": "当前保存的是：",
+  "settings.panelSize": "面板宽度 / 高度",
+  "settings.panelWidth": "宽度",
+  "settings.panelHeight": "高度",
+  "settings.maxPromptCount": "存储上限",
+  "settings.showComposerButton": "输入框旁词库按钮",
+  "settings.composerButtonIconOnly": "词库按钮只显示图标",
+  "settings.showAIPolishButton": "AI 优化按钮",
+  "settings.aiPolishButtonIconOnly": "AI 按钮只显示图标",
+  "settings.hashTriggerEnabled": "# 触发候选浮层",
+  "settings.contextRecommendEnabled": "上下文推荐",
+  "settings.selectionAddEnabled": "选中文字存为提示词",
+  "settings.showSidebarButton": "左侧下方入口",
 } as const;
 
 /** en 必须与 zh 键集完全一致——类型注解让 tsc 直接报出漏译/漏删。 */
@@ -436,6 +462,33 @@ export const en: Record<keyof typeof zh, string> = {
   "manager.skill.reExported": "Re-exported (overwrote the same folder, no new folder created)",
   "sidebar.entry.title": "Prompts",
   "sidebar.entry.tip": "Open the prompt manager",
+  // ── P8 T4: settings page (acceptance 12 / half of 19)─────────────────────
+  // Seat name (the settings nav row) and the in-page title; the label is a thunk, so the nav row
+  // follows a locale switch with no re-registration.
+  "settings.nav": "Prompt Enhancer",
+  "settings.title": "Prompt Enhancer settings",
+  "settings.saveFailed": "Failed to save the setting",
+  "settings.numberInvalid": "Enter a whole number within the allowed range: ",
+  "settings.ai.title": "AI model",
+  "settings.ai.provider": "Provider",
+  "settings.ai.model": "Model",
+  "settings.ai.auto": "Auto-discover",
+  "settings.ai.loading": "Probing available models…",
+  "settings.ai.probeFailed": "Probing available models failed; this row keeps only the Auto-discover option:",
+  "settings.ai.noModels": "The host returned no usable model; this row keeps only the Auto-discover option",
+  "settings.ai.stored": "Currently saved: ",
+  "settings.panelSize": "Panel width / height",
+  "settings.panelWidth": "Width",
+  "settings.panelHeight": "Height",
+  "settings.maxPromptCount": "Storage limit",
+  "settings.showComposerButton": "Library button next to the composer",
+  "settings.composerButtonIconOnly": "Library button shows its icon only",
+  "settings.showAIPolishButton": "AI polish button",
+  "settings.aiPolishButtonIconOnly": "AI button shows its icon only",
+  "settings.hashTriggerEnabled": "# trigger suggestion overlay",
+  "settings.contextRecommendEnabled": "Context suggestions",
+  "settings.selectionAddEnabled": "Save selected text as a prompt",
+  "settings.showSidebarButton": "Sidebar entry",
 };
 
 /** 供宿主 LocaleNamespaceMap 挂载的键联合（P4 只用到上表里的键）。 */

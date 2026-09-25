@@ -24,8 +24,11 @@ const EXPECTED_SLOTS = [
   // P6 T2 追加的两个 root 座位：弹窗宿主（root 作用域 → 无会话也能开面板）与左栏入口。
   ["shell.overlay", "prompt-enhancer", 100],
   ["sidebar.footer.action", "prompt-enhancer", 100],
-  // P8 T3 追加：composer 上方的上下文推荐条。order 是 10，但**注册在最后**——本账本是注册顺序。
+  // P8 T3 追加：composer 上方的上下文推荐条。order 是 10，但注册在 P8 T3 时代的末尾
+  // （T4 的 settings.section 接在它后面）——本账本是**注册顺序**，不是 order 排序。
   ["conversation.input.dock", "prompt-enhancer-recommend", 10],
+  // P8 T4 追加：宿主设置面板里本插件的一页（P8 路线图的最后一个座位；order 30 排在 Models(10) 之后）。
+  ["settings.section", "prompt-enhancer", 30],
 ];
 
 let failures = 0;
@@ -109,7 +112,15 @@ if (clientSrc === null) {
             const records = [];
             // ctx 与 scope 上的 locale.register 都记同一笔：apply() 在根 ctx 的 effect 里
             // 注册字典（inject = ["slots","locale"] 保证它存在），scope 上也留一份以防改写。
-            const locale = { register: (ns, dicts) => { records.push(["locale", ns, dicts]); } };
+            // P8 T4（F-8）：apply() 顶部取 `const t = ctx.locale.bind(NS)` 供 settings.section 的
+            // label thunk 用（宿主契约 `ctx.locale.bind(ns) → Translate`，证据
+            // packages/client/locale/src/client/index.ts:429-444）。假 ctx 必须给出同一形状，否则
+            // apply() 直接抛。返回的翻译函数把**命名空间**拼进结果（`<ns>:<key>`），下面据此断言
+            // label thunk 走的确实是**绑到本命名空间**的 t——不是某个常量、也不是别处的 t。
+            const locale = {
+              register: (ns, dicts) => { records.push(["locale", ns, dicts]); },
+              bind: (ns) => (key) => ns + ":" + key,
+            };
             const makeScope = () => ({
               slots: {
                 inject: (name, cb) => { records.push(["inject", name]); cb(); },
@@ -145,6 +156,22 @@ if (clientSrc === null) {
                 "      实为 " + JSON.stringify(ledger),
             );
           } else ok("register " + ledger.length + " 条账本逐条相符 " + JSON.stringify(ledger));
+
+          // 1b) settings.section 的 label 必须是**函数 thunk**（F-8：宿主每次读 label 都重求值 ⇒
+          //     语言切换后左栏导航行自动跟随，无需重注册）。账本的 [name,id,order] 三元组看不见 label，
+          //     故单列一条：thunk 的求值结果必须带本命名空间前缀（假 bind 拼 `<ns>:<key>`）
+          //     ⇒ 一条断言同时钉住「是函数」与「用的是绑到本命名空间的 t」。
+          const section = register.find((rec) => rec[1].name === "settings.section");
+          if (!section) {
+            fail("账本缺少 settings.section 座位（设置页未注册）");
+          } else if (typeof section[1].label !== "function") {
+            fail("settings.section 的 label 必须是函数 thunk，实为 " + typeof section[1].label);
+          } else if (section[1].label() !== NS + ":settings.nav") {
+            fail(
+              'settings.section 的 label thunk 应求值为 "' + NS + ':settings.nav"，实为 ' +
+                JSON.stringify(section[1].label()),
+            );
+          } else ok("settings.section 的 label 是绑到 " + NS + " 的 thunk（求值 = " + NS + ":settings.nav）");
 
           // 2) 每条都是 function 组件且带 locale
           const before = failures;

@@ -5,14 +5,15 @@
  *   window.__ModuleLoader__.load({ id, factory: (require) => {...} })
  * 模块 id 由 scripts/build.mjs 从 package.json.name 派生，不得硬编码。
  *
- * P4 起在此注册插槽（规格 §7.1）；至今落下六个座位——
+ * P4 起在此注册插槽（规格 §7.1）；至今落下七个座位（席位至此齐了，P8 T4 补上最后一个）——
  *   conversation.input.left（词库按钮，order 10）
  *   conversation.input.overlay（`#` 候选浮层，order 20）
  *   conversation.input.left（AI 优化按钮，order 11）
  *   shell.overlay（管理面板弹窗宿主，order 100）—— P6
  *   sidebar.footer.action（左侧下方入口，order 100）—— P6
  *   conversation.input.dock（上下文推荐条，order 10）—— P8 T3
- * 余下一个座位（settings.section）按路线图属 P8 后续任务。i18n 字典随本 fiber 注册，卸载即撤。
+ *   settings.section（设置页，order 30）—— P8 T4
+ * i18n 字典随本 fiber 注册，卸载即撤。
  * 注册顺序即产物内注册顺序，也是 scripts/smoke.mjs 行为断言的账本顺序。
  * P6 追加：目录选择能力（ctx.uiWorkspace）经**条件注入**持有，inject 导出数组不扩张。
  * P8 T1/T3 追加：设置唯一真源（ctx.settingsScope）与聊天快照（ctx.uiConversation）同走条件注入
@@ -36,6 +37,7 @@ import { ContextRecommendations } from "./components/ContextRecommendations.tsx"
 import { HashSuggestOverlay } from "./components/HashSuggestOverlay.tsx";
 import { PromptLibraryButton } from "./components/PromptLibraryButton.tsx";
 import { PromptSurfaceHost } from "./components/PromptSurfaceHost.tsx";
+import { SettingsSection } from "./components/settings/SettingsSection.tsx";
 import { SidebarPromptEntry } from "./components/SidebarPromptEntry.tsx";
 import { setUiConversation, type UiConversationService } from "./utils/conversation-targets.ts";
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
@@ -60,6 +62,15 @@ export const inject = ["slots", "locale"];
 
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "prompt-enhancer: dictionaries");
+
+  /**
+   * 绑定本命名空间的翻译函数（F-8：本文件此前没有 `t`）。
+   *
+   * `ctx.locale.bind(ns): TranslateNS<N>`——证据 `packages/client/locale/src/client/index.ts:429-444`
+   * （带类型的重载 + 缓存实现）；`inject` 已含 `locale`。只给下面设置页座位的 **label thunk** 用：
+   * 宿主每次读 label 都重求值 ⇒ 语言切换后左栏导航行自动跟随，**无需重注册**（§1.4）。
+   */
+  const t = ctx.locale.bind(NS);
 
   ctx.inject(["slots"], (scope: ClientContext) => {
     scope.slots.inject("conversation.input.left", () =>
@@ -96,11 +107,20 @@ export function apply(ctx: ClientContext): void {
       ),
     );
     // 上下文推荐条（P8 T3 / 验收 11）：composer 卡片上方的整行 dock（list / session / InputZone）。
-    // **必须排在最后**：注册顺序即 scripts/smoke.mjs 的 EXPECTED_SLOTS 账本顺序，挪位即红。
     scope.slots.inject("conversation.input.dock", () =>
       scope.slots.register(
         { name: "conversation.input.dock", id: "prompt-enhancer-recommend", order: 10, locale: NS },
         ContextRecommendations,
+      ),
+    );
+    // 设置页（P8 T4 / 验收 12）：宿主设置面板里本插件的一页（13 个字段，见 SettingsSection）。
+    // 属主 props 只有 `{ close }`（ui-settings 的 SettingsSectionOwnerProps）——本页不接它，
+    // 数据全走自己的 import 面（useSettings / updateSettings / listAiProviders）。
+    // **必须排在最后**：注册顺序即 scripts/smoke.mjs 的 EXPECTED_SLOTS 账本顺序，挪位即红。
+    scope.slots.inject("settings.section", () =>
+      scope.slots.register(
+        { name: "settings.section", id: "prompt-enhancer", order: 30, label: () => t("settings.nav"), locale: NS },
+        SettingsSection,
       ),
     );
   });
