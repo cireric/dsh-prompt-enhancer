@@ -297,12 +297,22 @@ function AiModelRow({ t, provider, model }: AiModelRowProps): React.ReactElement
   /**
    * 切 provider：旧 model 若不属于新 provider 必须一起清成「自动发现」——否则存下一对
    * 「provider A + provider B 的模型」，下拉会显示一个它自己列不出的值。两次**单字段**写。
+   *
+   * **写序：先清 model，再换 provider**（T4 评审 R1）。两条写各自可能成功或失败（`useWrite`
+   * 逐条 await，第 1 条被拒时第 2 条**不会执行**），故必须问「部分失败留下什么对」：
+   *  · 先 model 后 provider：第 1 条成、第 2 条败 ⇒「旧 provider + 自动」；第 1 条败 ⇒ 一条也没落
+   *    ⇒「旧 provider + 旧 model」。**两种残局都是合法对**——「自动」= 空串在任何 provider 下都有效
+   *    （宿主照常走自动选路）；
+   *  · 反过来（先 provider 后 model）则第 1 条成、第 2 条败会落成「**新 provider + 旧 model**」，
+   *    正是上面要避免的跨 provider 对：宿主只在 provider+model **同时**有效时才认手动路由
+   *    （`src/host/ai.ts:158-166`），这一对会被判为无效。
+   * 全成功的两条路径两序语义相同；`nextModel === model` 时本就只有一条 patch，与写序无关。
    */
   const changeProvider = (next: string): void => {
     const owned = known.find((item) => item.provider === next)?.models.some((m) => m.id === model) === true;
     const nextModel = owned ? model : "";
     const patches: Partial<PluginSettings>[] =
-      nextModel === model ? [{ aiProvider: next }] : [{ aiProvider: next }, { aiModel: nextModel }];
+      nextModel === model ? [{ aiProvider: next }] : [{ aiModel: nextModel }, { aiProvider: next }];
     writeSequence(patches, "aiProvider");
   };
 
