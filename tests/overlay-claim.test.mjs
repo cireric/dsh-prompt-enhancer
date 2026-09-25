@@ -8,8 +8,10 @@
  *     Node 侧无 react 的可见失败、以及 R55 历史形态（`shouldShowLibraryPanel`）与新读法的逐格同值。
  *  3. **`claimOverlayIfFree`（修复轮 1）**：「只取空屏」是**原子**判定——它是 AI 面板的取屏路径，
  *     也正是评审发现的 TOCTOU 的要害：快照陈旧时的写入不得再抢走别面。
- *  4. **最保守调度下的终止性模型（修复轮 2）**：`#` 浮层拆成「A 取+释放 / B 只重取」两个 effect 后，
- *     终止性必须来自**代码自身的自限性**，不得依赖 React 的批处理语义（宿主换语义 ⇒ UI 冻结）。
+ *  4. **非批处理调度下的终止性模型（修复轮 2 结构 / 修复轮 3 按真实 deps 重建）**：`#` 浮层拆成
+ *     「A 取+释放 / B 只重取」两个 effect 后，终止性必须来自**代码自身的自限性**，不得依赖 React 的
+ *     批处理语义（宿主换语义 ⇒ UI 冻结）；模型保留的残余依赖只有 `useEffect` 的 **deps 契约**。
+ *     写者归属插桩必须显示「被夺后由 B 重取」——否则用例就是在声称它没证明的东西。
  *
  * **为什么组件接线不在这里测**（R-P7-C）：本仓库没有 react-dom / jsdom（全局硬约束 5），三个组件的
  * 渲染门与 effect 没有自动化通道。这里**不造空洞断言**去假装覆盖它——活体判据交给 T5（判定表见
@@ -263,54 +265,127 @@ test('claimOverlayIfFree / claimOverlay：被位移的面**能**重取（持续�
   settle();
 });
 
-// ---- 4) 两 effect 形态的**最保守调度**步进模型（修复轮 2：终止性不依赖批处理） ----
+// ---- 4) A/B 两 effect 形态在**非批处理**调度下的步进模型（修复轮 2 结构 + 修复轮 3 按真实 deps 重建） ----
 
 /**
- * 极简调度器 + `#` 浮层的两 effect 形态（修复轮 2 的拆分）跑在**最保守**语义上：**一次派发就重跑
- * 所有 effect 的体**——不给 React 的「deps 相等跳过」与「同值 setState bailout」任何补贴。于是终止性
- * 只能由 store 自身的自限性提供：同值不写入 ⇒ 不派发 ⇒ 不再唤醒（`tests/overlay-claim.test.mjs` 的
- * 幂等用例锁的就是这条）。
+ * `#` 浮层的两条 claim effect 跑在一个**非批处理**调度器上（模型）：
  *
- * **这是模型，不是组件渲染**（本仓库无 react-dom）：副作用体逐字照抄组件里的两行守卫，用的是真实
- * store API。它的价值在于：把「终止」从「调度器恰好帮了忙」变成「守卫自己会停」——把幂等守卫去掉
- * （同值也派发）就会撞上步数上限变红。
+ * - **非批处理**：每次 store 写入**立即**推进「渲染 + 跑 effect」（= React 17 legacy 语义：effect 内
+ *   setState 同步重渲染）。这正是「不能把终止性建在批处理上」要对付的最坏调度。
+ * - **deps 契约内的保守体调度**：effect **只在自身 deps 变化时**才跑（deps 按值相等 ⇒ 跳过；A 的
+ *   cleanup 只在自己的 deps 变化时先跑一次）；这一条是**刻意保留的残余依赖 = `useEffect` 的 deps 契约**
+ *   （React 公开 API），不是批处理。**修复轮 3 的评审澄清**：字面意义的「每轮重跑所有 effect（含
+ *   cleanup）、完全不给 deps 相等跳过」**不是有效模型**——它连既有的 R53 信号发布 effect
+ *   （`HashSuggestOverlay.tsx⟧ 的 `setHashSuggestVisible`）都不终止，与 `useEffect` 契约矛盾；任何满足
+ *   约束 B.4（隐藏/卸载即释放）的实现都不可能在其内终止。
+ * - **写者归属插桩**：每次**真写**（寄存器取值变化）按 effect 记一笔，用来回答「被夺之后是谁抢回来的」
+ *   ——修复轮 3 的评审发现旧模型的这一栏恒为 `{A:1, B:0}`，即 B 的写路径**根本不可达**（用例声称的
+ *   比它证明的多）。故 A 必须严格按 `visible` **边沿**重跑（不再折成 else 分支、不再每轮无条件重跑）。
+ *
+ * **这是模型，不是组件渲染**（本仓库无 react-dom）：副作用体逐字照抄组件里那两行守卫，用的是真实 store
+ * API。它能证明的是「**这个设计**在被夺后确实由 B 重取、且一定终止」；组件的接线本身仍只能活体。
  */
-function runHashClaimModel(visible, maxRounds = 40) {
+function createSplitHarness(initialVisible = false, maxRounds = 40) {
+  let visible = initialVisible;
   let dispatches = 0;
+  /** 真写计数（按 effect）：寄存器取值真的变了才算一笔。 */
+  const writes = { a: 0, b: 0 };
+  /** 每个 effect 上一次跑时的 deps 值（`null` = 还没跑过 = 首次挂载要跑）。 */
+  const aSeen = { visible: null };
+  const bSeen = { visible: null, claim: null };
   const off = subscribeOverlayClaim(() => {
     dispatches += 1;
   });
-  let rounds = 0;
-  try {
+  const write = (who, fn) => {
+    const before = getOverlayClaimSnapshot();
+    fn();
+    if (getOverlayClaimSnapshot() !== before) writes[who] += 1;
+  };
+
+  function runEffects() {
+    let rounds = 0;
     for (;;) {
-      rounds += 1;
-      assert.ok(rounds <= maxRounds, "最保守调度下不终止（自限性失效）——步数撞上限 " + maxRounds);
+      assert.ok(++rounds <= maxRounds, "非批处理调度下不终止（自限性失效）——轮数撞上限 " + maxRounds);
       const before = dispatches;
-      // effect A（deps [visible]）：可见即取；不可见即释放（组件里是 body + cleanup，这里合并表达）。
-      if (visible) claimOverlay("hash");
-      else releaseOverlay("hash");
-      // effect B（deps [visible, claimed]，无 cleanup）：只重取，写完即停。
-      if (visible && getOverlayClaimSnapshot() !== "hash") claimOverlay("hash");
-      if (dispatches === before) break; // 一整轮无写入/无变化 ⇒ 静默
+      // effect A：deps [visible] —— **只在 visible 边沿**跑（cleanup 先于新体；首次挂载没有 cleanup）。
+      if (aSeen.visible !== visible) {
+        if (aSeen.visible !== null) write("a", () => releaseOverlay("hash"));
+        aSeen.visible = visible;
+        if (visible) write("a", () => claimOverlay("hash"));
+      }
+      // effect B：deps [visible, claimed]，无 cleanup；体读**活寄存器**。
+      const claimNow = getOverlayClaimSnapshot();
+      if (bSeen.visible !== visible || bSeen.claim !== claimNow) {
+        bSeen.visible = visible;
+        bSeen.claim = claimNow;
+        if (visible && claimNow !== "hash") write("b", () => claimOverlay("hash"));
+      }
+      if (dispatches === before) break; // 一整轮无真写 ⇒ 静默
     }
-  } finally {
-    off();
+    return rounds;
   }
-  return { rounds, dispatches };
+
+  const harness = {
+    writes,
+    /** 本 harness 存续期间观察到的派发总数（含别面的真写）。 */
+    get dispatches() {
+      return dispatches;
+    },
+    setVisible(next) {
+      visible = next;
+      return runEffects();
+    },
+    settle: runEffects,
+    /** 卸载：A 的 cleanup 释放一次；B 没有 cleanup。 */
+    unmount() {
+      write("a", () => releaseOverlay("hash"));
+      off();
+    },
+  };
+  runEffects(); // 挂载即跑一轮（React 的首次 effects）
+  return harness;
 }
 
-test("两 effect 形态：最保守调度下终止，一次事件最多 1 次派发（自限性来自代码）", () => {
+test("A/B 形态（非批处理）：令牌出现 ⇒ **A** 取屏一次即静默（B 不写——寄存器已归本面）", () => {
   settle();
-  // ① 令牌出现：A 取屏一次，下一轮无写入 ⇒ 静默
-  assert.deepEqual(runHashClaimModel(true), { rounds: 2, dispatches: 1 });
+  const h = createSplitHarness(false);
+  h.setVisible(true);
   assert.equal(getOverlayClaimSnapshot(), "hash");
-  // ② 被夺（词库激活抢屏）→ B 重取**一次**即静默（这是修复轮 1 的缺陷形态：不能永久静默）
-  claimOverlay("library");
-  assert.deepEqual(runHashClaimModel(true), { rounds: 2, dispatches: 1 });
-  assert.equal(getOverlayClaimSnapshot(), "hash", "被夺后重取");
-  // ③ 隐藏：A 释放一次即静默（P6 的教训：留成占位会把别的面压住）
-  assert.deepEqual(runHashClaimModel(false), { rounds: 2, dispatches: 1 });
-  assert.equal(getOverlayClaimSnapshot(), "none");
+  assert.deepEqual(h.writes, { a: 1, b: 0 }, "写者归属：取屏由 A 完成");
+  assert.equal(h.dispatches, 1, "一次事件至多 1 次派发");
+  h.unmount();
+  assert.equal(getOverlayClaimSnapshot(), "none", "卸载即释放（约束 B.4）");
+  settle();
+});
+
+test("A/B 形态：被夺后**由 B** 重取一次即静默——A 一次也不写（它的 deps 里没有寄存器）", () => {
+  settle();
+  const h = createSplitHarness(false);
+  h.setVisible(true);
+  assert.deepEqual(h.writes, { a: 1, b: 0 }, "前置：A 已取屏");
+  const base = { ...h.writes };
+  const baseDispatches = h.dispatches;
+  claimOverlay("library"); // 别面（词库激活）夺屏
+  h.settle();
+  assert.equal(getOverlayClaimSnapshot(), "hash", "被夺后必须重取（修复轮 1 的缺陷形态：不得永久静默）");
+  assert.equal(h.writes.a, base.a, "A **不得**因寄存器跳变重跑（它的 deps 里没有寄存器）——旧模型正是在这里让 A 抢回、从而掩盖 B");
+  assert.equal(h.writes.b - base.b, 1, "重取由 B 完成，且只写一次");
+  assert.equal(h.dispatches - baseDispatches, 2, "被夺 1 次 + B 重取 1 次 ⇒ 终止，不再有第 3 次派发");
+  h.unmount();
+  settle();
+});
+
+test("A/B 形态：隐藏 ⇒ **A 的 cleanup** 释放一次即静默（B 不可见时不写）", () => {
+  settle();
+  const h = createSplitHarness(true);
+  assert.equal(getOverlayClaimSnapshot(), "hash", "首次挂载：A 取屏");
+  const base = { ...h.writes };
+  const baseDispatches = h.dispatches;
+  h.setVisible(false);
+  assert.equal(getOverlayClaimSnapshot(), "none", "隐藏即释放（约束 B.4）");
+  assert.equal(h.writes.a - base.a, 1, "释放由 A 的 cleanup 完成");
+  assert.equal(h.writes.b - base.b, 0, "B 在不可见时不写");
+  assert.equal(h.dispatches - baseDispatches, 1);
   settle();
 });
 
