@@ -442,12 +442,13 @@ frontmatter：name（必填）/ description（必填）/ whenToUse（可选）
 
 ## 7. 前端与插槽
 
-### 7.1 插槽注册（6 处，全部官方插槽）
+### 7.1 插槽注册（7 处，全部官方插槽）
 
 | 插槽 | kind / scope | id | order | 组件 | 作用 |
 | --- | --- | --- | --- | --- | --- |
 | `conversation.input.left` | list / session | `prompt-enhancer` | 10 | `PromptLibraryButton` | 输入框旁：快速列表 + 打开管理面板 |
 | `conversation.input.left` | list / session | `prompt-enhancer-ai-polish` | 11 | `AIPolishButton` | 输入框旁：AI 优化 |
+| `conversation.input.overlay` | list / session | `prompt-enhancer-hash` | 20 | `HashSuggestOverlay` | composer 上方的 `#` 候选浮层 |
 | `sidebar.footer.action` | list / **root** | `prompt-enhancer` | 100 | `SidebarPromptEntry` | **左侧下方（设置按钮旁）**：打开管理面板 |
 | `conversation.input.dock` | list / session | `prompt-enhancer-recommend` | 10 | `ContextRecommendations` | 输入框上方推荐条 |
 | `settings.section` | list / **root** | `prompt-enhancer` | 30 | `SettingsSection` | 设置页 |
@@ -906,3 +907,50 @@ P6 的活 GUI 验收（T7 → T7b → T7c）实测暴露两处**规格字面与�
 > P7 实测的教训：问题**不是「没验证」**，而是「**验证过了，但后续提交悄悄让证据过期**」（T7 改了浮层与方向接线之后，M7 的活体证据对新代码已陈旧）。
 
 **影响范围**：§7.1/§7.6（浮层互斥与技能页 UX 的实现形态）、§4.4（方向语义与写回缝）、§6.5（技能导出）、§9.3（验收 15/16/17 的证据口径）；P8 若新增任何「改变 `body`/`sourceBody` 真值」的路径，**必须先补 §13.11 二的登记表**。
+
+## 13.12 P8 交付后的规格订正（2026-09-25，控制者；承接 §13.11）
+
+**背景**：P8（M8）交付了上下文推荐、设置页、i18n 键集收口与 README 双语，并在交付期**额外吸收两项用户 UI 反馈**（F1：侧栏入口与宿主条目同形 / F2：管理面板头部两行化）。交付期的现核实（读源码 + 只读活体探针）暴露：§7.1 有一处**订正意图早已记录、正文却从未更新**；另有若干接线口径与两条已知限制必须留档。本节逐条固化。
+
+### 一、设置即时生效的权威层与降级
+
+- **唯一真源**是宿主 `ctx.settingsScope.bind({ namespace: "prompt-enhancer" })` 返回的 scope（快照 + 订阅 + `set`），由 `src/client/utils/settings-store.ts` 持有（`setSettingsScope` / `getSettingsSnapshot` / `subscribeSettings` / `useSettings` / `updateSettings`）；命名空间常量与宿主 `src/host/settings.ts#SETTINGS_NAMESPACE` 同值。
+- **即时性是宿主传输的性质，不是自建边沿**：`scope.set()` 的写回答由宿主折回镜像，订阅回调随即换快照并广播 ⇒ **同页所有消费点立刻生效**，且覆盖**任意写入者**——设置页写、别的标签页写、外部手改 `settings.yaml` 都走同一条广播。
+- **降级**：服务缺席时 store 回落 `DEFAULT_SETTINGS`，并在**首次消费**（`getSettingsSnapshot` / `subscribeSettings` / `updateSettings` 三个入口共用）做**一次**尽力而为的 `GET /settings`；**失败静默回落、只留一行 warn、不重试不轮询**，在途拿到真 scope 即丢弃该 HTTP 结果。写走 `PUT /settings`（`api.updateSettings`）。**导入期不做 I/O**——否则任何只是 import 本模块的进程（单测、smoke 的假 ctx）都会继承一次网络副作用。
+- **清路由缓存的权威层**是宿主 `scope.watch()`（`src/index.ts` 把 `clearRouteCache` 作为 `onChange` 交给 `registerSettings`），它同样覆盖**任意写入者**；路由层的旧调用点保留作**幂等兜底**。宿主 scope 没有 `watch`（假 scope / 旧宿主）时挂不上，属有意的降级。
+
+### 二、两个 `*IconOnly` 的统一语义
+
+`showsLabel(iconOnly)`（`src/client/utils/icon-only.ts`，纯函数）= `iconOnly === false`：**`true` ⇒ 只渲染图标**（按钮名进 `aria-label`，无障碍面不丢名字）、**`false` ⇒ 图标 + 文字**。`composerButtonIconOnly` 与 `aiPolishButtonIconOnly` **共用同一个判定函数**，不再有两份手写判定。提到纯函数是为了让「两处判定一致」有自动化判据——本仓库无 react-dom，组件接线只能靠活体（§13.10-五-3）。
+
+### 三、`hashTriggerEnabled` 的接线落点
+
+门控写在 `HashSuggestOverlay` 的 **`visible`**：`visible = settings.hashTriggerEnabled && shouldShowSuggest({...})`。它既是渲染门 `onScreen = visible && canRender("hash", claimed)` 的**左操作数**，也是抢屏守卫（`canTakeHash` / `canRetakeHash`）与 R53 可见性信号（`setHashSuggestVisible`）的**唯一上游** ⇒ 关闭那一刻：在屏浮层**同帧收起**、claim 寄存器与可见性信号一并退场，**零新增 effect / effect cleanup**。默认值 `true` 时 `true && x === x`，与接线前**逐字同值**。
+
+**为什么不只挡 `onScreen`**（渲染门字面）：那样 `visible` 仍为真 ⇒ A 段照抢 `hash`、R53 照发 `true`，而浮层什么都不渲染 ⇒ **寄存器停在 `hash`**，词库按钮取屏后 B 段又会把它重取回去（`canRetakeHash(true, "library") === true`）⇒ **词库面板的门恒不通过，点它只会亮一提交即被收回**（即用户看到的「看起来打不开」）——这正是 P7 反复修过的静默形态（§13.11-一）。
+
+### 四、推荐的上下文数据源与降级
+
+- 聊天上下文经**条件注入**的 `uiConversation`（`src/client/utils/conversation-targets.ts`）读 `binding(sessionId).target("chat")` 的 `ChatSnapshot.legacy.nodes`，取**最近 3 条用户消息**（`CONTEXT_USER_COUNT`）作为上下文文本。
+- 宿主的 `binding()` 对**未知会话抛错**（`uiConversation.binding: unknown session "..."`）⇒ 调用方一律 try/catch 降级为「**只用当前草稿**」：推荐仍可用、上下文退化，**不崩**；服务缺席（无该客户端的部署、smoke 的假 ctx）走同一条降级。
+- 判定算法（关键词抽取 / 加权 / 打分 / 取前 N）全部落在**零依赖**的 `src/client/utils/context-recommend.ts`（`extractKeywords` / `termWeight` / `scorePrompt` / `recommend`，参数取 §7.1.1：`RECOMMEND_LIMIT = 5` / `CONTEXT_USER_COUNT = 3` / `FRESH_MS = 30d` / `STOP_BIGRAMS`）；组件只做读数据与渲染。
+
+### 五、已知限制（留档，**不修**）
+
+| # | 限制 | 机制 / 依据 |
+| - | ---- | ----------- |
+| 1 | **`#` 候选浮层在词库面板关闭后不会自己回来**：程序化 focus + Range 无效，**只有真实键入**才重新在屏 | P7 §10.4-7 已判定为**非缺陷**（同源：宿主无公开 composer focus 面，见 §13.8-问题三）；P8 裁定 **TBD-P8-6 (a)** 留档不改 |
+| 2 | **AI 结果面板在几何上覆盖 composer** | 属**浮层落点与设置项（面板尺寸）**范畴，动它是设计取舍；P5 已记（O-3），P6 分拣表第 11 行与 P8 的 TBD-P8-6 均**留档不修** |
+
+两条均已写进 README 的「Known limitations」节（同一裁定 TBD-P8-6），**不是静默省略**。
+
+### 六、本轮的订正记录（让后来者看到什么曾是错的）
+
+1. **§7.1 的标题与表体自 §13.7 起就未随该决定更新**：§13.7 明确决定把 `conversation.input.overlay` 增补进座位表，并在影响范围里写「§7.1 座位表（6 处 → 7 处）」，但 §7.1 的标题一直停在「6 处」、表体也只有 6 行——**意图记录下来了，正文从未真正改**。本轮补正：标题 **6 → 7**，并补上 `conversation.input.overlay` 一行。代码事实：`src/client/index.ts` 有 **7 次** `scope.slots.inject`（7 次注册 / **6 个不同座位名**——`conversation.input.left` 出现两次），`scripts/smoke.mjs` 的 `EXPECTED_SLOTS` 恰为 **7 条**。**只改数字而不补行，仍会与 6 行表体自相矛盾**——这是本次必须同时改两处的原因。
+2. **验收 14 的声明载体**：§12 要求「删掉 upstream `deployment:persona` section ⇒ 宿主内置默认人格重新生效」这一声明出现在「README **与发布说明**」，而**本仓库没有发布说明 / CHANGELOG 工件**（`git ls-files` 对 `changelog|release|notes` 零命中）。本轮的落地口径是：**README 是该声明的唯一载体**（`## systemPrompt footprint` 节，同时声明「零 systemPrompt section」）；此差异**在此显式记档**，而不是静默省略。将来若新增发布说明，须回填同一句话。
+
+### 七、P8 交付面总述
+
+设置页（13 键，`settings.section`，order 30）+ 上下文推荐（`conversation.input.dock`，order 10）+ 两个 `*IconOnly` 语义统一（一并让 `composerButtonIconOnly` 第一次真的生效）+ i18n 键集收口 + README 双语 + P7/P6 移交的 **7 项代码修复**（T7-1…T7-7）+ 侧栏入口与宿主条目同形（F1）+ 管理面板头部两行化（F2）。
+
+**影响范围**：§7.1（座位表 6 → 7 与标题订正）、§12（验收 14 声明载体的口径）、README（限制节与 systemPrompt 声明）；P8 计划的任务 T1–T7。§2.1 / §2.2 / §9.3 的验收条目 / §4.2 的默认值 / §10 的署名声明**本轮一律未动**。
