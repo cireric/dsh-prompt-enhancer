@@ -3,7 +3,8 @@
  *
  * 契约（T2 约束 B2，源码 + 活体双证据）：`kind: list` / `scope: root` / owner props = `{ wide: boolean }`；
  * 该行**已有 3 个 occupant**，故本入口不得假设自己是唯一元素：`wide === false`（56px 收起轨道）
- * 只出图标，`wide === true` 才带文字。受 `settings.showSidebarButton` 门控（mount 时读一次）。
+ * 只出图标，`wide === true` 才带文字。受 `settings.showSidebarButton` 门控（读共享响应式 store，
+ * 改了就即时生效，不再是 mount 时读一次——见下方 `useSettings()`）。
  *
  * 与输入框旁的词库按钮**不耦合**（D-P6-1）：两者都只调 `openManager()`，共享状态在 `ui-state.ts`。
  */
@@ -25,22 +26,25 @@ export type SidebarPromptEntryProps = PropsRuntime<"sidebar.footer.action"> &
 
 /**
  * 宽窄两态：`wide === false` 是 56px 收起轨道，只放图标（正方形点击区）；`wide === true` 出文字。
- * 视觉与词库按钮同族（24–28px 高、1px 描边、6px 圆角），不引任何 UI 依赖。
+ * 宽态几何与宿主条目同形（P8 T8，反馈 F1）：内容左对齐、行高 42、`0 10px` 内边距、无自绘描边、
+ * 填满该行（宿主 `SidebarRoot.module.css:388-389`：每个 occupant 自负 button geometry）；
+ * 轨道态保持 P6 活体验收时的现状（28×28、内容居中、无内边距、含 1px 描边——56px 轨道是另一视觉语境）。
+ * 仍不引任何 UI 依赖。
  */
 function entryStyle(wide: SidebarFooterActionOwnerProps["wide"]): React.CSSProperties {
   return {
     display: "inline-flex",
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: wide ? "flex-start" : "center",
     gap: 4,
-    height: 28,
-    width: wide ? undefined : 28,
-    padding: wide ? "0 8px" : 0,
+    height: wide ? 42 : 28,
+    width: wide ? "100%" : 28,
+    padding: wide ? "0 10px" : 0,
     flex: "0 0 auto",
     fontSize: 12,
     color: TOKEN.fg,
     background: "transparent",
-    border: `1px solid ${TOKEN.border}`,
+    border: wide ? "none" : `1px solid ${TOKEN.border}`,
     borderRadius: 6,
     cursor: "pointer",
   };
