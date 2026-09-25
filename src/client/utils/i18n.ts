@@ -202,6 +202,11 @@ export const zh = {
   "manager.skill.summaryDeclined": "跳过",
   "manager.skill.target": "目标文件",
   "manager.skill.declined": "已跳过（未确认覆盖同名目录）",
+  "manager.skill.badgeExported": "已导出技能",
+  "manager.skill.badgeStale": "技能已过期",
+  "manager.skill.reExport": "重新导出",
+  "manager.skill.reExporting": "正在重新导出…",
+  "manager.skill.reExported": "已重新导出（同名覆盖，未新增技能目录）",
   "sidebar.entry.title": "提示词",
   "sidebar.entry.tip": "打开提示词管理面板",
 } as const;
@@ -408,6 +413,11 @@ export const en: Record<keyof typeof zh, string> = {
   "manager.skill.summaryDeclined": "Skipped",
   "manager.skill.target": "Target file",
   "manager.skill.declined": "Skipped (the overwrite was not confirmed)",
+  "manager.skill.badgeExported": "Exported as skill",
+  "manager.skill.badgeStale": "Skill is out of date",
+  "manager.skill.reExport": "Re-export",
+  "manager.skill.reExporting": "Re-exporting…",
+  "manager.skill.reExported": "Re-exported (overwrote the same folder, no new folder created)",
   "sidebar.entry.title": "Prompts",
   "sidebar.entry.tip": "Open the prompt manager",
 };

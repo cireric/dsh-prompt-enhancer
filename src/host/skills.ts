@@ -20,6 +20,13 @@ import { isValidSkillName, toKebab } from "../skill-name.ts";
 
 export { SKILL_NAME_MAX_LEN, SKILL_NAME_RE, isValidSkillName, toKebab } from "../skill-name.ts";
 
+// 「技能已过期」判定（P7 T3）的**单一真源**在 `src/skill-badge.ts`，同款理由：本模块顶部有
+// `node:fs`，而客户端徽标 `SkillBadge.tsx` 引用不了它。这里只做**原样 re-export**——既有导出面
+// 逐字不变（tests/skills.test.mjs 因此无需改）；「两边是同一份规则」由 tests/skill-badge.test.mjs
+// 的**函数恒等**断言钉住（两份恰好相同的实现不算同源，会漂移）。本模块自己没有用到它，故不写
+// import：`export ... from` 直接转发同一个绑定（既有导出面与恒等两全），也免了 TS6133 的未读名。
+export { isSkillStale } from "../skill-badge.ts";
+
 /** 技能目录：`$DSH_HOME/skills/<name>/`。 */
 export function skillDir(name: string): string {
   return join(dshHome(), "skills", name);
@@ -79,11 +86,6 @@ export function renderSkillFile(input: {
 /** 目标目录是否已存在（同名冲突判定用）。 */
 export function skillExists(name: string): boolean {
   return existsSync(skillFilePath(name));
-}
-
-/** 「技能已过期」判定：导出过、且导出后提示词又改过。 */
-export function isSkillStale(prompt: { skillName?: string; updatedAt: number; skillExportedAt: number }): boolean {
-  return Boolean(prompt.skillName) && prompt.updatedAt > prompt.skillExportedAt;
 }
 
 export interface SkillExportInput {

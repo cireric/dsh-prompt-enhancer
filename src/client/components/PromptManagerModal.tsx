@@ -60,6 +60,7 @@ import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
 import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
 import { ImportExportModal } from "./ImportExportModal.tsx";
 import { RecycleManagePanel } from "./RecycleManagePanel.tsx";
+import { SkillBadge } from "./SkillBadge.tsx";
 import { SkillExportModal } from "./SkillExportModal.tsx";
 import { TagManagePanel } from "./TagManagePanel.tsx";
 // type-only：面板值住在弹窗宿主（PromptSurfaceHost），本文件只消费它（类型擦除 → 无运行期循环）。
@@ -519,6 +520,8 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
                   <span style={muted}>
                     {t("manager.list.usage")} {prompt.usageCount}
                   </span>
+                  {/* 规格 §7.6：列表行也标注技能状态（未导出时不渲染；过期时带「重新导出」）。 */}
+                  <SkillBadge t={t} prompt={prompt} />
                 </span>
                 {deleteError !== null && deleteError.id === prompt.id && (
                   <span role="alert" style={errorText}>
@@ -746,6 +749,22 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
             {failure.detail}
           </span>
         </span>
+      )}
+      {/* 规格 §7.6：详情页与列表行共用同一个徽标组件；重导后宿主回执整条替换本页记录 ⇒ 徽标
+          就地消失（详情页不订阅数据变更事件，只靠广播的话它自己不会刷新）。 */}
+      {current !== null && (
+        <SkillBadge
+          t={t}
+          prompt={current}
+          onReExported={(receipt) => {
+            if (!receipt.prompt) {
+              // 契约漂移必须可见（宿主技能导出分支一直回 prompt）；缺省时只靠广播，本页不假刷新。
+              console.warn("[prompt-enhancer] 重导回执缺少 prompt（契约漂移），详情页无法就地刷新技能状态", receipt);
+              return;
+            }
+            setCurrent(receipt.prompt);
+          }}
+        />
       )}
       <div style={actions}>
         <button type="button" style={button} onClick={onBack}>
