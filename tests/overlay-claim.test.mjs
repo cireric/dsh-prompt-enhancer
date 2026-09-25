@@ -8,6 +8,8 @@
  *     Node 侧无 react 的可见失败、以及 R55 历史形态（`shouldShowLibraryPanel`）与新读法的逐格同值。
  *  3. **`claimOverlayIfFree`（修复轮 1）**：「只取空屏」是**原子**判定——它是 AI 面板的取屏路径，
  *     也正是评审发现的 TOCTOU 的要害：快照陈旧时的写入不得再抢走别面。
+ *  4. **最保守调度下的终止性模型（修复轮 2）**：`#` 浮层拆成「A 取+释放 / B 只重取」两个 effect 后，
+ *     终止性必须来自**代码自身的自限性**，不得依赖 React 的批处理语义（宿主换语义 ⇒ UI 冻结）。
  *
  * **为什么组件接线不在这里测**（R-P7-C）：本仓库没有 react-dom / jsdom（全局硬约束 5），三个组件的
  * 渲染门与 effect 没有自动化通道。这里**不造空洞断言**去假装覆盖它——活体判据交给 T5（判定表见
@@ -261,7 +263,58 @@ test('claimOverlayIfFree / claimOverlay：被位移的面**能**重取（持续�
   settle();
 });
 
-// ---- 4) 与 P6 既有不变量的关系 ----
+// ---- 4) 两 effect 形态的**最保守调度**步进模型（修复轮 2：终止性不依赖批处理） ----
+
+/**
+ * 极简调度器 + `#` 浮层的两 effect 形态（修复轮 2 的拆分）跑在**最保守**语义上：**一次派发就重跑
+ * 所有 effect 的体**——不给 React 的「deps 相等跳过」与「同值 setState bailout」任何补贴。于是终止性
+ * 只能由 store 自身的自限性提供：同值不写入 ⇒ 不派发 ⇒ 不再唤醒（`tests/overlay-claim.test.mjs` 的
+ * 幂等用例锁的就是这条）。
+ *
+ * **这是模型，不是组件渲染**（本仓库无 react-dom）：副作用体逐字照抄组件里的两行守卫，用的是真实
+ * store API。它的价值在于：把「终止」从「调度器恰好帮了忙」变成「守卫自己会停」——把幂等守卫去掉
+ * （同值也派发）就会撞上步数上限变红。
+ */
+function runHashClaimModel(visible, maxRounds = 40) {
+  let dispatches = 0;
+  const off = subscribeOverlayClaim(() => {
+    dispatches += 1;
+  });
+  let rounds = 0;
+  try {
+    for (;;) {
+      rounds += 1;
+      assert.ok(rounds <= maxRounds, "最保守调度下不终止（自限性失效）——步数撞上限 " + maxRounds);
+      const before = dispatches;
+      // effect A（deps [visible]）：可见即取；不可见即释放（组件里是 body + cleanup，这里合并表达）。
+      if (visible) claimOverlay("hash");
+      else releaseOverlay("hash");
+      // effect B（deps [visible, claimed]，无 cleanup）：只重取，写完即停。
+      if (visible && getOverlayClaimSnapshot() !== "hash") claimOverlay("hash");
+      if (dispatches === before) break; // 一整轮无写入/无变化 ⇒ 静默
+    }
+  } finally {
+    off();
+  }
+  return { rounds, dispatches };
+}
+
+test("两 effect 形态：最保守调度下终止，一次事件最多 1 次派发（自限性来自代码）", () => {
+  settle();
+  // ① 令牌出现：A 取屏一次，下一轮无写入 ⇒ 静默
+  assert.deepEqual(runHashClaimModel(true), { rounds: 2, dispatches: 1 });
+  assert.equal(getOverlayClaimSnapshot(), "hash");
+  // ② 被夺（词库激活抢屏）→ B 重取**一次**即静默（这是修复轮 1 的缺陷形态：不能永久静默）
+  claimOverlay("library");
+  assert.deepEqual(runHashClaimModel(true), { rounds: 2, dispatches: 1 });
+  assert.equal(getOverlayClaimSnapshot(), "hash", "被夺后重取");
+  // ③ 隐藏：A 释放一次即静默（P6 的教训：留成占位会把别的面压住）
+  assert.deepEqual(runHashClaimModel(false), { rounds: 2, dispatches: 1 });
+  assert.equal(getOverlayClaimSnapshot(), "none");
+  settle();
+});
+
+// ---- 5) 与 P6 既有不变量的关系 ----
 
 test("R55 的历史形态（shouldShowLibraryPanel）与 claim 读法逐格同值", () => {
   for (const open of [false, true]) {

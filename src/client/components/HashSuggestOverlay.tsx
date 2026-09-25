@@ -182,27 +182,44 @@ export function HashSuggestOverlay({
    * （`onScreen` 在每次渲染时重算）——R55 的纪律针对的是判定，不是这次写入。令牌出现到抢到屏之间
    * 最多差一次提交，那一提交里本面不渲染（不会与任何面同屏）。
    *
-   * **持续形态**（修复轮 1 的评审发现）：体是「只要想在场、寄存器不在本面手里就重取」，deps 是
-   * `[visible, claimed]`（`claimed` 是**唤醒信号**：寄存器被别面改写的每一次都必须让本 effect 重跑）。
-   * 为什么不能是一次性写入（deps 只有 `[visible]`）：`visible` 由令牌派生，**被位移时它不跳变**
-   * ——一次性写入下，浮层被别面抢走后**没有任何重取时机**，令牌仍在草稿里却永远不再上屏（其 pending
-   * 变量填窗也一并消失）= 永久静默。这句话同时是报告 §4.1「浮层可见 ⇔ 浮层持 claim」这条等价前提的
-   * 成立条件。
+   * **持续形态**（修复轮 1 的评审发现）：被别面抢走后必须能**重取**。为什么不能是一次性写入
+   * （deps 只有 `[visible]`）：`visible` 由令牌派生，**被位移时它不跳变**——一次性写入下，浮层被
+   * 别面抢走后**没有任何重取时机**，令牌仍在草稿里却永远不再上屏（其 pending 变量填窗也一并消失）
+   * = 永久静默。这句话同时是报告 §4.1「浮层可见 ⇔ 浮层持 claim」这条等价前提的成立条件。
    *
-   * 为什么读**活寄存器**而不是本次渲染的 `claimed` 快照：本 effect 在**提交之后**才跑，快照可能已被
-   * 更早的 effect 或两次事件之间的一个回调改写——那时快照说「已经是 hash」而寄存器其实已归别面，
-   * 重取就会被漏掉（反向的陈旧同样致命：见 `AIPolishButton` 的取屏守卫）。`getOverlayClaimSnapshot()`
-   * 读的是此刻的真值。
+   * **修复轮 2（R-P7-R）：拆成两个 effect，让终止性来自代码自身的自限性，而不是宿主的批处理语义。**
+   * 合并成一条（deps `[visible, claimed]` + 无条件 cleanup）时，每次寄存器跳变都会走一遍
+   * 「cleanup **真写释放**（hash→none）→ 体**真写重取**（none→hash）」：那 2 次派发在 React 18 的自动
+   * 批处理下被合并、末态与上一次渲染相同 ⇒ deps 不变 ⇒ 表面终止；但**终止性因此建在宿主的批处理语义
+   * 上**——宿主若退回非批处理语义（React 17 legacy：effect 内 setState 同步重渲染）就是无界重渲染环，
+   * 而 UI 冻结比同屏与静默都严重。本项目已三次因「把承重结论建在别人的行为上」返工（R35 / R55 / R60），
+   * 故收成下面两条：
+   *
+   *  - **A（取 + 释放）**：deps 只有 `[visible]`。可见性跳变时写一次；`visible` 转 false 或**卸载**时
+   *    cleanup 释放一次。它的 deps 里**没有寄存器** ⇒ 别面（或 B）造成的跳变**绝不**会重跑 A。
+   *  - **B（只重取，无 cleanup）**：deps `[visible, claimed]`。只在「可见**且**寄存器不在本面手里」时写；
+   *    写完寄存器即 `hash` ⇒ B 再跑时读到 `hash` ⇒ **不写** ⇒ 不派发 ⇒ 不再唤醒任何人 ⇒ 静默。
+   *    没有 cleanup ⇒ 不存在「无谓释放再重取」的那两次写。
+   *  ⇒ 「被夺 → B 写**一次** → 终止」由**自身条件从「不满足」变「满足」时才写一次**保证，与调度语义无关。
+   *    正面证据是 `tests/overlay-claim.test.mjs` 的**最保守调度**用例：一次派发就重跑所有 effect
+   *    （不给「deps 相等跳过」「同值 bailout」任何补贴），仍然终止且每次事件只派发一次。
+   *
+   * B 里读**活寄存器**而不是本次渲染的 `claimed` 快照：本 effect 在**提交之后**才跑，快照两个方向都会
+   * 陈旧——向下漏（以为屏在别面手里、其实是自己 ⇒ 漏掉必要的重取）会退回「被夺后永久静默」；向上错
+   * （以为还是自己、其实已被改写）同理漏掉重取。`getOverlayClaimSnapshot()` 读的是此刻的真值。
    *
    * 释放是**条件式**的（`releaseOverlay` 只清自己持有的）：pointerdown 收起本浮层与「点击词库按钮」
-   * 可能落在同一拍上（F1-1 的 0/5/10ms），本 effect 的 cleanup 晚于词库的取屏时**不得**把它清掉。
-   * 卸载也必须释放（P6 的教训：留成占位会把别的面压住）——故 cleanup 无条件存在。
+   * 可能落在同一拍上（F1-1 的 0/5/10ms），A 的 cleanup 晚于词库的取屏时**不得**把它清掉。
    */
   React.useEffect(() => {
-    if (visible && getOverlayClaimSnapshot() !== "hash") claimOverlay("hash");
+    if (visible) claimOverlay("hash");
     return () => {
       releaseOverlay("hash");
     };
+  }, [visible]);
+
+  React.useEffect(() => {
+    if (visible && getOverlayClaimSnapshot() !== "hash") claimOverlay("hash");
   }, [visible, claimed]);
 
   // R47：被点外部收起之后（仅当前这个令牌）不再渲染；令牌消失或变化即自动复位。
