@@ -44,3 +44,14 @@ npm run smoke       # 真实执行 client bundle，校验注册 id 与导出形�
 ## 本机环境
 
 计划文档写于 Windows + PowerShell 环境，本机为 **macOS**：命令等价改用 bash；`scripts/link-dsh-deps.mjs` 的 `symlink(..., "junction")` 在 macOS 上退化为普通目录符号链接，属预期行为。
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`cireric/dsh-prompt-enhancer`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+single-context: root `CONTEXT.md` + `docs/adr/`, created lazily. See `docs/agents/domain.md`.
+
