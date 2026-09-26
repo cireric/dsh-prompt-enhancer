@@ -51,18 +51,22 @@ const ACTIONS: ReadonlyArray<{ mode: InsertMode; label: PromptEnhancerKey }> = [
 const NOTICE_MS = 4000;
 
 /**
- * 词库图标：内联四角星，与 `AIPolishButton` 的 `SparkleIcon` 同形——只图标模式（`composerButtonIconOnly`）
- * 下它是按钮唯一可见物，名字由 `aria-label` / `title` 承担（无障碍面不丢名字）。不引任何图标依赖。
+ * 词库图标：内联书签形（取自上游参考项目词库按钮的原始图标，`.tmp/dsh-prompt-library`
+ * `data/PromptLibraryButton.tsx:1023-1029`）——与 `AIPolishButton` 的 `SparkleIcon`（四角星）
+ * **刻意不同形**：输入框工具行两个相邻按钮同图标会被误认（反馈 2026-09-25）。只图标模式
+ * （`composerButtonIconOnly`）下它是按钮唯一可见物，名字由 `aria-label` / `title` 承担
+ * （无障碍面不丢名字）。不引任何图标依赖。
  */
 function PromptLibraryIcon(): React.ReactElement {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={ICON}>
       <path
-        d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z"
+        d="M4 5h11a3 3 0 0 1 3 3v11l-3-2-3 2V8a3 3 0 0 0-3-3H4Z"
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinejoin="round"
       />
+      <path d="M8 9h3M8 12h3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }

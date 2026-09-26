@@ -72,15 +72,28 @@ export function SidebarPromptEntry({ t, wide }: SidebarPromptEntryProps): React.
    */
   const settings = useSettings();
 
+  /**
+   * hover 反馈（反馈 2026-09-25）：宿主 `SidebarRoot.module.css:388-389` 明写 footer 插槽
+   * 「Each occupant owns its button geometry **and hover chrome**」——宿主两条（Context Insights /
+   * Settings）走 `.panelRow:hover`（`--dsw-alias-interactive-bg-hover`），本入口的内联样式
+   * 表达不了 `:hover` 伪类，此前独缺反馈。这里是纯 React 状态重渲染（不是 DOM 写入）：
+   * setState 触发本组件重渲染、React 更新自己的 button 节点，不碰宿主节点；底色令牌
+   * `TOKEN.hover` 与宿主 hover 底色同源（`theme.ts` 的 `--dsw-alias-bg-hover` 口径）。
+   * 离开即清除，窄轨态同样生效。
+   */
+  const [hovered, setHovered] = React.useState(false);
+
   if (!settings.showSidebarButton) return null;
 
   return (
     <button
       type="button"
-      style={entryStyle(wide)}
+      style={{ ...entryStyle(wide), ...(hovered ? { background: TOKEN.hover } : null) }}
       title={t("sidebar.entry.tip")}
       aria-label={t("sidebar.entry.title")}
       aria-haspopup="dialog"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       onClick={() => openManager()}
     >
       <BookIcon />

@@ -19,8 +19,9 @@
  *  · 点击 ⇒ 含变量的提示词走宿主**既有**的 `TemplateVariablesDialog`（**不重写第二份**），确认后
  *    **先** `api.recordUsage(p.id)`（`POST /prompts/:id/use`）**再** `inputActions.setDraft(...)`（D-P8-9）；
  *    无变量的直接插入并计用量；
- *  · 零 DOM 写入、零 keydown|keyup|keypress 监听（§7.3 / §13.9-四）：读草稿只经座位注入的 `useInput`，
- *    悬停态不用 `onMouseEnter` 改 style（那正是 DOM 写入）；
+ *  · 零 DOM 写入、零 keydown|keyup|keypress 监听（§7.3 / §13.9-四）：读草稿只经座位注入的 `useInput`；
+ *    悬停反馈（如需）走 React state 重渲染（`setState` 不写宿主 DOM），
+ *    不用 `onMouseEnter` 里直接改 `element.style`（那才是 DOM 写入）；
  *  · 全部文案走 `t()`（键同步落在 `utils/i18n.ts` 的 zh/en 两表）。
  */
 import * as React from "react";
