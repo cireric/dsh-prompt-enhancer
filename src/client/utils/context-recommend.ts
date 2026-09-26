@@ -49,9 +49,13 @@ export function termWeight(k: string): number {
   return 1 + Math.min(2, Math.log2(k.length) / 2);
 }
 
+/** usage 对得分的最大贡献比例（×1.15 封顶；issue #2 / 采纳文档 Q16 的裁决定值 15%）。 */
+export const USAGE_BOOST_CAP = 0.15;
+
 /**
  * 综合匹配得分：标题/标签命中权重 2、正文 1，乘词频与词长加权；
- * 相关度为 0 直接不推荐；命中后叠加使用智能（常用度对数归一 + 近 30 天新鲜度）。
+ * 相关度为 0 直接不推荐；命中后叠加使用智能——常用度封顶 **15%** 微调
+ * （issue #2：相关性最重要，弱相关的高频项不得压过强相关的低频项）。
  */
 export function scorePrompt(p: Prompt, kw: Map<string, number>, now: number): number {
   const head = (p.title + " " + (p.tags?.join(" ") ?? "")).toLowerCase();
@@ -66,7 +70,7 @@ export function scorePrompt(p: Prompt, kw: Map<string, number>, now: number): nu
   const freq = p.usageCount > 0 ? Math.log(1 + p.usageCount) / Math.log(11) : 0;
   const fresh = p.lastUsedAt > 0 && now - p.lastUsedAt < FRESH_MS ? 1 : 0;
   const usage = Math.min(1, freq * 0.6 + fresh * 0.4);
-  return relevance * (1 + usage);
+  return relevance * (1 + usage * USAGE_BOOST_CAP);
 }
 
 /**
@@ -87,7 +91,10 @@ export function recentUserText(messages: readonly string[], count: number = CONT
 
 /**
  * 推荐入口。**草稿为空（或只有空白）时一律返回空数组**——这是触发条件，不是优化。
- * 关键词来源 = 当前草稿（主）+ 最近聊天上下文（叠加）。
+ *
+ * 关键词分两层（issue #2 的**草稿词硬门槛**）：一条提示词必须命中至少一个**草稿**关键词才有
+ * 资格推荐；会话上下文关键词只并入资格内的**排序**打分池，不得把仅命中上下文词的提示词顶进
+ * 推荐条。草稿抽不出任何关键词（全是停用词/单字符等）时整体返回空——无草稿词即无资格。
  */
 export function recommend(input: {
   draft: string;
@@ -96,14 +103,31 @@ export function recommend(input: {
   now: number;
 }): Prompt[] {
   if (!input.draft.trim()) return [];
-  const parts: string[] = [input.draft];
-  if (input.contextText) parts.push(input.contextText);
-  const kw = extractKeywords(parts.join("\n"));
-  if (kw.size === 0) return [];
+  const draftKw = extractKeywords(input.draft);
+  if (draftKw.size === 0) return [];
+  const kw = new Map(draftKw);
+  if (input.contextText) {
+    for (const [k, f] of extractKeywords(input.contextText)) {
+      kw.set(k, (kw.get(k) ?? 0) + f);
+    }
+  }
   return input.prompts
     .map((x) => ({ x, score: scorePrompt(x, kw, input.now) }))
-    .filter((hit) => hit.score > 0)
+    .filter((hit) => draftRelevant(hit.x, draftKw) > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, RECOMMEND_LIMIT)
     .map((hit) => hit.x);
+}
+
+/** 只按**草稿**关键词算相关度：> 0 才有推荐资格（硬门槛的判定面）。 */
+export function draftRelevant(p: Prompt, draftKw: Map<string, number>): number {
+  const head = (p.title + " " + (p.tags?.join(" ") ?? "")).toLowerCase();
+  const body = p.body.toLowerCase();
+  let relevance = 0;
+  for (const [k, f] of draftKw) {
+    const w = termWeight(k);
+    if (head.includes(k)) relevance += f * 2 * w;
+    else if (body.includes(k)) relevance += f * w;
+  }
+  return relevance;
 }
