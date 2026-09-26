@@ -81,6 +81,13 @@ export const PROMPT_WRITABLE_KEYS = ["title", "body", "tags", "summary", "skillN
 /** 客户端可经 PUT 写入的补丁子集（不含 `sourceBody` / `aiRefined` / `aiRefinedAt`）。 */
 export type PromptWritablePatch = Pick<PromptPatch, (typeof PROMPT_WRITABLE_KEYS)[number]>;
 
+/**
+ * `store.updatePrompt` 可接受的补丁类型（§13.13）：与 `PromptWritablePatch` 同键集。
+ * AI 三字段（`sourceBody` / `aiRefined` / `aiRefinedAt`）只能由 `aiWriteBack: true`
+ * 在 store 内部派生（§13.8-决定四的写回缝唯一性），任何调用方都不得经补丁直接写。
+ */
+export type PromptInternalPatch = PromptWritablePatch;
+
 /** 插件设置（规格 §4.2）。P3 由它派生宿主 settings 命名空间的 schema。 */
 export interface PluginSettings {
   panelWidth: number;

@@ -27,7 +27,7 @@ import {
   type Prompt,
   type PromptBackup,
   type PromptInput,
-  type PromptPatch,
+  type PromptInternalPatch,
   type PromptSort,
   type RollbackResult,
   type TrashItem,
@@ -483,7 +483,7 @@ export function createPrompt(input: PromptInput): Prompt {
  */
 export function updatePrompt(
   id: string,
-  patch: PromptPatch,
+  patch: PromptInternalPatch,
   options: { aiWriteBack?: boolean } = {},
 ): Prompt | undefined {
   const cur = getDb();
@@ -516,9 +516,8 @@ export function updatePrompt(
     next.summary = patch.summary;
     contentChanged = true;
   }
-  if (patch.sourceBody !== undefined) next.sourceBody = patch.sourceBody;
-  if (patch.aiRefined !== undefined) next.aiRefined = patch.aiRefined;
-  if (patch.aiRefinedAt !== undefined) next.aiRefinedAt = patch.aiRefinedAt;
+  // AI 三字段（sourceBody/aiRefined/aiRefinedAt）不在此接受：唯一写入者是
+  // aiWriteBack:true 的内部派生（上方 503-507 行），§13.8-决定四 / §13.13。
   if (patch.skillName !== undefined) next.skillName = patch.skillName;
   if (patch.skillExportedAt !== undefined) next.skillExportedAt = patch.skillExportedAt;
 

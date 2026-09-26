@@ -143,6 +143,30 @@ test("CRUD 与列表：搜索大小写不敏感、标签过滤、四种排序", 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 写回缝收口（§13.13）：AI 三字段不可经补丁写入，唯一写入者是 aiWriteBack 派生
+// ─────────────────────────────────────────────────────────────────────────────
+test("§13.13 补丁传入 sourceBody/aiRefined/aiRefinedAt 必须被忽略（运行时负样本；类型面由 PromptInternalPatch 在 tsc 拦截）", () => {
+  const p = store.createPrompt({ title: "白名单外", body: "原始正文" });
+
+  // JS 无类型擦除保护：直接传白名单外字段，store 必须忽略之
+  const polluted = store.updatePrompt(p.id, {
+    title: "改名",
+    sourceBody: "伪造的原文",
+    aiRefined: false,
+    aiRefinedAt: 12345,
+  });
+  assert.equal(polluted.title, "改名", "白名单内字段照常生效");
+  assert.equal(polluted.sourceBody, undefined, "sourceBody 不可经补丁写入");
+  assert.equal(polluted.aiRefined, false, "aiRefined 保持 createPrompt 初值");
+  assert.equal(polluted.aiRefinedAt, 0, "aiRefinedAt 保持 createPrompt 初值");
+
+  // aiWriteBack 派生路径不受影响（正向对照）
+  const ai = store.updatePrompt(p.id, { body: "新正文" }, { aiWriteBack: true });
+  assert.equal(ai.sourceBody, "原始正文");
+  assert.equal(ai.aiRefined, true);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AI 写回 + 回滚（含 N2）
 // ─────────────────────────────────────────────────────────────────────────────
 test("AI 写回回填 sourceBody；rollback 双向切换；N2 无原文时必须拒绝且不清空正文", () => {

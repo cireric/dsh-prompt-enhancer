@@ -957,3 +957,11 @@ P6 的活 GUI 验收（T7 → T7b → T7c）实测暴露两处**规格字面与�
 设置页（13 键，`settings.section`，order 30）+ 上下文推荐（`conversation.input.dock`，order 10）+ 两个 `*IconOnly` 语义统一（一并让 `composerButtonIconOnly` 第一次真的生效）+ i18n 键集收口 + README 双语 + P7/P6 移交的 **7 项代码修复**（T7-1…T7-7）+ 侧栏入口与宿主条目同形（F1）+ 管理面板头部两行化（F2）。
 
 **影响范围**：§7.1（座位表 6 → 7 与标题订正）、§12（验收 14 声明载体的口径）、README（限制节与 systemPrompt 声明）；P8 计划的任务 T1–T7。§2.1 / §2.2 / §9.3 的验收条目 / §4.2 的默认值 / §10 的署名声明**本轮一律未动**。
+
+### 13.13 写回缝收口完成（2026-09-25，控制者；承接 §13.8-决定四）
+
+1. **背景**：§13.8-决定四裁定「aiWriteBack 写回缝是唯一写回路径，客户端不得直接写 sourceBody / aiRefined」。全库评审发现该不变量在宿主侧只收口了一半：HTTP 层（PUT /prompts/:id 分发）只拷 PROMPT_WRITABLE_KEYS 白名单 6 键（已在位，tests/api.test.mjs 有锁），但 store.updatePrompt 的补丁参数仍是全量 PromptPatch——三个 AI 字段「靠没人传」而非「传不进来」。
+2. **本轮收口**：store.updatePrompt 的补丁类型收窄为 PromptInternalPatch（= PromptWritablePatch 同键集，新导出于 types.ts），并删除 store 内对补丁 sourceBody / aiRefined / aiRefinedAt 的三行接受逻辑。AI 三字段的**唯一写入者**从此是 aiWriteBack: true 的内部派生（§4.4 / P2-D12 语义不变）。
+3. **不是行为变化**：收口前没有任何调用方经补丁传这三个字段（routes.ts 的另一调用点只写 skillName 两键），库内数据与路由响应逐字节不变。负样本测试锁运行时语义（JS 擦除后补丁仍传得进来，store 必须忽略），类型面由 PromptInternalPatch 在 tsc --noEmit 拦截。
+4. **影响范围**：src/types.ts（+1 导出）、src/host/store.ts（参数类型收窄 + 删 3 行）、tests/store.test.mjs（+1 负样本）。rollbackPrompt 走 writePrompt 直写，不经补丁，不受影响。
+
