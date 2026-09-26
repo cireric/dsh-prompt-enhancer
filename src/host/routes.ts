@@ -15,7 +15,7 @@ import * as skills from "./skills.ts";
 import * as store from "./store.ts";
 import { clearRouteCache } from "./ai.ts";
 import { getSettings, isSettingsAvailable, updateSettings } from "./settings.ts";
-import { API_PREFIX, type PromptPatch, type PromptSort } from "../types.ts";
+import { API_PREFIX, type PromptSort, type PromptWritablePatch } from "../types.ts";
 
 /** 路由注册对象（与 `@deepseek-ai/dsh-host-webserver` 的 `WebRoute` 对齐）。 */
 export interface PromptEnhancerRoute {
@@ -158,7 +158,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       }
       if (method === "PUT") {
         const body = await readBody(req);
-        const patch: PromptPatch = {};
+        const patch: PromptWritablePatch = {};
         if (body.title !== undefined) patch.title = asString(body.title) ?? "";
         if (body.body !== undefined) {
           const text = asString(body.body);

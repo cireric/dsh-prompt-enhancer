@@ -54,4 +54,3 @@ Issues live in GitHub Issues (`cireric/dsh-prompt-enhancer`, via the `gh` CLI). 
 ### Domain docs
 
 single-context: root `CONTEXT.md` + `docs/adr/`, created lazily. See `docs/agents/domain.md`.
-
