@@ -12,7 +12,7 @@ import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { canRender } from "../../overlay-claim.ts";
 import type { Prompt } from "../../types.ts";
-import { api } from "../utils/api.ts";
+import { ApiError, api } from "../utils/api.ts";
 import { showsLabel } from "../utils/icon-only.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
@@ -244,9 +244,9 @@ export function PromptLibraryButton({
     close();
     void api.recordUsage(prompt.id).catch((err: unknown) => {
       console.warn("[prompt-enhancer] " + t("error.use"), err);
-      const reason = err instanceof Error ? err.message : String(err);
-      // 宿主 `POST /prompts/:id/use` 对已删除的提示词回 404「提示词不存在」。
-      if (reason.includes("不存在")) {
+      // 宿主 `POST /prompts/:id/use` 对已删除的提示词回 404；按 status 分类（不匹配 message 文本，
+      // 宿主文案可改）——与 api.ts / ai-flow.ts 的既定纪律同口径。
+      if (err instanceof ApiError && err.status === 404) {
         setPrompts((prev) => (prev === null ? prev : prev.filter((item) => item.id !== prompt.id)));
         setNotice((prev) => ({ text: t("error.noPrompt"), seq: (prev?.seq ?? 0) + 1 }));
       }

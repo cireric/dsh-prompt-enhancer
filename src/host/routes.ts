@@ -43,9 +43,21 @@ function fail(res: ServerResponse, status: number, error: string): void {
   json(res, status, { ok: false, error });
 }
 
+/** 请求体体积上限（5 MB）：提示词正文与导入备份都远小于此；防超大 POST 打满宿主进程内存。 */
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = Buffer.from(chunk as Uint8Array);
+    total += buf.length;
+    if (total > MAX_BODY_BYTES) {
+      req.destroy(); // 掐断上传：超限后不再让字节继续流入
+      throw new BadRequest("请求体超过上限（" + MAX_BODY_BYTES + " 字节）");
+    }
+    chunks.push(buf);
+  }
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   if (!raw) return {};
   let parsed: unknown;
@@ -66,6 +78,14 @@ function asString(value: unknown): string | undefined {
 
 function asStringArray(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : undefined;
+}
+
+/**
+ * 有限数字才收：typeof NaN === "number" 为真，须用 Number.isFinite 显式排除 NaN/Infinity
+ * ——否则直进 SQL 绑定，要么抛错变意外 500，要么落 NULL 被 ?? 0 静默归零。
+ */
+function asFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function segments(pathname: string): string[] {
@@ -148,8 +168,10 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         if (body.tags !== undefined) patch.tags = asStringArray(body.tags) ?? [];
         if (body.summary !== undefined) patch.summary = asString(body.summary) ?? "";
         if (body.skillName !== undefined) patch.skillName = asString(body.skillName);
-        if (body.skillExportedAt !== undefined && typeof body.skillExportedAt === "number") {
-          patch.skillExportedAt = body.skillExportedAt;
+        if (body.skillExportedAt !== undefined) {
+          const at = asFiniteNumber(body.skillExportedAt);
+          if (at === undefined) return fail(res, 400, "skillExportedAt 必须是有限数字");
+          patch.skillExportedAt = at;
         }
         const updated = store.updatePrompt(id, patch, { aiWriteBack: body.aiWriteBack === true });
         return updated ? ok(res, updated) : fail(res, 404, "提示词不存在");

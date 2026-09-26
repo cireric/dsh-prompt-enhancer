@@ -14,12 +14,19 @@
  * `process.env.DSH_HOME = ...`。故这两样由调用方**注入**，import 顺序仍留在调用方手里。
  */
 
-/** 假 IncomingMessage：`readBody` 用 `for await` 读它，故实现 async 迭代器。 */
+/**
+ * 假 IncomingMessage：`readBody` 用 `for await` 读它，故实现 async 迭代器。
+ * body 传**字符串**时按原样发送（负样本要用 `1e999` 这类 JSON.parse 后为 Infinity 的字面量，
+ * 而 JSON.stringify 对非有限数字只会产出 null，走对象通道送不进去）。
+ */
 export function fakeReq(method, url, body) {
-  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body), "utf8")];
+  const chunks = body === undefined
+    ? []
+    : [Buffer.from(typeof body === "string" ? body : JSON.stringify(body), "utf8")];
   return {
     method,
     url,
+    destroy() {}, // 与真实 IncomingMessage 同形：超限路径会调它掐断上传
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk;
     },
