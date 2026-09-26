@@ -6,13 +6,23 @@
  * - **不 import store**：需要标签库/已有变量时由调用方传参（P3-D12），故本模块除注入的
  *   runtime 外零副作用，纯文本处理全部落在 `text.ts` / `refine.ts` 以便单测；
  * - 单点网络出口 `collectText()`：所有能力都经它 → `withLlmLock` 全局串行；
- * - 失败一律返回 `undefined` / `{ fail }`，由路由层转 503，绝不上抛打断宿主。
+ * - 失败一律**带跨层 code**（`ai-errors.ts`，T3）：能力层返回 `{ ok:false, code }`，
+ *   由路由层转 503 + 结构化信封，绝不上抛打断宿主。
+ * - 结果缓存（Issue #3 / T2a 接入收尾）：只缓存**纯读**的润色与一键完善；键含 route 维度，
+ *   失败结果不入缓存，命中仅开发日志（`logAI` 本就只在 `__DEV__` 下落盘）。
  */
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { GenerateOptions, LlmModelInfo, LlmRuntime } from "@deepseek-ai/dsh-llm";
 import { logDir } from "./paths.ts";
+import { aiResultCache, hashCacheKey } from "./ai-cache.ts";
+import {
+  attemptFailure,
+  withDiagnosticRetry,
+  type AiAttempt,
+  type AiErrorCode,
+} from "./ai-errors.ts";
 import { parseRefineResult, type AiRefineResult } from "./refine.ts";
 import { extractVariables, parseSummaryJson, stripAiFillerDetailed } from "./text.ts";
 import type { PluginSettings } from "../types.ts";
@@ -30,6 +40,11 @@ export interface AiSelectable {
   models: Array<{ id: string; name: string }>;
 }
 
+/** 技能描述符生成结果：失败形态用跨层 code（T3；旧「empty」按解析产物归并为空回复或缺字段）。 */
+export type SkillDescribeResult =
+  | { desc: SkillDescriptor }
+  | { fail: Extract<AiErrorCode, "no-llm" | "route" | "empty-output" | "schema-mismatch"> };
+
 /** AI 生成的技能描述符（三个字段都要落盘，修上游「生成了又丢弃」的缺陷）。 */
 export interface SkillDescriptor {
   name: string;
@@ -37,12 +52,20 @@ export interface SkillDescriptor {
   whenToUse?: string;
 }
 
-/** 技能描述符生成结果。 */
-export type SkillDescribeResult =
-  | { desc: SkillDescriptor }
-  | { fail: "no-llm" | "route" | "empty" | "parse" };
+/** 润色的**能力层**结果：成功带文本；失败带跨层 code（路由层负责信封，T3）。 */
+export type PolishCoreResult = { ok: true; polished: string } | { ok: false; code: AiErrorCode };
 
-/** 润色 + 用途摘要的结果；`summary` 缺失表示摘要生成失败（不影响正文返回）。 */
+/** 润色 + 用途摘要的**能力层**结果；`summary` 缺失表示摘要生成失败（不影响正文返回）。 */
+export type PolishWithSummaryCoreResult =
+  | { ok: true; polished: string; summary?: string }
+  | { ok: false; code: AiErrorCode };
+
+/** 一键完善的**能力层**结果（`refine.ts` 的解析产物 / 失败 code）。 */
+export type RefineCoreResult =
+  | { ok: true; refined: AiRefineResult }
+  | { ok: false; code: AiErrorCode };
+
+/** 润色 + 用途摘要的最终结果；`summary` 缺失表示摘要生成失败（不影响正文返回）。 */
 export interface PolishWithSummary {
   polished: string;
   summary?: string;
@@ -259,9 +282,7 @@ function skillSystemPrompt(vars: string[]): string {
     "- name：英文小写 kebab-case（仅字母/数字/连字符，4-40 个字符），简洁达意，作为技能目录名与聊天框 /触发名；",
     "- description：用一句英文描述该技能的用途与适用场景（不要 Markdown），供技能 AI 在合适时机自动触发；",
     "- whenToUse：英文，一两句话说明什么场景下应该使用该技能；",
-    `- 正文中的 {{变量名}} 是模板变量占位符（运行时由使用者替换），必须原样保留，不得删除、改写或替换其中的变量名；${
-      vars.length ? `该技能需要用户提供的输入变量有：${vars.join("、")}，请在描述中体现。` : "该技能没有模板变量。"
-    }`,
+    `- 正文中的 {{变量名}} 是模板变量占位符（运行时由使用者替换），必须原样保留，不得删除、改写或替换其中的变量名；${vars.length ? `该技能需要用户提供的输入变量有：${vars.join("、")}，请在描述中体现。` : "该技能没有模板变量。"}`,
     "请严格输出一个 JSON 对象，不要 Markdown 代码块，不要任何多余文字：",
     '{ "name": "skill-name", "description": "...", "whenToUse": "..." }',
   ].join("\n");
@@ -269,13 +290,18 @@ function skillSystemPrompt(vars: string[]): string {
 
 // ── 单点网络出口 ───────────────────────────────────────────────────────────
 
-/** 单次调用：把流式分片拼成纯文本。失败返回 `undefined`（并写诊断日志）。 */
+/**
+ * 单次调用：把流式分片拼成纯文本。失败返回**结构化失败形态**（code + 单行 detail，T3）：
+ * - 流抛错 / finish=error 等未归类失败 → `unknown`；
+ * - finish=aborted（30s 超时到点）或 finish.failure.code === "timeout" → `timeout`；
+ * - 调用「成功」但没文本 → `empty-output`。
+ */
 async function collectText(
   runtime: LlmRuntime,
   route: AiRoute,
   system: string,
   content: string,
-): Promise<string | undefined> {
+): Promise<AiAttempt> {
   const options: GenerateOptions = {
     provider: route.provider,
     model: route.model,
@@ -295,13 +321,23 @@ async function collectText(
   try {
     for await (const chunk of runtime.stream(options)) assembler.push(chunk);
   } catch (e) {
-    logAI(`collect err ${route.provider}/${route.model}: ${String(e)}`);
-    return undefined;
+    const detail = `collect err ${route.provider}/${route.model}: ${String(e)}`;
+    logAI(detail);
+    return { ok: false, failure: attemptFailure("unknown", detail) };
   }
 
   if (assembler.finish.kind !== "stop" && assembler.finish.kind !== "max-tokens") {
-    logAI(`collect abort ${assembler.finish.kind}`);
-    return undefined;
+    // finish 的 failure.code 是 provider/transport 的自由码（dsh-llm LlmFailure）：约定上
+    // transport 超时用 "timeout"、本仓 30s AbortSignal 到点归 aborted——两者都归 timeout 码；
+    // 其余（provider 报错等）归 unknown。
+    const failure = "failure" in assembler.finish ? assembler.finish.failure : undefined;
+    const timedOut =
+      assembler.finish.kind === "aborted" ||
+      (failure !== undefined && failure.code === "timeout");
+    const code: AiErrorCode = timedOut ? "timeout" : "unknown";
+    const detail = `collect abort ${assembler.finish.kind}${failure?.code ? ` (${failure.code})` : ""} ${route.provider}/${route.model}`;
+    logAI(detail);
+    return { ok: false, failure: attemptFailure(code, detail) };
   }
 
   const text = assembler
@@ -311,50 +347,112 @@ async function collectText(
     .join("")
     .trim();
   if (!text) {
-    logAI("collect empty");
-    return undefined;
+    const detail = `collect empty ${route.provider}/${route.model}`;
+    logAI(detail);
+    return { ok: false, failure: attemptFailure("empty-output", detail) };
   }
   logAI(`collect done ${assembler.finish.kind} ${text.length}`);
-  return text;
+  return { ok: true, text };
 }
 
-/** 按候选顺序轮询，第一个成功即采用；全部失败返回 `undefined`。 */
-async function collectTextWithFallback(
+/**
+ * 按候选顺序轮询，第一个成功即采用；全部失败返回**最后一次**的失败形态（T3）。
+ * 可选的 `diagnosis`（上次失败诊断）拼进本轮每次调用的 user 消息——由
+ * `withDiagnosticRetry` 在整层轮询外注入，本函数不感知重试语义。
+ */
+async function attemptAllCandidates(
   runtime: LlmRuntime,
   candidates: AiRoute[],
   system: string,
   content: string,
-): Promise<string | undefined> {
+  diagnosis?: string,
+): Promise<AiAttempt> {
   if (candidates.length === 0) {
     logAI("fallback: no candidates");
-    return undefined;
+    return { ok: false, failure: attemptFailure("route", "fallback: no candidates") };
   }
+  const actualContent = diagnosis ? `${content}\n\n${diagnosis}` : content;
+  let lastFailure = attemptFailure("unknown", "fallback: all failed");
   for (const route of candidates) {
     logAI(`fallback try ${route.provider}/${route.model}`);
-    const text = await withLlmLock(() => collectText(runtime, route, system, content));
-    if (text !== undefined) {
+    const attempt = await withLlmLock(() => collectText(runtime, route, system, actualContent));
+    if (attempt.ok) {
       logAI(`fallback use ${route.provider}/${route.model}`);
-      return text;
+      return attempt;
     }
+    lastFailure = attempt.failure;
   }
   logAI("fallback: all failed");
-  return undefined;
+  return { ok: false, failure: lastFailure };
+}
+
+/**
+ * 诊断注入重试 + 候选轮询的组合出口（T3）：只重试一次、重试带失败诊断、
+ * 仍失败返回最终 code。润色 / 摘要 / 一键完善三条能力共用。
+ */
+function callLlmWithRetry(
+  runtime: LlmRuntime,
+  candidates: AiRoute[],
+  system: string,
+  content: string,
+) {
+  return withDiagnosticRetry((diagnosis) =>
+    attemptAllCandidates(runtime, candidates, system, content, diagnosis),
+  );
+}
+
+// ── 结果缓存接入（Issue #3 / T2a 收尾）────────────────────────────────────
+//
+// 只缓存**纯读**的两项：润色（含摘要变体）与一键完善。写回类操作（技能描述符由导出
+// 流程消费、meta 写入、导出技能）不经过缓存。
+// - 键 = 哈希(system + user + route)：route 进键 ⇒ 换模型不命中旧缓存；
+// - 失败（`{ ok:false }` / 抛错）不入缓存：缓存里只有成功结果；
+// - 命中日志经 `logAI`：仅开发构建可见（生产零日志、零行为差异）。
+
+/** 缓存键的 route 维度（首个候选即实际将用的路由；缓存生效时不会落到别的候选）。 */
+function primaryRoute(candidates: AiRoute[]): string {
+  const route = candidates[0]!;
+  return `${route.provider}/${route.model}`;
+}
+
+/** 读穿缓存调工厂；命中仅开发日志。工厂抛错原样透传（不入缓存）。 */
+async function withResultCache<T>(
+  system: string,
+  user: string,
+  route: string,
+  factory: () => Promise<T>,
+): Promise<T> {
+  const key = hashCacheKey({ system, user, route });
+  const hit = aiResultCache.get(key);
+  if (hit !== undefined) {
+    logAI(`ai-cache hit ${key} (${route})`);
+    return hit as T;
+  }
+  const value = await factory();
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { ok?: unknown }).ok === true
+  ) {
+    aiResultCache.set(key, value);
+  }
+  return value;
 }
 
 // ── 能力 1：润色 ───────────────────────────────────────────────────────────
 
 /**
- * 润色正文（等长或更精炼），返回纯文本。
- * `keepVariables` 默认为 true：保留并可按需新增 `{{变量}}`。
+ * 润色正文的**能力层**（等长或更精炼），`keepVariables` 默认为 true。
+ * 结果缓存接入点（T2a 收尾）：同 system+user+route 直接命中，零模型调用。
  */
-export async function polishPromptBody(
+export async function polishPromptBodyCore(
   body: string,
   settings: PluginSettings,
   opts?: { keepVariables?: boolean },
-): Promise<string | undefined> {
-  if (!llm) return undefined;
+): Promise<PolishCoreResult> {
+  if (!llm) return { ok: false, code: "no-llm" };
   const candidates = await resolveCandidates(llm, settings);
-  if (candidates.length === 0) return undefined;
+  if (candidates.length === 0) return { ok: false, code: "route" };
 
   const keepVariables = opts?.keepVariables !== false;
   const existingVars = keepVariables ? extractVariables(body) : [];
@@ -362,70 +460,106 @@ export async function polishPromptBody(
     keepVariables && existingVars.length
       ? `请润色以下提示词内容。其中已有模板变量（{{}} 内为变量名，运行前会被替换，必须原样保留）：${existingVars.join("、")}\n\n${body}`
       : `请润色以下提示词内容：\n\n${body}`;
+  const system = polishSystemPrompt(keepVariables);
 
-  const text = await collectTextWithFallback(llm, candidates, polishSystemPrompt(keepVariables), content);
-  if (!text) return undefined;
-
-  // 剥离套话并**把被剥的行写进诊断日志**：这样「模型吐不吐套话」「有没有误剥正文」
-  // 两件事都有原始行可查（仅在 __DEV__ 构建下落盘），不必再靠抽样猜。
-  const { text: cleaned, stripped } = stripAiFillerDetailed(text);
-  if (stripped.length > 0) {
-    logAI(`polish stripped ${stripped.length} 行: ${stripped.join(" ⏐ ")}`);
-  }
-  return cleaned;
+  return withResultCache(system, content, primaryRoute(candidates), async () => {
+    const result = await callLlmWithRetry(llm!, candidates, system, content);
+    if (!result.ok) return result;
+    // 剥离套话并**把被剥的行写进诊断日志**：这样「模型吐不吐套话」「有没有误剥正文」
+    // 两件事都有原始行可查（仅在 __DEV__ 构建下落盘），不必再靠抽样猜。
+    const { text: cleaned, stripped } = stripAiFillerDetailed(result.text);
+    if (stripped.length > 0) {
+      logAI(`polish stripped ${stripped.length} 行: ${stripped.join(" ⏐ ")}`);
+    }
+    return { ok: true, polished: cleaned } as const;
+  });
 }
 
-/** 润色 + 用途摘要（摘要失败时只返回正文，不视为整体失败）。 */
+/** 润色正文（兼容旧返回形态：失败为 `undefined`）。 */
+export async function polishPromptBody(
+  body: string,
+  settings: PluginSettings,
+  opts?: { keepVariables?: boolean },
+): Promise<string | undefined> {
+  const result = await polishPromptBodyCore(body, settings, opts);
+  return result.ok ? result.polished : undefined;
+}
+
+/** 润色 + 用途摘要的**能力层**（摘要失败时只返回正文，不视为整体失败）。 */
+export async function polishPromptBodyWithSummaryCore(
+  body: string,
+  settings: PluginSettings,
+  opts?: { keepVariables?: boolean },
+): Promise<PolishWithSummaryCoreResult> {
+  const polished = await polishPromptBodyCore(body, settings, opts);
+  if (!polished.ok) return polished;
+  if (!llm) return { ok: true, polished: polished.polished };
+
+  const candidates = await resolveCandidates(llm, settings);
+  if (candidates.length === 0) return { ok: true, polished: polished.polished };
+
+  const system = summarySystemPrompt();
+  const content = `请为以下提示词生成用途摘要：\n\n${polished.polished}`;
+  // 摘要单独一轮 LLM 调用：它有自己的 system/user，键与润色那轮天然不同，走同一读穿缓存。
+  const summary = await withResultCache(system, content, primaryRoute(candidates), async () => {
+    const result = await callLlmWithRetry(llm!, candidates, system, content);
+    if (!result.ok) return { ok: true, summary: undefined } as const;
+    const parsed = parseSummaryJson(result.text);
+    return { ok: true, summary: parsed ?? undefined } as const;
+  });
+  return { ok: true, polished: polished.polished, summary: summary.summary };
+}
+
+/** 润色 + 用途摘要（兼容旧返回形态：失败为 `undefined`）。 */
 export async function polishPromptBodyWithSummary(
   body: string,
   settings: PluginSettings,
   opts?: { keepVariables?: boolean },
 ): Promise<PolishWithSummary | undefined> {
-  const polished = await polishPromptBody(body, settings, opts);
-  if (polished === undefined) return undefined;
-  if (!llm) return { polished };
-
-  const candidates = await resolveCandidates(llm, settings);
-  if (candidates.length === 0) return { polished };
-
-  const text = await collectTextWithFallback(
-    llm,
-    candidates,
-    summarySystemPrompt(),
-    `请为以下提示词生成用途摘要：\n\n${polished}`,
-  );
-  if (!text) return { polished };
-
-  const summary = parseSummaryJson(text);
-  return summary ? { polished, summary } : { polished };
+  const result = await polishPromptBodyWithSummaryCore(body, settings, opts);
+  if (!result.ok) return undefined;
+  return result.summary === undefined
+    ? { polished: result.polished }
+    : { polished: result.polished, summary: result.summary };
 }
 
 // ── 能力 2：一键完善 ───────────────────────────────────────────────────────
 
 /**
- * 一键完善：返回 `{ title, tags, summary, body }`（不写库，写回由路由决定）。
- *
- * `existingTags` 由调用方从词库取出传入——本模块**不 import store**（P3-D12），
- * 既让标签复用逻辑可测，也让 ai.ts 除注入的 runtime 外零副作用。
+ * 一键完善的**能力层**：返回 `{ title, tags, summary, body }`（不写库，写回由路由决定）。
+ * `existingTags` 由调用方从词库取出传入——本模块**不 import store**（P3-D12）。
+ * 结果缓存接入点（T2a 收尾）：与润色同规则。
  */
+export async function refinePromptCore(
+  body: string,
+  settings: PluginSettings,
+  existingTags: string[] = [],
+): Promise<RefineCoreResult> {
+  if (!llm) return { ok: false, code: "no-llm" };
+  const candidates = await resolveCandidates(llm, settings);
+  if (candidates.length === 0) return { ok: false, code: "route" };
+
+  const existingVars = extractVariables(body);
+  const system = enrichSystemPrompt(existingTags, existingVars);
+  const content = enrichUserMessage(body, undefined, existingVars);
+
+  return withResultCache(system, content, primaryRoute(candidates), async () => {
+    const result = await callLlmWithRetry(llm!, candidates, system, content);
+    if (!result.ok) return result;
+    const refined = parseRefineResult(result.text);
+    if (!refined) return { ok: false, code: "schema-mismatch" } as const;
+    return { ok: true, refined } as const;
+  });
+}
+
+/** 一键完善（兼容旧返回形态：失败为 `undefined`）。 */
 export async function refinePrompt(
   body: string,
   settings: PluginSettings,
   existingTags: string[] = [],
 ): Promise<AiRefineResult | undefined> {
-  if (!llm) return undefined;
-  const candidates = await resolveCandidates(llm, settings);
-  if (candidates.length === 0) return undefined;
-
-  const existingVars = extractVariables(body);
-  const text = await collectTextWithFallback(
-    llm,
-    candidates,
-    enrichSystemPrompt(existingTags, existingVars),
-    enrichUserMessage(body, undefined, existingVars),
-  );
-  if (!text) return undefined;
-  return parseRefineResult(text);
+  const result = await refinePromptCore(body, settings, existingTags);
+  return result.ok ? result.refined : undefined;
 }
 
 // ── 能力 3：技能描述符 ─────────────────────────────────────────────────────
@@ -453,7 +587,10 @@ function parseSkillJson(text: string): SkillDescriptor | undefined {
 /**
  * 生成技能描述符：`{ name, description, whenToUse }`（**三字段全部返回**，
  * 修上游「生成了 whenToUse 却在客户端丢弃」的缺陷）。
- * 模型返回空/解析失败多为瞬时故障，最多重试 3 次后判失败。
+ * 模型返回空/解析失败多为瞬时故障，最多重试 3 次后判失败（自带循环，不叠加
+ * `withDiagnosticRetry`）；失败形态用跨层 code（T3）：
+ * - 全部轮次都没拿到文本 → `empty-output`（旧「empty」的归并）；
+ * - 拿到文本但解析不出 name → `schema-mismatch`。
  */
 export async function generateSkillDescriptor(
   prompt: { title: string; body: string; summary?: string; tags?: string[] },
@@ -474,17 +611,21 @@ export async function generateSkillDescriptor(
     prompt.body,
   ].join("\n");
 
+  let emptySeen = false;
   for (let attempt = 1; attempt <= SKILL_DESCRIBE_ATTEMPTS; attempt++) {
-    const text = await collectTextWithFallback(llm, candidates, system, content);
-    if (text) {
-      const parsed = parseSkillJson(text);
+    const result = await callLlmWithRetry(llm, candidates, system, content);
+    if (result.ok) {
+      const parsed = parseSkillJson(result.text);
       if (parsed) {
         logAI(`skill desc ok ${parsed.name}`);
         return { desc: parsed };
       }
-      logAI(`skill desc parse fail: ${text.slice(0, 300)}`);
+      emptySeen = false;
+      logAI(`skill desc parse fail: ${result.text.slice(0, 300)}`);
+    } else if (result.code === "empty-output") {
+      emptySeen = true;
     }
     if (attempt < SKILL_DESCRIBE_ATTEMPTS) logAI(`skill desc retry ${attempt}`);
   }
-  return { fail: "empty" };
+  return { fail: emptySeen ? "empty-output" : "schema-mismatch" };
 }

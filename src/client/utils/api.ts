@@ -50,10 +50,17 @@ export class ApiError extends Error {
    * 调用 = 模型太慢），故必须**分类可辨**（`ai-flow.ts#aiErrorKey` 据此给不同的文案键）。
    */
   readonly probe: boolean;
-  constructor(message: string, status: number, probe = false) {
+  /**
+   * T3：宿主 AI 失败信封 `error: { code }` 里的**跨层错误码**（`src/host/ai-errors.ts` 枚举）。
+   * 只有 AI 分支会带 code；其余路由的旧形字符串信封在此缺省 `undefined`——客户端分类
+   * （`ai-flow.ts`）先看 code、再退回 status / name 判定，对信封形状变更透明。
+   */
+  readonly code: string | undefined;
+  constructor(message: string, status: number, probe = false, code?: string) {
     super(message);
     this.status = status;
     this.probe = probe;
+    this.code = code;
   }
 }
 
@@ -80,8 +87,31 @@ export interface SkillDescriptorPayload { name: string; description: string; whe
  */
 export interface SkillExportReceipt { name: string; path?: string; prompt?: Prompt }
 
-/** 响应信封（规格 §5）：客户端以 data === undefined 判失败。 */
-interface Envelope<T> { ok: boolean; data?: T; error?: string }
+/**
+ * 响应信封（规格 §5）：客户端以 data === undefined 判失败。
+ * T3 双形：`error` 可以是旧形 string（非 AI 路由），也可以是 AI 路由的
+ * `{ code, message? }`——`message` 是宿主的开发诊断文案，`code` 才是跨层契约。
+ */
+interface Envelope<T> { ok: boolean; data?: T; error?: string | { code?: unknown; message?: unknown } }
+
+/** 从信封 `error` 读出跨层 code（结构化形态才有；旧形 string / 杂值一律 undefined）。 */
+function envelopeCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && code !== "" ? code : undefined;
+}
+
+/** 从信封 `error` 读出可读字符串（双形都兜住：旧形取原文，结构化取 message / code 兜底）。 */
+function envelopeMessage(error: unknown, fallback: string): string {
+  if (typeof error === "string") return error;
+  if (typeof error === "object" && error !== null) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message !== "") return message;
+    const code = envelopeCode(error);
+    if (code) return code;
+  }
+  return fallback;
+}
 
 /**
  * 失败一律抛出带可读原因的 ApiError——调用方 catch 后出 toast（不得静默吞掉）。
@@ -118,7 +148,8 @@ async function call<T>(method: string, path: string, body?: unknown, timeoutMs?:
     throw new ApiError(`响应不是合法 JSON（HTTP ${res.status}）：${String(e)}`, res.status);
   }
   if (parsed.data === undefined) {
-    throw new ApiError(parsed.error ?? `请求失败（HTTP ${res.status}）`, res.status);
+    const fallback = `请求失败（HTTP ${res.status}）`;
+    throw new ApiError(envelopeMessage(parsed.error, fallback), res.status, false, envelopeCode(parsed.error));
   }
   return parsed.data;
 }

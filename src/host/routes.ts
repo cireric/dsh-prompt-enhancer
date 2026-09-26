@@ -5,6 +5,11 @@
  * 业务语义全部在各自模块里且已有测试。响应信封固定 `{ ok, data?, error? }`——
  * 客户端以 `data === undefined` 判失败，故此约定不可改。
  *
+ * 失败信封（T3）为**双形**：`error` 可以是旧形字符串（非 AI 分支不变），也可以是 AI 分支的
+ * 结构化形态 `{ code, message? }`——`code` 是 `ai-errors.ts` 的跨层枚举，`message` 仅作开发诊断
+ * （仅 __DEV__ 构建下发；宿主**零用户文案**，面向用户的句子只存在于客户端字典）。
+ * 两种形态并存是**有意**的：客户端 `ApiError.code` 对旧形缺省为 `undefined`，解析对信封形状透明。
+ *
  * 状态码：400 参数错误 / 404 未找到 / 409 同名冲突需确认 / 503 AI 或设置服务不可用 / 500 未预期异常。
  */
 import { existsSync, statSync, writeFileSync } from "node:fs";
@@ -41,6 +46,20 @@ function ok<T>(res: ServerResponse, data: T): void {
 
 function fail(res: ServerResponse, status: number, error: string): void {
   json(res, status, { ok: false, error });
+}
+
+/** AI 失败信封：`error = { code, message? }`（T3；message 仅 __DEV__ 下发，见本文件头）。 */
+function failWithCode(
+  res: ServerResponse,
+  status: number,
+  error: { code: string; message?: string },
+): void {
+  json(res, status, { ok: false, error });
+}
+
+/** 组装开发诊断 message：非 __DEV__ 构建恒为 undefined（宿主零用户文案）。 */
+function devMessage(detail: string): string | undefined {
+  return __DEV__ ? detail : undefined;
 }
 
 /** 请求体体积上限（5 MB）：提示词正文与导入备份都远小于此；防超大 POST 打满宿主进程内存。 */
@@ -258,14 +277,21 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const opts = { keepVariables: body.keepVariables !== false };
-      const result =
-        body.withSummary === true
-          ? await ai.polishPromptBodyWithSummary(text, getSettings(), opts)
-          : await ai.polishPromptBody(text, getSettings(), opts).then((polished) =>
-              polished === undefined ? undefined : { polished },
-            );
-      if (result === undefined) return fail(res, 503, "AI 不可用或调用失败（请检查模型设置）");
-      return ok(res, result);
+      // 两条 Core 都可能失败；成功分支归一为旧 data 形状（`{polished}` / `{polished, summary?}`，
+      // 不把能力层的 `ok:true` 泄进响应体——客户端按 data 形状消费）。
+      const outcome = body.withSummary === true
+        ? await ai.polishPromptBodyWithSummaryCore(text, getSettings(), opts).then((core) =>
+            core.ok
+              ? { ok: true as const, data: core.summary === undefined ? { polished: core.polished } : { polished: core.polished, summary: core.summary } }
+              : { ok: false as const, code: core.code },
+          )
+        : await ai.polishPromptBodyCore(text, getSettings(), opts).then((core) =>
+            core.ok
+              ? { ok: true as const, data: { polished: core.polished } }
+              : { ok: false as const, code: core.code },
+          );
+      if (!outcome.ok) return failWithCode(res, 503, { code: outcome.code, message: devMessage(outcome.code) });
+      return ok(res, outcome.data);
     }
 
     if (method === "POST" && seg.length === 2 && a === "ai" && b === "refine") {
@@ -273,8 +299,9 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const existingTags = store.listTags().map((t) => t.name);
-      const refined = await ai.refinePrompt(text, getSettings(), existingTags);
-      return refined ? ok(res, refined) : fail(res, 503, "AI 不可用或调用失败（请检查模型设置）");
+      const refined = await ai.refinePromptCore(text, getSettings(), existingTags);
+      if (!refined.ok) return failWithCode(res, 503, { code: refined.code, message: devMessage(refined.code) });
+      return ok(res, refined.refined);
     }
 
     if (method === "POST" && seg.length === 2 && a === "ai" && b === "skill-descriptor") {
@@ -292,7 +319,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       );
       return "desc" in result
         ? ok(res, result.desc)
-        : fail(res, 503, `AI 生成技能描述失败（${result.fail}）`);
+        : failWithCode(res, 503, { code: result.fail, message: devMessage(result.fail) });
     }
 
     // ── 设置 ──────────────────────────────────────────────────────────────

@@ -36,6 +36,14 @@ export const zh = {
   "ai.close": "关闭",
   "ai.fail": "AI 调用失败",
   "ai.timeout": "AI 请求超时，请稍后重试",
+  // ── T3：宿主 AI 错误码的本地化文案（键集与 src/host/ai-errors.ts 的枚举一一对应；
+  //    宿主零文案——这些句子只存在于客户端字典）。unknown/未来新码落回 ai.fail。
+  "ai.code.noLlm": "AI 不可用：未配置模型能力",
+  "ai.code.route": "没有可用的模型路由，请检查模型设置",
+  "ai.code.timeout": "模型响应超时（每候选 30 秒），请稍后重试或更换模型",
+  "ai.code.emptyOutput": "模型返回了空结果，请重试",
+  "ai.code.parse": "模型输出不是有效内容，请重试",
+  "ai.code.schemaMismatch": "模型输出的字段不完整，请重试",
   // T7-7：**探测**超时的专属文案——必须与 ai.timeout 可辨（用户要做的事不同：查模型配置 / 网络）。
   "ai.probeTimeout": "AI 服务探测超时，请检查模型配置或网络后重试",
   "ai.refine": "一键完善",
@@ -283,6 +291,14 @@ export const en: Record<keyof typeof zh, string> = {
   "ai.close": "Close",
   "ai.fail": "AI call failed",
   "ai.timeout": "The AI request timed out, please retry later",
+  // ── T3: localized copy for the host AI error codes (keys map 1:1 to the enum in
+  //    src/host/ai-errors.ts; the host ships no user-facing copy). Unknown/new codes fall back to ai.fail.
+  "ai.code.noLlm": "AI unavailable: no model capability is configured",
+  "ai.code.route": "No usable model route — please check the model settings",
+  "ai.code.timeout": "The model timed out (30s per candidate); retry later or switch models",
+  "ai.code.emptyOutput": "The model returned an empty result, please retry",
+  "ai.code.parse": "The model output was not valid content, please retry",
+  "ai.code.schemaMismatch": "The model output is missing required fields, please retry",
   // T7-7: probe-specific timeout copy — must stay distinguishable from "ai.timeout".
   "ai.probeTimeout": "Timed out probing for available models, please check the model settings or network and retry",
   "ai.refine": "One-click refine",

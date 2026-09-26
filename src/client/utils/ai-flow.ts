@@ -8,6 +8,7 @@
  * 错误分类按「HTTP status / err.name」判定，不匹配 message 文本（宿主文案可改）。
  */
 import type { Prompt, PromptWritablePatch } from "../../types.ts";
+import type { PromptEnhancerKey } from "./i18n.ts";
 import type { AiRefineResult } from "./api.ts";
 // `ApiError` 是**值**导入（T7-7 的 `probe` 标记按实例判定，不按 name / 文案猜）；`api` 仍只作清键缺省实现。
 import { ApiError, api } from "./api.ts";
@@ -114,11 +115,40 @@ function isProbeTimeout(err: unknown): boolean {
   return err instanceof ApiError && err.probe;
 }
 
-/** 客户端 toast 文案的 i18n key：**探测**超时 / 调用超时 / AI 不可用 / 其它失败。 */
-export function aiErrorKey(err: unknown): "ai.probeTimeout" | "ai.timeout" | "ai.unavailable" | "ai.fail" {
+/**
+ * T3：宿主 AI 失败信封里的**跨层错误码**（`src/host/ai-errors.ts` 枚举，经 `api.ts#ApiError.code`
+ * 传递）。code 是分类的第一判据——宿主对失败形态的判定比客户端按 status 猜更准；
+ * 非 AI 路由（或旧形信封）没有 code，分类器退回既有判定（status / name）。
+ */
+function errorCodeOf(err: unknown): string | undefined {
+  return err instanceof ApiError ? err.code : undefined;
+}
+
+/** code → i18n 键（与宿主 `ai-errors.ts` 的枚举一一对应；未知 code 退回通用文案）。 */
+function keyForCode(code: string): PromptEnhancerKey {
+  switch (code) {
+    case "no-llm": return "ai.code.noLlm";
+    case "route": return "ai.code.route";
+    case "timeout": return "ai.code.timeout";
+    case "empty-output": return "ai.code.emptyOutput";
+    case "parse": return "ai.code.parse";
+    case "schema-mismatch": return "ai.code.schemaMismatch";
+    default: return "ai.fail"; // "unknown" 与未来新增的 code 一律落通用文案
+  }
+}
+
+/** 本地「客户端主动超时」：未携带宿主 code 的 TimeoutError（信封超时分支已由 code=timeout 覆盖）。 */
+function isLocalTimeout(err: unknown): boolean {
+  return errorName(err) === "TimeoutError";
+}
+
+/** 客户端 toast 文案的 i18n key：先按宿主 code，再退回**探测**超时 / 调用超时 / AI 不可用 / 其它失败。 */
+export function aiErrorKey(err: unknown): PromptEnhancerKey {
   // 探测超时排在前面：它同样是「超时」，但用户要做的事不同（去查模型配置 / 网络，而不是重试调用）。
   if (isProbeTimeout(err)) return "ai.probeTimeout";
-  if (errorName(err) === "TimeoutError") return "ai.timeout";
+  const code = errorCodeOf(err);
+  if (code !== undefined) return keyForCode(code);
+  if (isLocalTimeout(err)) return "ai.timeout";
   if (statusOf(err) === 503) return "ai.unavailable";
   return "ai.fail";
 }
