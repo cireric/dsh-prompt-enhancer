@@ -53,11 +53,10 @@ export function termWeight(k: string): number {
 export const USAGE_BOOST_CAP = 0.15;
 
 /**
- * 综合匹配得分：标题/标签命中权重 2、正文 1，乘词频与词长加权；
- * 相关度为 0 直接不推荐；命中后叠加使用智能——常用度封顶 **15%** 微调
- * （issue #2：相关性最重要，弱相关的高频项不得压过强相关的低频项）。
+ * 关键词相关度：标题/标签命中权重 2、正文 1，乘词频与词长加权。
+ * 相关度共享底座——scorePrompt 的得分项与草稿词硬门槛的资格判定都只调它。
  */
-export function scorePrompt(p: Prompt, kw: Map<string, number>, now: number): number {
+function relevanceOf(p: Prompt, kw: Map<string, number>): number {
   const head = (p.title + " " + (p.tags?.join(" ") ?? "")).toLowerCase();
   const body = p.body.toLowerCase();
   let relevance = 0;
@@ -66,6 +65,16 @@ export function scorePrompt(p: Prompt, kw: Map<string, number>, now: number): nu
     if (head.includes(k)) relevance += f * 2 * w;
     else if (body.includes(k)) relevance += f * w;
   }
+  return relevance;
+}
+
+/**
+ * 综合匹配得分：相关度（见 relevanceOf）为 0 直接不推荐；
+ * 命中后叠加使用智能——常用度封顶 **15%** 微调
+ * （issue #2：相关性最重要，弱相关的高频项不得压过强相关的低频项）。
+ */
+export function scorePrompt(p: Prompt, kw: Map<string, number>, now: number): number {
+  const relevance = relevanceOf(p, kw);
   if (relevance <= 0) return 0;
   const freq = p.usageCount > 0 ? Math.log(1 + p.usageCount) / Math.log(11) : 0;
   const fresh = p.lastUsedAt > 0 && now - p.lastUsedAt < FRESH_MS ? 1 : 0;
@@ -112,22 +121,9 @@ export function recommend(input: {
     }
   }
   return input.prompts
+    .filter((x) => relevanceOf(x, draftKw) > 0) // 硬门槛：草稿词相关度 > 0 才有资格，先过滤再打分
     .map((x) => ({ x, score: scorePrompt(x, kw, input.now) }))
-    .filter((hit) => draftRelevant(hit.x, draftKw) > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, RECOMMEND_LIMIT)
     .map((hit) => hit.x);
-}
-
-/** 只按**草稿**关键词算相关度：> 0 才有推荐资格（硬门槛的判定面）。 */
-export function draftRelevant(p: Prompt, draftKw: Map<string, number>): number {
-  const head = (p.title + " " + (p.tags?.join(" ") ?? "")).toLowerCase();
-  const body = p.body.toLowerCase();
-  let relevance = 0;
-  for (const [k, f] of draftKw) {
-    const w = termWeight(k);
-    if (head.includes(k)) relevance += f * 2 * w;
-    else if (body.includes(k)) relevance += f * w;
-  }
-  return relevance;
 }
