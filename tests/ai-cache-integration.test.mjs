@@ -138,3 +138,67 @@ test("命中日志仅开发构建：__DEV__=false 时命中不写任何 AI 日�
   const logRoot = join(process.env.DSH_HOME, "prompt-enhancer", "log");
   assert.equal(existsSync(logRoot), false, "非 dev 构建不得创建日志目录（命中与未命中都不写）");
 });
+
+// ── Issue #6 收口：技能描述符重试预算 + 有损错误码映射 ─────────────────────
+
+test("技能描述符：每轮恰一次模型调用（重试预算与文档一致，不叠加诊断重试）", async () => {
+  const descFake = countingRuntime([
+    ['{"name":"skill-ok","description":"d"}', { type: "finish", reason: { kind: "stop" } }],
+  ]);
+  ai.registerLlm(descFake.runtime);
+  const prompt = { title: "t", body: "正文" };
+  const r = await ai.generateSkillDescriptor(prompt, settings);
+  assert.ok(r.desc, "成功路径应产出描述符");
+  assert.equal(descFake.calls, 1, "首轮成功 = 恰好 1 次模型调用（旧实现叠加诊断重试会变多）");
+});
+
+test("技能描述符：全部轮次超时 → 最终 code = timeout（映射无损，不再一律归 schema-mismatch）", async () => {
+  const descFake = countingRuntime([
+    [{ type: "finish", reason: { kind: "aborted" } }],
+    [{ type: "finish", reason: { kind: "aborted" } }],
+    [{ type: "finish", reason: { kind: "aborted" } }],
+  ]);
+  ai.registerLlm(descFake.runtime);
+  const r = await ai.generateSkillDescriptor({ title: "t", body: "正文" }, settings);
+  assert.deepEqual(r, { fail: "timeout" }, "全部轮次超时必须报 timeout");
+});
+
+test("技能描述符：第 1 轮空输出 + 第 2 轮超时 → 最终 code = timeout（最后轮次优先，不掩码）", async () => {
+  const descFake = countingRuntime([
+    [{ type: "finish", reason: { kind: "stop" } }], // 轮 1：空输出
+    [{ type: "finish", reason: { kind: "aborted" } }], // 轮 2：超时
+    [{ type: "finish", reason: { kind: "aborted" } }], // 轮 3：超时
+  ]);
+  ai.registerLlm(descFake.runtime);
+  const r = await ai.generateSkillDescriptor({ title: "t", body: "正文" }, settings);
+  assert.deepEqual(r, { fail: "timeout" }, "最后轮次的失败形态决定最终 code");
+});
+
+test("技能描述符：全部轮次空输出 → 最终 code = empty-output（原有归并保留）", async () => {
+  const descFake = countingRuntime([
+    [{ type: "finish", reason: { kind: "stop" } }],
+    [{ type: "finish", reason: { kind: "stop" } }],
+    [{ type: "finish", reason: { kind: "stop" } }],
+  ]);
+  ai.registerLlm(descFake.runtime);
+  const r = await ai.generateSkillDescriptor({ title: "t", body: "正文" }, settings);
+  assert.deepEqual(r, { fail: "empty-output" });
+});
+test("技能描述符：解析失败轮不叠加诊断重试（每轮恰一次模型调用）", async () => {
+  const descFake = countingRuntime([
+    ["不是 JSON 的文本", { type: "finish", reason: { kind: "stop" } }],
+  ]);
+  ai.registerLlm(descFake.runtime);
+  const r = await ai.generateSkillDescriptor({ title: "t", body: "正文" }, settings);
+  assert.equal(descFake.calls, 3, "3 轮循环 = 恰 3 次模型调用（叠加诊断重试会到 6）");
+  assert.deepEqual(r, { fail: "schema-mismatch" }, "拿到文本但解析不出 name → schema-mismatch（映射无损）");
+});
+test("技能描述符：全部轮次失败 → 恰 3 次模型调用（重试预算与文档一致，不叠加诊断重试）", async () => {
+  const descFake = countingRuntime([
+    [{ type: "finish", reason: { kind: "aborted" } }],
+  ]);
+  ai.registerLlm(descFake.runtime);
+  const r = await ai.generateSkillDescriptor({ title: "t", body: "正文" }, settings);
+  assert.equal(descFake.calls, 3, "3 轮循环 = 恰 3 次模型调用（旧实现叠加诊断重试会到 6）");
+  assert.deepEqual(r, { fail: "timeout" });
+});

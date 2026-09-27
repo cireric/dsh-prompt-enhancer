@@ -40,10 +40,10 @@ export interface AiSelectable {
   models: Array<{ id: string; name: string }>;
 }
 
-/** 技能描述符生成结果：失败形态用跨层 code（T3；旧「empty」按解析产物归并为空回复或缺字段）。 */
+/** 技能描述符生成结果：失败形态 = 全码契约（T3 映射无损——超时轮报 timeout、路由失败报 route）。 */
 export type SkillDescribeResult =
   | { desc: SkillDescriptor }
-  | { fail: Extract<AiErrorCode, "no-llm" | "route" | "empty-output" | "schema-mismatch"> };
+  | { fail: AiErrorCode };
 
 /** AI 生成的技能描述符（三个字段都要落盘，修上游「生成了又丢弃」的缺陷）。 */
 export interface SkillDescriptor {
@@ -475,16 +475,6 @@ export async function polishPromptBodyCore(
   });
 }
 
-/** 润色正文（兼容旧返回形态：失败为 `undefined`）。 */
-export async function polishPromptBody(
-  body: string,
-  settings: PluginSettings,
-  opts?: { keepVariables?: boolean },
-): Promise<string | undefined> {
-  const result = await polishPromptBodyCore(body, settings, opts);
-  return result.ok ? result.polished : undefined;
-}
-
 /** 润色 + 用途摘要的**能力层**（摘要失败时只返回正文，不视为整体失败）。 */
 export async function polishPromptBodyWithSummaryCore(
   body: string,
@@ -508,19 +498,6 @@ export async function polishPromptBodyWithSummaryCore(
     return { ok: true, summary: parsed ?? undefined } as const;
   });
   return { ok: true, polished: polished.polished, summary: summary.summary };
-}
-
-/** 润色 + 用途摘要（兼容旧返回形态：失败为 `undefined`）。 */
-export async function polishPromptBodyWithSummary(
-  body: string,
-  settings: PluginSettings,
-  opts?: { keepVariables?: boolean },
-): Promise<PolishWithSummary | undefined> {
-  const result = await polishPromptBodyWithSummaryCore(body, settings, opts);
-  if (!result.ok) return undefined;
-  return result.summary === undefined
-    ? { polished: result.polished }
-    : { polished: result.polished, summary: result.summary };
 }
 
 // ── 能力 2：一键完善 ───────────────────────────────────────────────────────
@@ -552,16 +529,6 @@ export async function refinePromptCore(
   });
 }
 
-/** 一键完善（兼容旧返回形态：失败为 `undefined`）。 */
-export async function refinePrompt(
-  body: string,
-  settings: PluginSettings,
-  existingTags: string[] = [],
-): Promise<AiRefineResult | undefined> {
-  const result = await refinePromptCore(body, settings, existingTags);
-  return result.ok ? result.refined : undefined;
-}
-
 // ── 能力 3：技能描述符 ─────────────────────────────────────────────────────
 
 function parseSkillJson(text: string): SkillDescriptor | undefined {
@@ -587,10 +554,12 @@ function parseSkillJson(text: string): SkillDescriptor | undefined {
 /**
  * 生成技能描述符：`{ name, description, whenToUse }`（**三字段全部返回**，
  * 修上游「生成了 whenToUse 却在客户端丢弃」的缺陷）。
- * 模型返回空/解析失败多为瞬时故障，最多重试 3 次后判失败（自带循环，不叠加
- * `withDiagnosticRetry`）；失败形态用跨层 code（T3）：
- * - 全部轮次都没拿到文本 → `empty-output`（旧「empty」的归并）；
- * - 拿到文本但解析不出 name → `schema-mismatch`。
+ * 模型返回空/解析失败多为瞬时故障，最多重试 3 次后判失败。重试预算（Issue #6 收口）：
+ * **每轮恰一次模型调用**（3 轮 = 恰 3 次）——循环内直接走 `attemptAllCandidates`
+ * （候选轮询），**不叠加** `withDiagnosticRetry`（那会把最坏调用数翻倍到 6，与文档矛盾）。
+ * 失败形态用跨层 code（T3），**映射无损**：最终 code = 最后一轮的真实失败形态
+ * （解析失败属 `schema-mismatch`；超时轮报 `timeout`；空输出轮报 `empty-output`），
+ * 不再把非空输出轮一律归为 schema-mismatch。
  */
 export async function generateSkillDescriptor(
   prompt: { title: string; body: string; summary?: string; tags?: string[] },
@@ -611,21 +580,21 @@ export async function generateSkillDescriptor(
     prompt.body,
   ].join("\n");
 
-  let emptySeen = false;
+  let lastCode: AiErrorCode = "unknown";
   for (let attempt = 1; attempt <= SKILL_DESCRIBE_ATTEMPTS; attempt++) {
-    const result = await callLlmWithRetry(llm, candidates, system, content);
+    const result = await attemptAllCandidates(llm!, candidates, system, content);
     if (result.ok) {
       const parsed = parseSkillJson(result.text);
       if (parsed) {
         logAI(`skill desc ok ${parsed.name}`);
         return { desc: parsed };
       }
-      emptySeen = false;
+      lastCode = "schema-mismatch"; // 拿到文本但解析不出 name
       logAI(`skill desc parse fail: ${result.text.slice(0, 300)}`);
-    } else if (result.code === "empty-output") {
-      emptySeen = true;
+    } else {
+      lastCode = result.failure.code; // 轮内真实失败形态（timeout / empty-output / route / unknown）
     }
     if (attempt < SKILL_DESCRIBE_ATTEMPTS) logAI(`skill desc retry ${attempt}`);
   }
-  return { fail: emptySeen ? "empty-output" : "schema-mismatch" };
+  return { fail: lastCode };
 }
