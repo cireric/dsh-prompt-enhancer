@@ -113,22 +113,3 @@ export class AiResultCache {
 
 /** 进程级单例：重启即清、无持久化。 */
 export const aiResultCache = new AiResultCache();
-
-/**
- * 读穿辅助：同键命中则零模型调用、零等待返回缓存；
- * 未命中调用工厂，成功（非 undefined）才入缓存。
- *
- * 失败约定与 ai.ts 一致：工厂抛错 → 异常透传；返回 undefined（失败）→
- * 不入缓存，两种情况缓存都保持干净，下次调用会重试工厂。
- */
-export async function rememberAiResult(
-  cache: AiResultCache,
-  key: string,
-  factory: () => Promise<unknown>,
-): Promise<unknown> {
-  const hit = cache.get(key);
-  if (hit !== undefined) return hit;
-  const value = await factory();
-  if (value !== undefined) cache.set(key, value);
-  return value;
-}
