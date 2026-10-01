@@ -16,6 +16,7 @@ import { ApiError, api } from "../utils/api.ts";
 import { showsLabel } from "../utils/icon-only.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
+import { filterPrompts } from "../utils/hash-token.ts";
 import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
@@ -49,6 +50,15 @@ const ACTIONS: ReadonlyArray<{ mode: InsertMode; label: PromptEnhancerKey }> = [
 
 /** 「该提示词已不存在」的停留时长（自动消失，不打断输入）。 */
 const NOTICE_MS = 4000;
+
+/**
+ * 快速列表一次渲染的条数上限。
+ *
+ * 为什么要有上限：本面板此前**无条件渲染整库**（`api.listPrompts({ sort: "default" })` 不带
+ * limit，上限 300 条时 300 行全进 DOM）。快速列表的定位是「快速取用」而不是浏览全库——超出部分
+ * 由底部一行「另有 N 条」引向管理面板（那边有服务端搜索 + 排序 + 标签筛选）。
+ */
+const QUICK_LIST_LIMIT = 50;
 
 /**
  * 词库图标：内联书签形（取自上游参考项目词库按钮的原始图标，`.tmp/dsh-prompt-library`
@@ -102,6 +112,11 @@ export function PromptLibraryButton({
    */
   const [notice, setNotice] = React.useState<{ text: string; seq: number } | null>(null);
   const [pending, setPending] = React.useState<PendingUse | null>(null);
+  /**
+   * 过滤查询词（2026-09-30 裁定：打开即聚焦、**关闭不记忆**）。
+   * 不记忆是刻意的：记住上次的词会让下次打开看到一份「被筛过的库」，看起来像东西丢了。
+   */
+  const [query, setQuery] = React.useState("");
   const rootRef = React.useRef<HTMLSpanElement | null>(null);
 
   /**
@@ -122,6 +137,17 @@ export function PromptLibraryButton({
    * claim 接线），故「浮层可见」⇔「claim 在 `hash` 手里」。
    */
   const panelOpen = open && canRender("library", claimed);
+  /**
+   * 关闭即清空查询词（**关闭不记忆**）。一条规则覆盖全部「面板真的不在了」的路径——显式
+   * `close()`、点面板外、「位移即收回意图」那条把 `open` 收回的 effect，以及
+   * **`showComposerButton=false` 的早退**（那时组件 `return null` 而 `open` 仍为真，
+   * 只盯 `open` 会漏掉它 ⇒ 再次打开带着旧查询词）。写进各关闭函数必然漏掉后两类。
+   */
+  React.useEffect(() => {
+    if (open && settings.showComposerButton) return;
+    setQuery("");
+  }, [open, settings.showComposerButton]);
+
   // 每次打开都重新拉取（列表可能在管理面板里被改过）。
   // 只依赖 open：失败文案的本地化由渲染期的 t 负责，把它放进依赖会让
   // 「t 身份不稳定」的实现变成重拉循环。
@@ -261,6 +287,24 @@ export function PromptLibraryButton({
 
   if (!settings.showComposerButton) return null;
 
+  /**
+   * 本次面板要渲染的候选：过滤 + 渲染上限。
+   *
+   * 过滤语义**复用 `#` 浮层的同一份纯函数**（标题 3 > 标签 2 > 正文 1；summary 不参与，口径
+   * 说明见 `hash-token.ts#filterPrompts`），故这里不引入第二种匹配规则。
+   *
+   * 上限在这里 `slice`，而不是把 `QUICK_LIST_LIMIT` 塞给 `filterPrompts`：那个函数的
+   * limit 语义有自己的用例（`tests/hash-token.test.mjs`），而这里需要「先拿到全部命中数、
+   * 再截前 N 条」——截断出来的条数要用来渲染底部的「另有 N 条」。
+   *
+   * **必须用 `panelOpen` 门住**：本组件订阅了草稿（`useInput`）⇒ composer 每敲一键都重渲染，
+   * 而 `prompts` 在关闭后**不清空**（下次打开直接复用上次那份）。不门住的话，首次打开过之后
+   * 面板关着也在每次按键对整库 filter + sort——一条与列表毫无关系的热路径。
+   */
+  const matched = panelOpen ? filterPrompts(prompts ?? [], query, Number.MAX_SAFE_INTEGER) : [];
+  const shown = matched.slice(0, QUICK_LIST_LIMIT);
+  const hiddenCount = matched.length - shown.length;
+
   return (
     <span
       ref={rootRef}
@@ -380,6 +424,20 @@ export function PromptLibraryButton({
                 </button>
               </span>
             </span>
+            {/*
+             * 过滤输入（2026-09-30 裁定）：**打开即聚焦**——否则「准确定位」还要多一次点击，等于没解决。
+             * autoFocus 是 React 的声明式属性，不是 DOM 注入（硬约束 3 禁的是 MutationObserver /
+             * querySelector 那类旁路）。
+             */}
+            <input
+              type="search"
+              autoFocus
+              aria-label={t("list.filter")}
+              placeholder={t("list.filterPlaceholder")}
+              value={query}
+              onChange={(ev) => setQuery(ev.target.value)}
+              style={FILTER}
+            />
             {loadError !== null && (
               <span role="alert" style={ERROR}>
                 <span>{t("error.load")}</span>
@@ -392,9 +450,13 @@ export function PromptLibraryButton({
             {loadError === null && prompts !== null && prompts.length === 0 && (
               <span style={MUTED}>{t("list.empty")}</span>
             )}
-            {loadError === null && prompts !== null && prompts.length > 0 && (
+            {/* 有内容但筛不出结果：与管理面板的「搜索无结果」同一种说法（复用 `hash.empty`）。 */}
+            {loadError === null && prompts !== null && prompts.length > 0 && matched.length === 0 && (
+              <span style={MUTED}>{t("hash.empty")}</span>
+            )}
+            {loadError === null && shown.length > 0 && (
               <span role="list" style={LIST}>
-                {prompts.map((prompt) => (
+                {shown.map((prompt) => (
                   <span key={prompt.id} role="listitem" aria-label={prompt.title} style={ROW}>
                     <span style={ROW_TEXT}>
                       <span style={ROW_TITLE}>{prompt.title}</span>
@@ -427,6 +489,19 @@ export function PromptLibraryButton({
                 ))}
               </span>
             )}
+            {/* 渲染上限的越界提示：整行可点，直接把用户送到真正能搜全库的地方。 */}
+            {loadError === null && hiddenCount > 0 && (
+              <button
+                type="button"
+                style={MORE}
+                onClick={() => {
+                  close();
+                  openManager();
+                }}
+              >
+                {hiddenCount}{t("list.overflow")}
+              </button>
+            )}
           </span>
         </span>
       )}
@@ -442,6 +517,32 @@ const WRAP: React.CSSProperties = {
 };
 
 const ICON: React.CSSProperties = { display: "block", flex: "0 0 auto" };
+
+/** 过滤输入框：与面板同宽，外观与其它行内控件同源（不引第三种控件外观）。 */
+const FILTER: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "4px 6px",
+  color: TOKEN.fg,
+  background: "transparent",
+  border: `1px solid ${TOKEN.border}`,
+  borderRadius: 6,
+  font: "inherit",
+  fontSize: 12,
+};
+
+/** 底部「另有 N 条」：整行是一个动作（点击开管理面板），故用无边框按钮而不是一行静态文字。 */
+const MORE: React.CSSProperties = {
+  alignSelf: "flex-start",
+  padding: "2px 0",
+  color: TOKEN.accent,
+  background: "transparent",
+  border: 0,
+  font: "inherit",
+  fontSize: 11,
+  textAlign: "left",
+  cursor: "pointer",
+};
 
 const BUTTON: React.CSSProperties = {
   display: "inline-flex",

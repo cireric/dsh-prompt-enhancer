@@ -104,6 +104,12 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const [original, setOriginal] = React.useState("");
   const [polished, setPolished] = React.useState("");
   const [showOriginal, setShowOriginal] = React.useState(false);
+  /**
+   * 本次调用**实际发出的**变量授权。`run()` 里算一次存这里，渲染期的提示文案读同一个值——
+   * 不是渲染期重算的推断。理由：提示说「可能新增变量」而请求根本没授权（或反过来），是组件面
+   * 唯一无人能自动发现的那类静默不一致（本仓库没有渲染测试通道）。
+   */
+  const [keepVars, setKeepVars] = React.useState(false);
   /** 一键完善的 AI 产出（标题/标签/摘要 + 正文）；正文可编辑，存库与落草稿都取它。 */
   const [refined, setRefined] = React.useState<AiRefineResult | null>(null);
   /** 存库后的本地记录：create 之后是它，写回/回滚各用返回值整条替换。 */
@@ -249,6 +255,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const run = (snapshot: string): void => {
     if (busyRef.current) return;
     busyRef.current = true;
+    // 授权**算一次、两处共用**：这一份发给宿主，下面 done 分支的提示读同一个 state。
+    const keepVariables = keepVariablesFor(snapshot);
+    setKeepVars(keepVariables);
     setErrorKey(null);
     setRefineErrorKey(null);
     setOriginal(snapshot);
@@ -279,7 +288,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
           return;
         }
         try {
-          const result = await api.polishPrompt(snapshot, { keepVariables: keepVariablesFor(snapshot) });
+          const result = await api.polishPrompt(snapshot, { keepVariables });
           if (!aliveRef.current) return;
           setPolished(result.polished);
           setStatus("done");
@@ -528,6 +537,16 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   onChange={(ev) => setPolished(ev.target.value)}
                   style={{ ...TEXTAREA, opacity: showOriginal ? 0.75 : 1 }}
                 />
+                {/*
+                 * ④（2026-09-30 裁定）：润色被授权**新增 {{变量}} 占位符**（system prompt 里那条
+                 * 「长度约束的例外」）。这件事必须在产物旁边说清——否则用户看到正文里凭空多出
+                 * 变量，无法判断是能力如此还是模型跑偏。
+                 *
+                 * 仅在本次请求真的带上该授权时出现：`keepVariablesFor(original)` 就是调用侧
+                 * 传给 `api.polishPrompt` 的同一判定，故提示与授权同生共死（不含变量的草稿
+                 * 收不到那条授权，也就不该看到这句话）。
+                 */}
+                {keepVars && <span style={MUTED}>{t("ai.mayAddVars")}</span>}
                 <span style={ACTIONS}>
                   <button type="button" style={PANEL_BUTTON} onClick={refine}>
                     {t("ai.refine")}

@@ -51,7 +51,17 @@ export function replaceHashToken(draft: string, body: string): string {
   return head ? `${head} ${body}` : body;
 }
 
-/** 候选过滤：标题命中优先，其次标签，最后正文；同分保持原顺序。 */
+/**
+ * 候选过滤：标题命中优先，其次标签，最后正文；同分保持原顺序。
+ *
+ * **三处同一口径**（本函数服务 `#` 候选浮层，2026-09-30 起也服务词库按钮的快速列表；
+ * 第三处是宿主 `store.listPrompts` 的 `q` 过滤）：只匹配 **title / tags / body**，
+ * **summary 一律不参与**——它是「用途摘要」，不是提示词本体。
+ *
+ * 任一处要加 summary，必须**三处一起改**：否则同一个词在「快速列表」与「管理面板」里搜出不同结果，
+ * 而这种口径漂移是静默的（两处都"有搜索结果"，没人会去对比）。行为锁见
+ * `tests/hash-token.test.mjs` 的「summary 不参与匹配」用例。
+ */
 export function filterPrompts(prompts: Prompt[], query: string, limit = 5): Prompt[] {
   const q = query.trim().toLowerCase();
   if (!q) return prompts.slice(0, limit);

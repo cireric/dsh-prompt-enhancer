@@ -32,7 +32,7 @@ function fakeScope() {
     scope: {
       getSnapshot: () => ({ status: "ready", value }),
       subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
-      set: (field, v) => { sets.push([field, v]); return Promise.resolve(); },
+      set: (field, v) => { sets.push([field, v]); return Promise.resolve(true); }, // 0.2.0：true = 宿主接受
     },
   };
 }
@@ -168,6 +168,21 @@ test("settings-store：updateSettings 逐字段调 scope.set（一次写 13 键�
   assert.deepEqual(f.sets, [["hashTriggerEnabled", false], ["panelWidth", 600]]);
 });
 
+/** 0.2.0 ConfigForm.set 契约：宿主拒绝返回 false（不 reject）；store 必须把它转成抛错。 */
+test("settings-store：scope.set 返回 false（宿主拒绝）⇒ updateSettings 必须抛出，不得静默成功", async () => {
+  const calls = [];
+  store.setSettingsScope({
+    getSnapshot: () => ({ status: "ready", value: {} }),
+    subscribe: () => () => {},
+    set: (field, v) => { calls.push([field, v]); return Promise.resolve(false); },
+  });
+  await assert.rejects(
+    () => store.updateSettings({ panelWidth: 640 }),
+    /设置写入被宿主拒绝/,
+  );
+  assert.deepEqual(calls, [["panelWidth", 640]], "拒绝也必须真的发出过写请求（判据是返回值）");
+});
+
 // ── 就绪面（P8 二审 I2）───────────────────────────────────────────────────────
 //
 // 「当前快照是否可信」是命令式消费者（淘汰预检 / 导入后超限提示）按快照行事之前必须问的一句：
@@ -219,4 +234,58 @@ test("settings-store：无 scope + 降级读失败 ⇒ **永远**不就绪（失
     getImpl = realGetSettings;
     restore();
   }
+});
+
+/** 0.2.0 补充：有 resolver 时的重试契约（注入部署 ns 兜底）。 */
+test("settings-store：set 被拒 ⇒ 调 resolver 后重试一次；重试成功则不抛", async () => {
+  let attempts = 0;
+  let resolverCalled = 0;
+  store.setSettingsNsResolver(() => { resolverCalled++; return "802a95b9"; });
+  store.setSettingsScope({
+    getSnapshot: () => ({ status: "ready", value: {} }),
+    subscribe: () => () => {},
+    set: () => { attempts++; return Promise.resolve(attempts > 1); },
+  });
+  await store.updateSettings({ panelWidth: 640 });
+  assert.equal(attempts, 2, "必须恰好重试一次");
+  assert.equal(resolverCalled, 1, "resolver 恰好被调一次");
+  store.setSettingsNsResolver(undefined);
+});
+
+test("settings-store：set 被拒 ⇒ resolver 重试后仍被拒 ⇒ 抛出（不得无限重试）", async () => {
+  let attempts = 0;
+  store.setSettingsNsResolver(() => undefined);
+  store.setSettingsScope({
+    getSnapshot: () => ({ status: "ready", value: {} }),
+    subscribe: () => () => {},
+    set: () => { attempts++; return Promise.resolve(false); },
+  });
+  await assert.rejects(() => store.updateSettings({ panelWidth: 640 }), /设置写入被宿主拒绝/);
+  assert.equal(attempts, 2, "恰好两次（原写 + 一次重试），不循环");
+  store.setSettingsNsResolver(undefined);
+});
+
+/** resolveNsFromDescribe：13 键签名匹配（官方固定 id 与注入随机 id 两形态都覆盖）。 */
+test("settings-store：resolveNsFromDescribe 按 13 键签名认出本条目，认不出返回 undefined", () => {
+  const keys = [
+    "aiProvider", "aiModel", "panelWidth", "panelHeight",
+    "showComposerButton", "composerButtonIconOnly", "showAIPolishButton", "aiPolishButtonIconOnly",
+    "hashTriggerEnabled", "contextRecommendEnabled", "selectionAddEnabled", "showSidebarButton",
+    "maxPromptCount",
+  ];
+  const sig = Object.fromEntries(keys.map((k) => [k, k === "panelWidth" ? 420 : true]));
+  const view = {
+    namespaces: [
+      { ns: "llm-deepseek", value: { baseURL: "x" } },
+      { ns: "802a95b9", schema: { dict: sig } },
+    ],
+  };
+  assert.equal(store.resolveNsFromDescribe(view), "802a95b9", "按 schema dict 签名命中");
+  assert.equal(
+    store.resolveNsFromDescribe({ namespaces: [{ ns: "prompt-enhancer", value: sig }] }),
+    "prompt-enhancer",
+    "value 键集形态（无 schema dict 时回落 value）也命中",
+  );
+  assert.equal(store.resolveNsFromDescribe({ namespaces: [{ ns: "x", value: { a: 1 } }] }), undefined, "无命中 undefined");
+  assert.equal(store.resolveNsFromDescribe(undefined), undefined, "坏视图安全");
 });

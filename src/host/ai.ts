@@ -15,6 +15,20 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { BlockAssembler, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { GenerateOptions, LlmModelInfo, LlmRuntime } from "@deepseek-ai/dsh-llm";
+
+/**
+ * dsh 0.2.0（session format v4）的 MessageSource 是 merge-extensible sum type：每个
+ * 生产者在自己的模块里声明自己的 kind（官方 time-context 同款，见
+ * packages/context/time-context/src/index.ts 的 declare module '@deepseek-ai/dsh-llm'）。
+ * 没有共享的 plugin catch-all——那个 kind 已随 v3 包装退役，写它会在持久化准入抛
+ * "format v4 message requires a producer-owned source kind"（准入只拒绝空串与 plugin，
+ * 任意生产者自有 kind 均合法）。本插件是 AI 调用消息的生产者，故声明 prompt-enhancer。
+ */
+declare module "@deepseek-ai/dsh-llm" {
+  interface MessageSourceMap {
+    "prompt-enhancer": { kind: "prompt-enhancer" };
+  }
+}
 import { logDir } from "./paths.ts";
 import { aiResultCache, hashCacheKey } from "./ai-cache.ts";
 import {
@@ -245,17 +259,29 @@ function enrichUserMessage(rawBody: string, tag: string | undefined, existingVar
   return lines.join("\n");
 }
 
+/**
+ * 润色 system 提示词。
+ *
+ * 两条**已裁定的约束**（2026-09-30 需求讨论；判据见 tests/ai-polish-prompt.test.mjs）：
+ *  · **不声明「贴合用户的写作风格」**：请求侧（`polishPromptBodyCore` 组装的 content）只有草稿
+ *    正文，从不提供任何风格证据——声明一个请求里不存在的东西，只会邀请模型自己编一种风格；
+ *  · **必须写明长度约束**：能力层的契约是「等长或更精炼」（见本文件「能力 1：润色」的注释），
+ *    但此前只存在于注释里，prompt 里反而写着「更清晰、通用、结构清晰」——只有鼓励扩写的方向、
+ *    没有刹车。故补上长度行，并把「可新增 {{变量}}」**显式标成它的例外**（那条是通用化授权，
+ *    不是「加事实」的授权；不点明会与长度行自相矛盾）。
+ */
 function polishSystemPrompt(keepVariables: boolean): string {
   return [
-    "你是一名专业的提示词润色助手，擅长贴合用户的写作风格对提示词进行润色。",
+    "你是一名专业的提示词润色助手。",
     "",
     "要求：",
     "- 只润色提示词内容本身，不要涉及标题、标签、分类等；",
     "- 保持原意与所有关键细节，不得遗漏、曲解或删减；",
+    "- 长度控制在等长或更精炼：不得扩写，不得增加原文没有的要求、步骤或事实；",
     ...(keepVariables
       ? [
           "- 正文中的 `{{变量名}}` 是模板变量占位符（运行前由使用者替换）：所有已有的 {{}} 必须原样保留，不得删除、改写或替换其中的变量名；",
-          "- 若正文某处内容会因使用场景而变化（如角色、对象、主题、风格、细节等），可在该处新增命名清晰、贴合语境的 {{变量名}} 占位符，提升提示词可复用性；没有这种需求时不要画蛇添足；",
+          "- 上面的长度约束有一个例外：若正文某处内容会因使用场景而变化（如角色、对象、主题、风格、细节等），可在该处新增命名清晰、贴合语境的 {{变量名}} 占位符，提升提示词可复用性；没有这种需求时不要画蛇添足；",
         ]
       : []),
     "- 让提示词更清晰、通用、结构清晰、可直接复用；",
@@ -308,7 +334,7 @@ async function collectText(
     messages: [
       createUserMessage({
         content: [{ type: "text", text: content }],
-        source: { kind: "plugin", plugin: "prompt-enhancer" },
+        source: { kind: "prompt-enhancer" },
       }),
     ],
     system,

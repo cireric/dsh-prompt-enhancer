@@ -3,11 +3,49 @@ import { normalizeSettings } from "../../settings-shape.ts";
 import { api } from "./api.ts";
 import { hooks } from "./react-hooks.ts";
 
-/** 宿主 `SettingsScope` 中本插件用到的部分（与 host/settings.ts 的窄面同形）。 */
+/**
+ * 宿主设置表单中本插件用到的部分（dsh 0.2.0 `ConfigForm` 的窄面，见
+ * ui-settings config-form-types.ts：snapshot.status 为 loading/ready/unavailable，
+ * set 返回「宿主是否接受」的 boolean，传输失败才 reject）。
+ * 0.1.5 时代的 `SettingsScope.bind` 已随 settings.yaml 机制退役。
+ */
 export interface ClientSettingsScope {
   getSnapshot(): { status: string; value: unknown };
   subscribe(listener: () => void): () => void;
-  set(field: string, value: unknown): Promise<void>;
+  set(field: string, value: unknown): Promise<boolean>;
+}
+
+/**
+ * 条目 id 解析器（注入部署的兜底）：super-injector 的 `loader.create({ name })` 不带 id，
+ * loader 给随机 id——而 0.2.0 `SettingsForms` 按 entry.options.id 定位条目，固定用包名短名
+ * 当 ns 会写不中（No configurable plugin entry）。解析器经 `configForms.describe()` 遍历
+ * 命名空间，按本插件 13 键设置形状（value 的键集 + schema 特征）认出自己，返回真实 ns。
+ */
+export type SettingsNsResolver = () => string | undefined;
+
+/** 13 键特征集（settings-shape.ts 的 SETTINGS_KEYS 同源；此处内联避免 client 拉 host 模块）。 */
+const NS_SIGNATURE_KEYS = [
+  "aiProvider", "aiModel", "panelWidth", "panelHeight",
+  "showComposerButton", "composerButtonIconOnly", "showAIPolishButton", "aiPolishButtonIconOnly",
+  "hashTriggerEnabled", "contextRecommendEnabled", "selectionAddEnabled", "showSidebarButton",
+  "maxPromptCount",
+];
+
+/**
+ * 从 describe 视图里找出本插件的 ns：value（或 schema）含全部 13 键的命名空间即本插件。
+ * 找不到（settings 页面还没渲染过本条目 / mirror 未就绪）返回 undefined。
+ */
+export function resolveNsFromDescribe(view: unknown): string | undefined {
+  const namespaces = (view as { namespaces?: readonly { ns?: unknown; value?: unknown; schema?: unknown }[] })?.namespaces;
+  if (!Array.isArray(namespaces)) return undefined;
+  for (const row of namespaces) {
+    const dict = (row.schema as { dict?: Record<string, unknown> } | undefined)?.dict
+      ?? (row.value as Record<string, unknown> | undefined);
+    if (!dict || typeof dict !== "object") continue;
+    const keys = Object.keys(dict);
+    if (NS_SIGNATURE_KEYS.every((k) => keys.includes(k))) return typeof row.ns === "string" ? row.ns : undefined;
+  }
+  return undefined;
 }
 
 let scope: ClientSettingsScope | null = null;
@@ -45,7 +83,7 @@ function derive(): void {
  * 无宿主 scope 时的**降级读**（R-P8-1）：发一次尽力而为的 `GET /settings`，成功则经归一化落地并广播。
  *
  * 触发点是**首次消费**与 `setSettingsScope(null)`——**不是模块初始化**：导入期做 I/O 会让任何
- * 只是 import 本模块的进程（单测、smoke 的假 ctx）继承一次网络副作用；而在有 `settingsScope`
+ * 只是 import 本模块的进程（单测、smoke 的假 ctx）继承一次网络副作用；而在有 `configForms`
  * 的部署里这次请求还会被 `if (scope !== null)` 直接丢弃（白跑一趟）。故改成惰性 + 至多一次。
  *
  * 失败静默回落默认值（只留一条可读 warn），**不重试、不轮询**；且必被 `then` 的拒绝分支接住
@@ -61,11 +99,11 @@ function readSettingsFallback(): void {
       emit();
     },
     (err: unknown) => {
-      // 只打一行可读原因：这条降级是**预期内**的（smoke 的假 ctx 与本部署都没有 settingsScope，
+      // 只打一行可读原因：这条降级是**预期内**的（smoke 的假 ctx 与无 configForms 的部署都走这里，
       // 计划 §7 要求每次 CI 都走到它），可见后果是界面按默认值显示。倾倒整个 error 对象会让
       // 每次 CI 多出一段堆栈、淹没真正的异常——**不要顺手把 err 整个对象加回来**。
       console.warn(
-        "[prompt-enhancer] 无 settingsScope，降级读取设置失败，已按默认值显示：" +
+        "[prompt-enhancer] 无 configForms，降级读取设置失败，已按默认值显示：" +
           (err instanceof Error ? err.message : String(err)),
       );
     },
@@ -77,6 +115,17 @@ function tryFallbackRead(): void {
   if (scope !== null || fallbackAttempted) return;
   fallbackAttempted = true;
   readSettingsFallback();
+}
+
+/**
+ * 条目 id 解析器（`src/client/index.ts` 注入时提供）：set 被拒时用来把「固定 ns 写不中」
+ * 换成「describe 里按签名认出的真实 ns」重试一次。
+ */
+let nsResolver: SettingsNsResolver | undefined;
+
+/** 注入 describe 解析器（与 scope 同生命周期：scope 注销时一并清空）。 */
+export function setSettingsNsResolver(resolve: SettingsNsResolver | undefined): void {
+  nsResolver = resolve;
 }
 
 /**
@@ -155,14 +204,24 @@ export function useSettings(): PluginSettings {
 /**
  * 写设置。有宿主 scope ⇒ 逐字段 `set`（宿主校验 + 广播，写回答折回镜像 ⇒ 本 store 自动换快照）；
  * 无 scope（无 ui-settings 的部署 / smoke 的假 ctx）⇒ 降级为 `PUT /settings` 并本地刷新。
- * 失败一律**抛出**（调用方出可读错误）：设置改了却什么都没发生，比报错更糟。
+ * 0.2.0 的 `set` 返回「宿主是否接受」：拒绝（false）**抛出**而不是静默返回——设置改了却什么
+ * 都没发生，比报错更糟。传输失败本身也 reject，同样抛出（调用方出可读错误）。
  */
 export async function updateSettings(patch: Partial<PluginSettings>): Promise<void> {
   tryFallbackRead(); // **首次消费**即触发那一次降级读（与读路径同一入口）
   const entries = Object.entries(patch) as [keyof PluginSettings, unknown][];
   if (entries.length === 0) return;
   if (scope !== null) {
-    for (const [key, value] of entries) await scope.set(String(key), value);
+    for (const [key, value] of entries) {
+      let accepted = await scope.set(String(key), value);
+      if (!accepted && nsResolver) {
+        // 首写被拒（典型：注入部署的随机条目 id ⇒ 固定 ns 写不中）⇒ 请代理重新解析 ns
+        //（index.ts 侧的 form 代理会调 resolver、换绑到真实条目的 form）后再试一次。
+        nsResolver();
+        accepted = await scope.set(String(key), value);
+      }
+      if (!accepted) throw new Error("设置写入被宿主拒绝（字段 " + String(key) + "）");
+    }
     return;
   }
   const next = await api.updateSettings(patch);

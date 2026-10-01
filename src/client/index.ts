@@ -16,10 +16,10 @@
  * i18n 字典随本 fiber 注册，卸载即撤。
  * 注册顺序即产物内注册顺序，也是 scripts/smoke.mjs 行为断言的账本顺序。
  * P6 追加：目录选择能力（ctx.uiWorkspace）经**条件注入**持有，inject 导出数组不扩张。
- * P8 T1/T3 追加：设置唯一真源（ctx.settingsScope）与聊天快照（ctx.uiConversation）同走条件注入
+ * P8 T1/T3 追加：设置唯一真源（dsh 0.2.0 起 ctx.configForms，旧为 ctx.settingsScope）与聊天快照（ctx.uiConversation）同走条件注入
  * ——段序固定为
- *   ["slots"] → ["uiWorkspace"] → ["uiConversation"] → ["settingsScope"]
- *   （smoke 按此顺序断言；T3 的 ["uiConversation"] 插在 uiWorkspace 与 settingsScope 之间）。
+ *   ["slots"] → ["uiWorkspace"] → ["uiConversation"] → ["configForms"]
+ *   （smoke 按此顺序断言；T3 的 ["uiConversation"] 插在 uiWorkspace 与设置段之间）。
  */
 
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
@@ -30,8 +30,8 @@ import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
 // ctx.uiWorkspace 的 Context 增强（目录选择能力）由 ui-workspace 的 client 半声明
 import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
-// ctx.settingsScope 的 Context 增强与服务类型（设置命名空间绑定的入口）
-import type { SettingsScopeBinder } from "@deepseek-ai/dsh-client-ui-settings/client";
+// ctx.configForms 的 Context 增强与 ConfigForm 类型（0.2.0 设置真源的入口）
+import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import { AIPolishButton } from "./components/AIPolishButton.tsx";
 import { ContextRecommendations } from "./components/ContextRecommendations.tsx";
 import { HashSuggestOverlay } from "./components/HashSuggestOverlay.tsx";
@@ -41,7 +41,7 @@ import { SettingsSection } from "./components/settings/SettingsSection.tsx";
 import { SidebarPromptEntry } from "./components/SidebarPromptEntry.tsx";
 import { setUiConversation, type UiConversationService } from "./utils/conversation-targets.ts";
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
-import { setSettingsScope } from "./utils/settings-store.ts";
+import { resolveNsFromDescribe, setSettingsNsResolver, setSettingsScope } from "./utils/settings-store.ts";
 import { setDirectoryCapability } from "./utils/workspace-dir.ts";
 /**
  * 设置命名空间：**取零依赖共用模块的导出**（P8 二审 I3），不再在此重述字面量。
@@ -136,7 +136,7 @@ export function apply(ctx: ClientContext): void {
 
   // 聊天快照（P8 T3 / 规格 §7.1：conversation-targets.ts 是读「最近聊天」的唯一活数据源，**必需**）。
   // 服务缺席 ⇒ 推荐条退化为「只用当前草稿」，不崩（TBD-P8-4 的降级）。
-  // **段序固定**：本段在 uiWorkspace 与 settingsScope **之间**（smoke 的 injectDeps 账本按调用顺序断言）。
+  // **段序固定**：本段在 uiWorkspace 与设置段（configForms）**之间**（smoke 的 injectDeps 账本按调用顺序断言）。
   ctx.inject(["uiConversation"], (scope: ClientContext) => {
     setUiConversation((scope as unknown as { uiConversation?: UiConversationService }).uiConversation ?? null);
     return () => setUiConversation(null);
@@ -149,15 +149,70 @@ export function apply(ctx: ClientContext): void {
     };
   }, "prompt-enhancer: lifecycle");
 
-  // 设置唯一真源（P8 T1 / TBD-P8-1 的 (a)）：服务缺席时 store 回落默认值 + HTTP 降级。
+  // 设置唯一真源（P8 T1 建立，dsh 0.2.0 重接线）：服务缺席时 store 回落默认值 + HTTP 降级。
   //
-  // 注入的是**绑定到本命名空间的 scope**（`binder.bind({ namespace })`），不是 binder 本身：
-  // 宿主 `ctx.settingsScope` 是 `SettingsScopeBinder`，只有 `bind` / `describe`；读快照与写字段
-  // 都在绑定后的 `SettingsScope`（`getSnapshot` / `subscribe` / `set`）上——store 要的正是它。
+  // 0.2.0 起客户端设置面是 `ctx.configForms`（ui-settings 的 ConfigForms 服务）：
+  // `get(entryId)` 返回该条目的 `ConfigForm`（getSnapshot / subscribe / set）——语义与 0.1.5
+  // 的 `settingsScope.bind({ namespace })` 同形，只是入口改名、命名空间即 loader 条目 id。
+  //
+  // **条目 id 不能写死**：官方 bundles 装配下 id = patch insert 行的 id（本插件 = prompt-enhancer），
+  // 但 super-injector 的 `loader.create({ name })` 注入路径给**随机 id**——固定 ns 会写不中
+  // （No configurable plugin entry）。故这里包一层**自解析 form 代理**：先按 SETTINGS_NAMESPACE
+  // 试；写被拒时经 `configForms.describe()` 按 13 键签名认出真实条目，换绑 form 后由 store 重试。
   // smoke 的假 ctx 没有该服务（真宿主里 ctx.inject 保证在场），故仍按可选面处理、缺席即 null。
-  ctx.inject(["settingsScope"], (scope: ClientContext) => {
-    const binder = scope.settingsScope as SettingsScopeBinder | undefined;
-    setSettingsScope(binder ? binder.bind({ namespace: SETTINGS_NAMESPACE }) : null);
-    return () => setSettingsScope(null);
+  ctx.inject(["configForms"], (scope: ClientContext) => {
+    const forms = (scope as unknown as {
+      configForms?: {
+        get<T>(entryId: string): ConfigForm<T>;
+        describe(): { getSnapshot(): { status: string; view?: { namespaces?: readonly { ns: string; value?: unknown; schema?: unknown }[] } } };
+      };
+    }).configForms;
+    if (!forms) {
+      setSettingsScope(null);
+      return () => setSettingsScope(null);
+    }
+
+    let ns: string = SETTINGS_NAMESPACE;
+    let form: ConfigForm<Record<string, unknown>> = forms.get(ns);
+    let subscribers: Set<() => void> | undefined;
+    let unsubscribe: (() => void) | undefined;
+
+    const rebind = (next: string): void => {
+      if (next === ns) return;
+      ns = next;
+      unsubscribe?.();
+      form = forms.get(ns);
+      const subs = subscribers;
+      if (subs && subs.size > 0) unsubscribe = form.subscribe(() => { for (const fn of [...subs]) fn(); });
+    };
+
+    /** describe → 13 键签名 → 真实条目 id（settings-store 的 resolveNsFromDescribe）。 */
+    const resolveNs = (): string | undefined => {
+      const snap = forms.describe().getSnapshot();
+      const found = resolveNsFromDescribe(snap.view);
+      if (found) rebind(found);
+      return found;
+    };
+    setSettingsNsResolver(resolveNs);
+
+    // 代理面：对 settings-store 完全透明（ClientSettingsScope 同形）。
+    setSettingsScope({
+      getSnapshot: () => form.getSnapshot(),
+      subscribe: (fn: () => void) => {
+        subscribers ??= new Set<() => void>();
+        const subs = subscribers;
+        if (subs.size === 0) unsubscribe = form.subscribe(() => { for (const f of [...subs]) f(); });
+        subs.add(fn);
+        return () => {
+          subs.delete(fn);
+          if (subs.size === 0) { unsubscribe?.(); unsubscribe = undefined; }
+        };
+      },
+      set: (field: string, value: unknown) => form.set(field, value),
+    });
+    return () => {
+      setSettingsNsResolver(undefined);
+      setSettingsScope(null);
+    };
   });
 }

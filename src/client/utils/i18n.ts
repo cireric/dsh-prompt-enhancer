@@ -7,6 +7,9 @@ export const zh = {
   "list.title": "常用提示词",
   "list.empty": "还没有提示词",
   "list.loading": "加载中…",
+  "list.filter": "筛选提示词",
+  "list.filterPlaceholder": "筛选标题 / 标签 / 正文",
+  "list.overflow": " 条未显示 · 去管理面板搜索",
   "action.insert": "插入",
   "action.overwrite": "覆盖",
   "action.send": "插入并发送",
@@ -61,6 +64,9 @@ export const zh = {
   "ai.sameAsOriginal": "完善稿与原文相同，无需切换",
   "ai.evicted": "已存入词库；有旧提示词因超出上限被淘汰",
   "ai.toggleMoved": "「原文 / 优化稿」的对比与切换已移至管理面板的详情页",
+  // ④（2026-09-30 裁定）：润色被授权新增 {{变量}} 占位符（system prompt 的「例外」条），
+  // 这件事必须在实际产物旁边说清——否则用户看到多出来的变量会以为是模型跑偏。
+  "ai.mayAddVars": "润色可能为正文新增 {{变量}} 占位符（模板变量，从词库插入时才填值）",
 
   // ── P6：管理面板（列表 / 详情 / §4.4 并排对比）────────────────────────
   "list.manage": "管理",
@@ -262,6 +268,9 @@ export const en: Record<keyof typeof zh, string> = {
   "list.title": "Saved prompts",
   "list.empty": "No prompts yet",
   "list.loading": "Loading…",
+  "list.filter": "Filter prompts",
+  "list.filterPlaceholder": "Filter title / tags / body",
+  "list.overflow": " more not shown · open the manager to search",
   "action.insert": "Insert",
   "action.overwrite": "Overwrite",
   "action.send": "Insert & send",
@@ -316,6 +325,7 @@ export const en: Record<keyof typeof zh, string> = {
   "ai.sameAsOriginal": "The refined draft matches the original — nothing to toggle",
   "ai.evicted": "Saved to library; older prompts were evicted past the limit",
   "ai.toggleMoved": "The original/refined compare and toggle now live on the manager's detail page",
+  "ai.mayAddVars": "Polishing may add {{variable}} placeholders to the body (template variables, filled in when you insert the prompt from the library)",
 
   // ── P6: manager panel (list / detail / §4.4 side-by-side)──────────────
   "list.manage": "Manage",

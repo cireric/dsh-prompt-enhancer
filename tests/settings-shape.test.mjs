@@ -63,10 +63,11 @@ test("settings-shape：入参非对象（null / 字符串）也不抛，整体�
 // 不生效。现在两边都只引用 `settings-shape.ts`（零依赖共用模块，D-P8-1 建的），本用例钉住这一点。
 
 test("SETTINGS_NAMESPACE：唯一真源在 settings-shape.ts，宿主与客户端消费点都引用它（漂移即红）", async () => {
-  assert.equal(shape.SETTINGS_NAMESPACE, "prompt-enhancer", "值钉在唯一真源上（写进 settings.yaml 的顶层 key）");
-  // 宿主侧：**运行期**取自同一模块——host/settings.ts 只是转发，运行时能取到才算没断链。
+  assert.equal(shape.SETTINGS_NAMESPACE, "prompt-enhancer", "值钉在唯一真源上（dsh 0.2.0 起即 profile 条目 id）");
+  // 宿主侧：**运行期**取自同一模块——host/settings.ts 只是转发（0.2.0 起改名 CONFIG_NAMESPACE，
+  // 语义从 settings.yaml 顶层 key 变为 loader 条目 id，值不变），运行时能取到才算没断链。
   const host = await import("../src/host/settings.ts");
-  assert.equal(host.SETTINGS_NAMESPACE, shape.SETTINGS_NAMESPACE);
+  assert.equal(host.CONFIG_NAMESPACE, shape.SETTINGS_NAMESPACE);
   // 两侧消费点：都从共享模块引入该绑定、且各自文件里没有本地定义。
   assertNamespaceFromSharedModule("src/host/settings.ts");
   assertNamespaceFromSharedModule("src/client/index.ts");

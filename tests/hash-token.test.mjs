@@ -39,6 +39,20 @@ test("filterPrompts：标签命中优先于正文命中（title > tags > body �
   assert.deepEqual(h.filterPrompts(list, "周报").map(x => x.id), ["t", "b"], "标签命中排前，正文命中在后");
 });
 
+test("filterPrompts：summary 不参与匹配（三处同口径的负样本）", () => {
+  // 口径：只匹配 title / tags / body。第三处（宿主 store.listPrompts 的 q）同样不看 summary——
+  // 任何一处偷偷加上 summary，都会让「同一个词在快速列表与管理面板搜出不同结果」，且是静默的。
+  const onlySummary = [{ id: "s", title: "无关标题", body: "无关正文", tags: [], summary: "这里才含目标词：复盘" }];
+  assert.deepEqual(
+    h.filterPrompts(onlySummary, "复盘"),
+    [],
+    "summary 命中不得让条目进候选（否则与宿主 listPrompts 的 q 口径漂移）",
+  );
+  // 反向对照：同一个词放进正文就能命中 ⇒ 上面的空结果不是因为查询词本身有问题。
+  const inBody = [{ id: "b", title: "无关标题", body: "这里含复盘", tags: [], summary: "" }];
+  assert.deepEqual(h.filterPrompts(inBody, "复盘").map(x => x.id), ["b"]);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // R48：`#` 浮层的显示判定（「静默抑制」类缺陷的回归锁）
 //

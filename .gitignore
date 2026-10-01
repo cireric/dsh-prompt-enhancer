@@ -7,3 +7,9 @@ debug.log
 
 # 本地临时区：上游参考项目 clone（.tmp/dsh-prompt-library，自带 .git）
 .tmp/
+
+# 包管理器只有 npm（唯一 lockfile = package-lock.json）。
+# 这里曾被 pnpm 装过一次：它把 @deepseek-ai/dsh-llm 装成 0.0.1-rc.1（profile 里链的是 0.2.0-rc.2），
+# tsc 当场两条红。故把 pnpm 的产物挡在版本控制之外，避免它再次混进来。
+pnpm-lock.yaml
+pnpm-workspace.yaml
