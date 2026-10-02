@@ -31,6 +31,7 @@ import {
 import { SelectionAddPrompt } from "./SelectionAddPrompt.tsx";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 import { reasonOf } from "../../err-text.ts";
+import { useDismissOnOutside } from "../utils/dismiss-outside.ts";
 
 /** 输入框旁「词库」按钮（任务 5 落地完整行为）。 */
 export type PromptLibraryButtonProps =
@@ -173,21 +174,12 @@ export function PromptLibraryButton({
     };
   }, [open]);
 
-  // 点浮层外收起。宿主标准 props 没有「点外面关」的座位；官方 ui-commands 的
-  // PopupSelectView 同样用 document 捕获阶段的 pointerdown（纯监听，不改宿主 DOM）。
-  React.useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (ev: PointerEvent): void => {
-      const root = rootRef.current;
-      if (root !== null && ev.target instanceof Node && root.contains(ev.target)) return;
-      setOpen(false);
-      setPending(null);
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-    };
-  }, [open]);
+  // 点浮层外收起（三处浮层共用同一实现，见 utils/dismiss-outside.ts；宿主标准 props 没有这个座位，
+  // 与官方 ui-commands 的 PopupSelectView 同款：document 捕获阶段的纯监听，不改宿主 DOM）。
+  useDismissOnOutside(rootRef, open, () => {
+    setOpen(false);
+    setPending(null);
+  });
 
   // 已删除提示自动消失。
   React.useEffect(() => {

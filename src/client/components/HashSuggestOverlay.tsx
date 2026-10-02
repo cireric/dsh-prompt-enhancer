@@ -48,6 +48,7 @@ import {
 } from "../utils/ui-state.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 import { reasonOf } from "../../err-text.ts";
+import { useDismissOnOutside } from "../utils/dismiss-outside.ts";
 
 /** `#` 候选浮层（任务 6 落地完整行为）。 */
 export type HashSuggestOverlayProps =
@@ -147,19 +148,10 @@ export function HashSuggestOverlay({
   // T1 起这条指针监听**不再承担互斥职责**：它只是本面自己的收起入口（用户意图），把它关掉的后果是
   // `visible` 转 false ⇒ 下面的 claim effect 释放 `hash` ⇒ 别面可以取屏。互斥由共享 claim 在全通道
   // 上保证（键盘/AT 激活没有 pointerdown 也挡得住——P6 的实测路径正是那样绕过边沿规则的）。
-  React.useEffect(() => {
-    if (!visible) return;
-    const onPointerDown = (ev: PointerEvent): void => {
-      const root = rootRef.current;
-      if (root !== null && ev.target instanceof Node && root.contains(ev.target)) return;
-      if (tokenKey !== null) setDismissedKey(tokenKey);
-      setPending(null);
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-    };
-  }, [visible, tokenKey]);
+  useDismissOnOutside(rootRef, visible, () => {
+    if (tokenKey !== null) setDismissedKey(tokenKey);
+    setPending(null);
+  });
 
   /** 落草稿（替换尾令牌）+ 上报用量（规格 §4.4：「# 选中」也算一次使用）。 */
   const apply = (prompt: Prompt, body: string): void => {

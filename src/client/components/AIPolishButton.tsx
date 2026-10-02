@@ -36,6 +36,7 @@ import { seedRefinedDirection } from "../utils/refined-direction.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 import { claimOverlayIfFree, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
 import { reasonOf } from "../../err-text.ts";
+import { useDismissOnOutside } from "../utils/dismiss-outside.ts";
 
 /** 输入框旁「AI 优化」按钮。 */
 export type AIPolishButtonProps =
@@ -209,8 +210,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setCopied(false);
   };
 
-  // 点浮层外收起。宿主标准 props 没有「点外面关」的座位；官方 ui-commands 的
-  // PopupSelectView 同样用 document 捕获阶段的 pointerdown（纯监听，不改宿主 DOM）。
+  // 点浮层外收起（实现见 utils/dismiss-outside.ts；三处浮层共用同一份捕获阶段纯监听）。
   // 只在面板「已定型」（有可停留的结果）时挂：调用/存库中关面板会让回来的结果无处安放。
   const settled =
     status === "done" ||
@@ -219,18 +219,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     status === "saved" ||
     status === "saveFailed" ||
     status === "writeBackFailed";
-  React.useEffect(() => {
-    if (!settled) return;
-    const onPointerDown = (ev: PointerEvent): void => {
-      const root = rootRef.current;
-      if (root !== null && ev.target instanceof Node && root.contains(ev.target)) return;
-      close();
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-    };
-  }, [settled]);
+  useDismissOnOutside(rootRef, settled, close);
 
   // 已复制提示自动消失。
   React.useEffect(() => {
