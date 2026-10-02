@@ -78,6 +78,7 @@ import { SkillExportModal } from "./SkillExportModal.tsx";
 import { TagManagePanel } from "./TagManagePanel.tsx";
 // type-only：面板值住在弹窗宿主（PromptSurfaceHost），本文件只消费它（类型擦除 → 无运行期循环）。
 import type { ManagerPanelValue } from "./PromptSurfaceHost.tsx";
+import { reasonOf } from "../../err-text.ts";
 
 /** 面板文案取值器：即 `PropsLocale<'prompt-enhancer'>` 的 `t`。 */
 export type ManagerTranslate = TranslateNS<"prompt-enhancer">;
@@ -122,10 +123,6 @@ const SORTS: ReadonlyArray<{ value: PromptSort; label: PromptEnhancerKey }> = [
 /** 搜索防抖（简报要求 ≥250ms；取 300ms 留出余量）。 */
 const SEARCH_DEBOUNCE_MS = 300;
 
-/** 失败原因给人看的那一行：ApiError / Error 自带可读 message，其余 String()。 */
-function reasonOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** 标签输入（逗号分隔）→ 数组：去空白、丢空项、保序去重（半角与全角逗号都认）。 */
 function parseTagList(text: string): string[] {

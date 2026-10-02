@@ -47,6 +47,7 @@ import {
   useOverlayClaim,
 } from "../utils/ui-state.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
+import { reasonOf } from "../../err-text.ts";
 
 /** `#` 候选浮层（任务 6 落地完整行为）。 */
 export type HashSuggestOverlayProps =
@@ -131,7 +132,7 @@ export function HashSuggestOverlay({
         // 加载失败必须可见：既留 console 痕迹，也在浮层里显示一行错误（不是空态）。
         console.warn("[prompt-enhancer] 提示词列表加载失败", err);
         setPrompts([]);
-        setLoadError(err instanceof Error ? err.message : String(err));
+        setLoadError(reasonOf(err));
       },
     );
     return () => {

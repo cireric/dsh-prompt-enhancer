@@ -41,6 +41,7 @@ import {
 import { deletePrompts } from "../utils/prompt-meta.ts";
 import { isDirectoryPickerAvailable, pickExportDirectory } from "../utils/workspace-dir.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
+import { reasonOf } from "../../err-text.ts";
 
 export interface ImportExportModalProps {
   /** 宿主的命名空间翻译函数（由 PromptManagerModal 透传）。 */
@@ -50,10 +51,6 @@ export interface ImportExportModalProps {
 /** 搬运动作（导出 / 读文件 / 落库）互斥：任一在途时其它按钮一律禁用。 */
 type Busy = "idle" | "exporting" | "reading" | "applying";
 
-/** 失败原因给人看的那一行：ApiError / Error 自带可读 message，其余 String()。 */
-function reasonOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** 导入导出页。 */
 export function ImportExportModal({ t }: ImportExportModalProps): React.ReactElement {

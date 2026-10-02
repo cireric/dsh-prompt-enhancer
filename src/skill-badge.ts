@@ -14,6 +14,8 @@
  * 故 `tests/skill-badge.test.mjs` 用**函数恒等**（`hostSkills.isSkillStale === isSkillStale`）钉住。
  */
 
+import { reasonOf } from "./err-text.ts";
+
 /** 过期判定只读这三个字段（窄接口：调用方传整条 `Prompt` 也满足）。 */
 export interface SkillStalenessLike {
   /** 已导出的技能名（kebab-case）；缺省 / 空串 = 从未导出。 */
@@ -130,7 +132,7 @@ export async function reExportSkill<R extends SkillReExportReceiptLike>(
     return {
       ok: false,
       errorKey: "manager.skill.exportFailed",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: reasonOf(err),
     };
   }
   if (!receipt.path) {

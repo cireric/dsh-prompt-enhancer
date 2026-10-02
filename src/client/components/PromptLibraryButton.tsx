@@ -30,6 +30,7 @@ import {
 } from "../utils/ui-state.ts";
 import { SelectionAddPrompt } from "./SelectionAddPrompt.tsx";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
+import { reasonOf } from "../../err-text.ts";
 
 /** 输入框旁「词库」按钮（任务 5 落地完整行为）。 */
 export type PromptLibraryButtonProps =
@@ -164,7 +165,7 @@ export function PromptLibraryButton({
         if (!alive) return;
         console.warn("[prompt-enhancer] 提示词列表加载失败", err);
         setPrompts([]);
-        setLoadError(err instanceof Error ? err.message : String(err));
+        setLoadError(reasonOf(err));
       },
     );
     return () => {

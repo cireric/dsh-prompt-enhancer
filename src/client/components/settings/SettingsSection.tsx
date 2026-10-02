@@ -27,6 +27,7 @@ import { type AiSelectable, api } from "../../utils/api.ts";
 import { errorDetail, errorText, muted, select, textInput } from "../../utils/dialog-style.ts";
 import { updateSettings, useSettings } from "../../utils/settings-store.ts";
 import { TOKEN } from "../../utils/theme.ts";
+import { reasonOf } from "../../../err-text.ts";
 
 /** 一行的数值边界（与宿主 schema 逐格同值：`src/host/settings.ts:37-38,47` 的 step/min/max）。 */
 interface NumberBounds { min: number; max: number }
@@ -67,7 +68,7 @@ function useWrite(t: TranslateNS<"prompt-enhancer">): WriteTools {
         setPending(false);
         setFailure({
           message: t("settings.saveFailed"),
-          detail: err instanceof Error ? err.message : String(err),
+          detail: reasonOf(err),
         });
         console.warn("[prompt-enhancer] 保存设置失败（" + field + "）", err);
       },
@@ -285,7 +286,7 @@ function AiModelRow({ t, provider, model }: AiModelRowProps): React.ReactElement
         // 卸载后不回写：探测可能要挂满 15s，期间本页可能已被切走（AnimatePresence 之外的现实）。
         if (!alive) return;
         setList([]);
-        setProbeError(err instanceof Error ? err.message : String(err));
+        setProbeError(reasonOf(err));
       },
     );
     return () => { alive = false; };

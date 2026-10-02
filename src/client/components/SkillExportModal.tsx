@@ -57,6 +57,7 @@ import {
   type SkillRun,
 } from "../utils/skill-export.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
+import { reasonOf } from "../../err-text.ts";
 
 export interface SkillExportModalProps {
   /** 宿主的命名空间翻译函数（由 PromptSurfaceHost → PromptManagerModal 透传）。 */
@@ -68,10 +69,6 @@ export interface SkillExportModalProps {
 /** 在途动作（AI 补全 / 导出）互斥：任一在途时其它按钮一律禁用。 */
 type Busy = "idle" | "describing" | "exporting";
 
-/** 失败原因给人看的那一行：ApiError / Error 自带可读 message，其余 String()。 */
-function reasonOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.ReactElement {
   const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);

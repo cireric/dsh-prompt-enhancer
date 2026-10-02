@@ -2,6 +2,7 @@ import { DEFAULT_SETTINGS, type PluginSettings } from "../../types.ts";
 import { SETTINGS_KEYS, normalizeSettings } from "../../settings-shape.ts";
 import { api } from "./api.ts";
 import { hooks } from "./react-hooks.ts";
+import { reasonOf } from "../../err-text.ts";
 
 /**
  * 宿主设置表单中本插件用到的部分（dsh 0.2.0 `ConfigForm` 的窄面，见
@@ -96,7 +97,7 @@ function readSettingsFallback(): void {
       // 每次 CI 多出一段堆栈、淹没真正的异常——**不要顺手把 err 整个对象加回来**。
       console.warn(
         "[prompt-enhancer] 无 configForms，降级读取设置失败，已按默认值显示：" +
-          (err instanceof Error ? err.message : String(err)),
+          (reasonOf(err)),
       );
     },
   );

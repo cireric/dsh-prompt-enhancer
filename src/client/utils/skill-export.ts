@@ -24,6 +24,7 @@ import { isValidSkillName, toKebab } from "../../skill-name.ts";
 import { resolveDescription } from "../../skill-description.ts";
 // `api` 只为 R-P7-AA 的 descriptor 落库（`persistDescriptor` 的默认实现）——其余 HTTP 仍由调用方注入。
 import { ApiError, api, type SkillDescriptorPayload, type SkillExportReceipt } from "./api.ts";
+import { reasonOf } from "../../err-text.ts";
 
 // ── 在途批次的取消令牌（R-P7-X 修复轮 1）────────────────────────────────────
 
@@ -406,10 +407,6 @@ function failedOutcome(prompt: SkillCandidate, err: unknown): ExportOutcome {
   };
 }
 
-/** 失败原因给人看的那一行：ApiError / Error 自带可读 message（宿主原文），其余 String()。 */
-function reasonOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 // ── descriptor 的持久化（R-P7-AA 修复轮 1）──────────────────────────────────
 //

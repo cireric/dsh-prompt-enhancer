@@ -35,6 +35,7 @@ import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { seedRefinedDirection } from "../utils/refined-direction.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 import { claimOverlayIfFree, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
+import { reasonOf } from "../../err-text.ts";
 
 /** 输入框旁「AI 优化」按钮。 */
 export type AIPolishButtonProps =
@@ -73,10 +74,6 @@ function previewText(body: string): string {
   return body.length > PREVIEW_MAX ? body.slice(0, PREVIEW_MAX) + "…" : body;
 }
 
-/** 失败原因给人看的那一行：Error 自带可读 message，其余 String()。 */
-function reasonOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** 润色星标：内联四角星，不引任何图标依赖（不引 ui-primitives）。 */
 function SparkleIcon(): React.ReactElement {

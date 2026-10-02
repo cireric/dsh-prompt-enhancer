@@ -14,6 +14,7 @@
  */
 
 import type { ImportResult } from "../../types.ts";
+import { reasonOf } from "../../err-text.ts";
 
 /** 备份文件体积上限（5 MiB，字节）。与 `File.size` 同单位（字节，不是字符数）。 */
 export const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
@@ -49,7 +50,7 @@ export function parseBackupFile(text: string, byteLength: number): BackupParse {
     return {
       ok: false,
       errorKey: "transfer.badJson",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: reasonOf(err),
     };
   }
 }

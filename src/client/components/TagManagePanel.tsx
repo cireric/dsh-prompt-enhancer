@@ -31,16 +31,13 @@ import {
 } from "../utils/dialog-style.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
+import { reasonOf } from "../../err-text.ts";
 
 export interface TagManagePanelProps {
   /** 宿主的命名空间翻译函数（由 PromptManagerModal 透传）。 */
   t: ManagerTranslate;
 }
 
-/** 失败原因给人看的那一行：Error 自带可读 message，其余 String()。 */
-function reasonOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** 标签页。 */
 export function TagManagePanel({ t }: TagManagePanelProps): React.ReactElement {
