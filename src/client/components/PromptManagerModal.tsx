@@ -19,7 +19,8 @@ import {
   type PromptSort,
   type PromptWritablePatch,
 } from "../../types.ts";
-import { canToggle, deletePrompts } from "../utils/ai-flow.ts";
+import { canToggle } from "../utils/ai-flow.ts";
+import { deletePrompts } from "../utils/prompt-meta.ts";
 import { ApiError, api } from "../utils/api.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import { createFromCapture } from "../utils/capture.ts";
@@ -424,7 +425,7 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
    *
    * 走 `deletePrompts({ irreversible: false })` 而不是直接 `api.deletePrompt`（T6 / O-1）：
    * 那条路径**一次 meta 清键都不发**——回收站可恢复且复用同一 id，清了键，「删除 → 恢复」会让
-   * 方向记录与技能 descriptor 一起消失（重演 I-1）。决策只在 `ai-flow.ts#deletePrompts` 一处，
+   * 方向记录与技能 descriptor 一起消失（重演 I-1）。决策只在 `prompt-meta.ts#deletePrompts` 一处，
    * 本面板不自己复制那条例外。
    */
   const remove = (prompt: Prompt): void => {

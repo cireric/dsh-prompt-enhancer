@@ -369,7 +369,7 @@ test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清两把**
     resolveConfirm(true);
     const outcome = await raceTimeout(pending, 2000, "确认后必须落地");
     assert.deepEqual(outcome.evicted, evicted, "回执里的淘汰名单原样带回调用方");
-    // 键名与 `ai-flow.ts#perPromptMetaKeys` 同源（这里按约定重写一次，两处不一致即红）。
+    // 键名与 `prompt-meta.ts#perPromptMetaKeys` 同源（这里按约定重写一次，两处不一致即红）。
     const expected = [];
     for (const id of evicted) {
       expected.push(

@@ -82,7 +82,7 @@ export function classifyImportResult(result: ImportResult): ImportVerdict {
  * `skillName` 可能与 meta 里的旧 `descriptor.name` 不一致 ⇒ 徽标重导改指向。
  *
  * 故：**被本次导入覆盖的 id**（备份 ∩ 导入前的现库）清掉那两把 per-prompt 键
- * （`pl:refined-dir:<id>` / `pl:skill-descriptor:<id>`，键名与其清法归 `ai-flow.ts` 的既有入口）。
+ * （`pl:refined-dir:<id>` / `pl:skill-descriptor:<id>`，键名与其清法归 `prompt-meta.ts` 的既有入口）。
  * 语义：方向回到「不知道」⇒ 中性标注（不撒谎）；descriptor 回到「不知道」⇒ 徽标重导重走一次命名
  * （**这是正确的**：备份里的 `skillName` 才是权威，meta 里的旧 descriptor 不再可信）。
  *
@@ -96,7 +96,7 @@ export function classifyImportResult(result: ImportResult): ImportVerdict {
  * 同样构成覆盖 ⇒ 必须把回收站那一侧也算进来，否则那份旧方向记录会**继承给恢复后的 X**。
  * （旧文档曾写「只对应 `selectAllPrompts()`，回收站不算覆盖」——那是被本修复波改掉的假话，别改回去。）
  *
- * `clear` 由调用方注入（真实现 = `ai-flow.ts#deletePrompts` 的收尾编排）：本模块是纯模块
+ * `clear` 由调用方注入（真实现 = `prompt-meta.ts#deletePrompts` 的收尾编排）：本模块是纯模块
  * （无 React / 无 DOM / 无 fetch，见文件头），不 import HTTP 层。返回被清键的 id（供调用方与用例断言）；
  * 没有被覆盖者时**一个请求都不发**。
  */
@@ -117,7 +117,7 @@ export async function clearOverwrittenMeta(
 /**
  * R-C（修复轮 1）：导入**前**的「已存在 id」集合 = **活跃提示词表 ∪ 回收站**。
  *
- * 为什么必须含回收站：软删除（进回收站）**刻意不清键**（`ai-flow.ts#deletePrompts` 的语义 1：回收站可
+ * 为什么必须含回收站：软删除（进回收站）**刻意不清键**（`prompt-meta.ts#deletePrompts` 的语义 1：回收站可
  * 恢复且**复用同一 id**），而 `importPrompts` 是 `INSERT OR REPLACE` 到**活跃表** ⇒
  * 「备份含 X → **软删 X** → 导入该备份」会把**旧的**方向记录继承给「又活过来」的 X
  * ⇒ 又是 R-P7-AE 那一类（自信、且切换修不回来的反相标注）。**只读活跃表看不见这条路径**。

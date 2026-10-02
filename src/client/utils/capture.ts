@@ -20,7 +20,7 @@
  * 真正的受害者名单由 `store.enforceMaxCount` 决定）。
  */
 import { clampTitle, type Prompt } from "../../types.ts";
-import { deletePrompts } from "./ai-flow.ts";
+import { deletePrompts } from "./prompt-meta.ts";
 import { api } from "./api.ts";
 import { requestConfirm } from "./confirm.ts";
 import { notifyDataChanged } from "./data-sync.ts";

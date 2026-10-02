@@ -1,7 +1,7 @@
 /**
  * O-1 客户端侧：**不可逆删除点**清 per-prompt meta（T6 / P7 任务 6）。
  *
- * 被测对象是组件真正调用的编排（`src/client/utils/ai-flow.ts#deletePrompts`）——两个删除面板
+ * 被测对象是组件真正调用的编排（`src/client/utils/prompt-meta.ts#deletePrompts`）——两个删除面板
  * （回收站的「永久删除」/「清空回收站」、列表页的软删除）都只经它收尾，不是平行副本。
  *
  * 组件（`.tsx`）进不了 `node --test`，故「面板有没有调它」归活体验收；本文件钉住那条编排的
@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { deletePrompts, perPromptMetaKeys } = await import("../src/client/utils/ai-flow.ts");
+const { deletePrompts, perPromptMetaKeys } = await import("../src/client/utils/prompt-meta.ts");
 const { refinedDirectionMetaKey } = await import("../src/client/utils/refined-direction.ts");
 const { skillDescriptorMetaKey } = await import("../src/client/utils/skill-export.ts");
 

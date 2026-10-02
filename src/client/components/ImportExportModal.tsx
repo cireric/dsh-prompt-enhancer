@@ -38,7 +38,7 @@ import {
   parseBackupFile,
   readExistingPromptIds,
 } from "../utils/transfer.ts";
-import { deletePrompts } from "../utils/ai-flow.ts";
+import { deletePrompts } from "../utils/prompt-meta.ts";
 import { isDirectoryPickerAvailable, pickExportDirectory } from "../utils/workspace-dir.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
 
@@ -197,7 +197,7 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
          * 备份里的 `skillName` 才是权威，meta 里的旧 descriptor 不再可信）。
          * **导入新 id ⇒ 一把都不清**（`clearOverwrittenMeta` 内部的反面对照）。
          *
-         * 键名与其清法一律走**既有**入口（`ai-flow.ts#deletePrompts` 的收尾编排）：不新增 API、
+         * 键名与其清法一律走**既有**入口（`prompt-meta.ts#deletePrompts` 的收尾编排）：不新增 API、
          * 不在这里重抄一遍键名。清键失败**不得**把一次已经成功的导入报成失败（`deletePrompts` 内部
          * 逐键 warn + 计数），也绝不静默。
          *

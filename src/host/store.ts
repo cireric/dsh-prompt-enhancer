@@ -681,7 +681,7 @@ export function deleteTrash(ids: string[]): number {
  * 为什么必须是 id 列表：`DELETE FROM trash` 是**一次性**的，而客户端要清它自己的 per-prompt meta 键
  * ——它需要知道**真的删掉了哪几条**。回收站面板手里的 items 是**打开那一刻**的快照，清空与列表之间的
  * 竞态窗口内新增的回收站行同样被这条语句删掉，却不在快照里 ⇒ 它那一对键永远没人清（T6 报告 §5 记的
- * 残口）。回执里带上 id 之后，客户端按**回执**清键（`client/utils/ai-flow.ts#deletePrompts` 的
+ * 残口）。回执里带上 id 之后，客户端按**回执**清键（`client/utils/prompt-meta.ts#deletePrompts` 的
  * `receiptIds`），与面板列了什么彻底解耦。
  *
  * **不含任何客户端键名约定**（T7-5② / P7 §10.4-5）：键名（前缀、用途段、`<用途>:<id>` 的排布）

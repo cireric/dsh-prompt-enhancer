@@ -10,7 +10,7 @@ const {
   readExistingPromptIds,
 } = await import("../src/client/utils/transfer.ts");
 // B 的「清键」由调用方注入；组合形态用**既有**入口 deletePrompts（真实现）验一次请求形状。
-const { deletePrompts } = await import("../src/client/utils/ai-flow.ts");
+const { deletePrompts } = await import("../src/client/utils/prompt-meta.ts");
 
 // 体积上限口径：5 MiB，单位是**字节**（与浏览器 File.size 同单位）。
 test("transfer：MAX_BACKUP_BYTES 是 5 MiB（字节）", () => {

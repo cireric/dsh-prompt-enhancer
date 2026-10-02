@@ -9,7 +9,7 @@
  * 用户取消 → promise 落地 false → 直接返回（不发起请求、不渲染错误）。
  *
  * 不可逆删除是 per-prompt meta 的**唯一**清理点（T6 / O-1）：两条路径都经
- * `ai-flow.ts#deletePrompts({ irreversible: true })`，为每条真正删掉的 id 清
+ * `prompt-meta.ts#deletePrompts({ irreversible: true })`，为每条真正删掉的 id 清
  * `pl:refined-dir:` / `pl:skill-descriptor:` 两把键（宿主侧幂等）。**恢复**（restore）不涉及清理。
  * 零 DOM 注入、不新引入依赖。
  */
@@ -18,7 +18,7 @@ import type { TrashItem } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import { requestConfirm } from "../utils/confirm.ts";
 import { notifyDataChanged, useDataChanged } from "../utils/data-sync.ts";
-import { deletePrompts } from "../utils/ai-flow.ts";
+import { deletePrompts } from "../utils/prompt-meta.ts";
 import {
   actions,
   button,
@@ -139,7 +139,7 @@ export function RecycleManagePanel({ t }: RecycleManagePanelProps): React.ReactE
         }
         /**
          * 不可逆删除：主删除成功后清该提示词的 per-prompt meta（T6 / O-1）。清键失败只 warn、
-         * 不影响这条删除的结局——决策与理由都在 `ai-flow.ts#deletePrompts` 里（一处，不在此复制）。
+         * 不影响这条删除的结局——决策与理由都在 `prompt-meta.ts#deletePrompts` 里（一处，不在此复制）。
          */
         await deletePrompts({ ids: [item.id], irreversible: true, remove: () => api.deleteTrash(item.id) });
         if (!aliveRef.current) return;
