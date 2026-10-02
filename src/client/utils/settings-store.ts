@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS, type PluginSettings } from "../../types.ts";
-import { normalizeSettings } from "../../settings-shape.ts";
+import { SETTINGS_KEYS, normalizeSettings } from "../../settings-shape.ts";
 import { api } from "./api.ts";
 import { hooks } from "./react-hooks.ts";
 
@@ -23,14 +23,6 @@ export interface ClientSettingsScope {
  */
 export type SettingsNsResolver = () => string | undefined;
 
-/** 13 键特征集（settings-shape.ts 的 SETTINGS_KEYS 同源；此处内联避免 client 拉 host 模块）。 */
-const NS_SIGNATURE_KEYS = [
-  "aiProvider", "aiModel", "panelWidth", "panelHeight",
-  "showComposerButton", "composerButtonIconOnly", "showAIPolishButton", "aiPolishButtonIconOnly",
-  "hashTriggerEnabled", "contextRecommendEnabled", "selectionAddEnabled", "showSidebarButton",
-  "maxPromptCount",
-];
-
 /**
  * 从 describe 视图里找出本插件的 ns：value（或 schema）含全部 13 键的命名空间即本插件。
  * 找不到（settings 页面还没渲染过本条目 / mirror 未就绪）返回 undefined。
@@ -43,7 +35,7 @@ export function resolveNsFromDescribe(view: unknown): string | undefined {
       ?? (row.value as Record<string, unknown> | undefined);
     if (!dict || typeof dict !== "object") continue;
     const keys = Object.keys(dict);
-    if (NS_SIGNATURE_KEYS.every((k) => keys.includes(k))) return typeof row.ns === "string" ? row.ns : undefined;
+    if (SETTINGS_KEYS.every((k) => keys.includes(k))) return typeof row.ns === "string" ? row.ns : undefined;
   }
   return undefined;
 }
