@@ -31,7 +31,6 @@ const {
   isAllSelected,
   pickSelected,
   precheckExport,
-  resolveDescriptionForClient,
   summarizeExport,
   toggleAllVisible,
   toggleSelected,
@@ -184,30 +183,6 @@ test("precheckExport 负样本：兜底链全空 → descMissing（宿主也会�
   assert.equal(pre.errorKey, "manager.skill.descMissing");
   assert.equal(pre.detail, "summary|descriptor.description|body[0]|title all empty");
   assert.doesNotMatch(pre.detail, /[\u4e00-\u9fff]/);
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// description 兜底链：与宿主逐格同值（两处真源会漂移，故用同一张表同时喂两边）
-// ─────────────────────────────────────────────────────────────────────────────
-
-test("resolveDescriptionForClient：与宿主 resolveDescription 逐格同值（含回车与空白的边角）", () => {
-  const table = [
-    { p: prompt({ summary: "摘要优先" }), d: { name: "x", description: "AI 描述" } },
-    { p: prompt({ summary: "" }), d: { name: "x", description: "AI 描述" } },
-    { p: prompt({ summary: "   " }), d: { name: "x", description: "  AI 描述  " } },
-    { p: prompt({ body: "\n\n  正文首行  \n第二行" }) },
-    { p: prompt({ body: "" }) },
-    { p: prompt({ title: "", body: "   " }) },
-    { p: prompt({ title: "", body: "   ", summary: "" }), d: { name: "x", description: "" } },
-    { p: prompt({ title: "", body: "x\ry" }) },
-    { p: prompt({ title: "", body: "\r" }) },
-    { p: prompt({ body: "第一行", title: "标题" }) },
-  ];
-  for (const [i, row] of table.entries()) {
-    const client = resolveDescriptionForClient(row.p, row.d);
-    const host = hostSkills.resolveDescription(row.p, row.d);
-    assert.equal(client, host, "第 " + i + " 格必须与宿主同值（客户端 = " + String(client) + " / 宿主 = " + String(host) + "）");
-  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

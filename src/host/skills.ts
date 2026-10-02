@@ -33,6 +33,14 @@ export { SKILL_NAME_MAX_LEN, SKILL_NAME_RE, isValidSkillName, toKebab } from "..
 // 导出面无关（客户端 bundle `lib/client.js` 里的 isSkillStale 走的是 `src/skill-badge.ts` 本身）。
 export { isSkillStale } from "../skill-badge.ts";
 
+// description 兜底链（summary → AI 描述 → 正文首行 → 标题）的**单一真源**在 `src/skill-description.ts`，
+// 同款理由：本模块顶部有 `node:fs`，客户端 bundle 引不了它（客户端侧此前有一份靠逐格对照表维持同值的
+// 副本，本次已收敛为一份实现）。这里只 import + 原样 re-export——**既有导出面逐字不变**
+// （tests/skills.test.mjs、tests/skill-badge.test.mjs 的导出面清单与 routes.ts 无需改）。
+import { resolveDescription } from "../skill-description.ts";
+
+export { resolveDescription } from "../skill-description.ts";
+
 /** 技能目录：`$DSH_HOME/skills/<name>/`。 */
 export function skillDir(name: string): string {
   return join(dshHome(), "skills", name);
@@ -50,25 +58,6 @@ export interface SkillPromptLike {
   body: string;
   summary?: string;
   tags?: string[];
-}
-
-/**
- * description 兜底链：summary → AI description → 正文首行 → 标题。
- * 全空则返回 `undefined`——调用方**必须拒绝导出**（官方 loader 要求 description 必填，
- * 空描述会让模型无法自动发现该技能；上游直接写空串是缺陷）。
- */
-export function resolveDescription(prompt: SkillPromptLike, descriptor?: SkillDescriptor): string | undefined {
-  const candidates = [
-    prompt.summary,
-    descriptor?.description,
-    prompt.body.split("\n").map((l) => l.trim()).find((l) => l.length > 0),
-    prompt.title,
-  ];
-  for (const candidate of candidates) {
-    const value = candidate?.trim();
-    if (value) return value;
-  }
-  return undefined;
 }
 
 /** YAML 双引号标量：JSON 字符串转义与 YAML 双引号风格兼容，能安全承载冒号/引号/换行。 */

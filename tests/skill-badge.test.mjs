@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 const badge = await import("../src/skill-badge.ts");
 const skillName = await import("../src/skill-name.ts");
+const skillDescription = await import("../src/skill-description.ts");
 const hostSkills = await import("../src/host/skills.ts");
 const exportUtils = await import("../src/client/utils/skill-export.ts");
 const theme = await import("../src/client/utils/theme.ts");
@@ -132,6 +133,14 @@ test("同源锁的附带证据：宿主 skills.ts 的既有导出面逐字不变
   // 技能名规则同款同源（P7 T2 立的；这里顺带钉住，防止有人在 T3 顺手把它复制回宿主）。
   assert.equal(hostSkills.toKebab, skillName.toKebab);
   assert.equal(hostSkills.isValidSkillName, skillName.isValidSkillName);
+});
+
+test("同源锁：宿主 resolveDescription 与 skill-description 的是**同一个函数**（宿主只有 import + re-export）", () => {
+  assert.equal(
+    hostSkills.resolveDescription,
+    skillDescription.resolveDescription,
+    "宿主必须 re-export `src/skill-description.ts` 的实现——换回宿主本地副本（两份恰好相同）时本用例必红",
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

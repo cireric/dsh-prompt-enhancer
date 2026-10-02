@@ -17,8 +17,11 @@
  *
  * 技能名规则来自 `src/skill-name.ts`——与宿主 `src/host/skills.ts` **同一份**（宿主也改成从那里
  * import）；`src/host/skills.ts` 顶部有 `node:fs`，客户端 bundle 引不了（P7 T2 的 R-P7-I 修正）。
+ * description 兜底链同款：单一真源在 `src/skill-description.ts`——此前这里有一份副本，靠逐格对照表与
+ * 宿主维持同值（本次已收敛为一份实现）。
  */
 import { isValidSkillName, toKebab } from "../../skill-name.ts";
+import { resolveDescription } from "../../skill-description.ts";
 // `api` 只为 R-P7-AA 的 descriptor 落库（`persistDescriptor` 的默认实现）——其余 HTTP 仍由调用方注入。
 import { ApiError, api, type SkillDescriptorPayload, type SkillExportReceipt } from "./api.ts";
 
@@ -122,32 +125,6 @@ export function pickSelected<T extends { id: string }>(prompts: readonly T[], se
 
 // ── 预校验 ───────────────────────────────────────────────────────────────────
 
-/**
- * description 兜底链的**客户端预检**：summary → AI description → 正文首个非空行 → 标题。
- *
- * 与宿主 `src/host/skills.ts#resolveDescription` **逐格同值**（包括 `split("\n")` 这个细节：
- * 客户端不得「顺手改好」`\r` 的切分，否则预检与宿主判定会在 `\r`-only 正文上分叉）。
- * 为什么复制一份：宿主模块 import `node:fs`，客户端引不了（见文件头）；两处同值这件事由
- * `tests/skill-export.test.mjs` 用**同一张输入表**同时喂两个实现来锁住——漂移必红。
- * **最终判定仍以宿主为准**：这里只负责「提前报错」，不替宿主下结论。
- */
-export function resolveDescriptionForClient(
-  prompt: SkillCandidate,
-  descriptor?: SkillDescriptorPayload,
-): string | undefined {
-  const candidates = [
-    prompt.summary,
-    descriptor?.description,
-    prompt.body.split("\n").map((line) => line.trim()).find((line) => line.length > 0),
-    prompt.title,
-  ];
-  for (const candidate of candidates) {
-    const value = candidate?.trim();
-    if (value) return value;
-  }
-  return undefined;
-}
-
 /** 预校验结果：通过时给出**将要提交给宿主的**名字与描述（宿主仍是最终判定者）。 */
 export type SkillPrecheck =
   | { ok: true; name: string; description: string }
@@ -188,7 +165,7 @@ export function precheckExport(prompt: SkillCandidate, descriptor?: SkillDescrip
       detail: "kebab=" + JSON.stringify(name),
     };
   }
-  const description = resolveDescriptionForClient(prompt, descriptor);
+  const description = resolveDescription(prompt, descriptor);
   if (description === undefined) {
     return {
       ok: false,
