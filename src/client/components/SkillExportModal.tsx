@@ -19,7 +19,6 @@
  * 故技能页**不需要**参与 claim 互斥（扩枚举只会让两套分层语义互相污染）。详见 task-2-report.md。
  */
 import * as React from "react";
-import type { Prompt } from "../../types.ts";
 import { api } from "../utils/api.ts";
 import { requestConfirm } from "../utils/confirm.ts";
 import { notifyDataChanged, useDataChanged } from "../utils/data-sync.ts";
@@ -58,6 +57,7 @@ import {
 } from "../utils/skill-export.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
 import { reasonOf } from "../../err-text.ts";
+import { useAsyncList } from "../utils/async-list.ts";
 
 export interface SkillExportModalProps {
   /** 宿主的命名空间翻译函数（由 PromptSurfaceHost → PromptManagerModal 透传）。 */
@@ -71,8 +71,6 @@ type Busy = "idle" | "describing" | "exporting";
 
 
 export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.ReactElement {
-  const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
   /** 勾选的提示词 id（**与加载顺序无关**：全选/筛选都经纯函数在同一集合上运算）。 */
   const [selected, setSelected] = React.useState<string[]>([]);
   const [tag, setTag] = React.useState("");
@@ -122,26 +120,9 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
   const [reloadSeq, setReloadSeq] = React.useState(0);
   useDataChanged(() => setReloadSeq((n) => n + 1));
 
-  React.useEffect(() => {
-    let alive = true;
-    // 重拉**不清空**列表（不清成 null / []）：导出过程中列表不该闪一下「加载中」；首帧本来就是 null。
-    setLoadError(null);
-    // 读整库（技能导出的候选就是**全部**提示词；标签筛选在客户端做，与列表页的服务端筛选是两条独立路径）。
-    api.listPrompts().then(
-      (list) => {
-        if (alive) setPrompts(list);
-      },
-      (err: unknown) => {
-        if (!alive) return;
-        console.warn("[prompt-enhancer] 技能导出：提示词加载失败", err);
-        setPrompts([]);
-        setLoadError(reasonOf(err));
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, [reloadSeq]);
+  // 重拉**不清空**列表（不清成 null / []）：导出过程中列表不该闪一下「加载中」；首帧本来就是 null。
+  // 读整库（技能导出的候选就是**全部**提示词；标签筛选在客户端做，与列表页的服务端筛选是两条独立路径）。
+  const { items: prompts, error: loadError, setItems: setPrompts } = useAsyncList(() => api.listPrompts(), [reloadSeq], { label: "技能导出：提示词加载失败", clearErrorOnStart: true });
 
   const list = prompts ?? [];
   const visible = React.useMemo(() => filterByTag(list, tag), [list, tag]);

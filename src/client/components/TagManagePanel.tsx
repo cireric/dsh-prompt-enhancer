@@ -32,6 +32,7 @@ import {
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
 import { reasonOf } from "../../err-text.ts";
+import { useAsyncList } from "../utils/async-list.ts";
 
 export interface TagManagePanelProps {
   /** 宿主的命名空间翻译函数（由 PromptManagerModal 透传）。 */
@@ -42,8 +43,6 @@ export interface TagManagePanelProps {
 /** 标签页。 */
 export function TagManagePanel({ t }: TagManagePanelProps): React.ReactElement {
   /** null = 本次还没加载完。 */
-  const [tags, setTags] = React.useState<Array<{ name: string; count: number }> | null>(null);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [failure, setFailure] = React.useState<{ key: PromptEnhancerKey; detail: string } | null>(null);
   /** 正在重命名的标签（null = 无）；改名期间那一行换成输入框 + 保存/取消。 */
@@ -65,25 +64,8 @@ export function TagManagePanel({ t }: TagManagePanelProps): React.ReactElement {
   // 同进程数据同步（D6）：别处改了标签/提示词，这里重拉。
   useDataChanged(() => setReloadSeq((n) => n + 1));
 
-  React.useEffect(() => {
-    let alive = true;
-    api.listTags().then(
-      (list) => {
-        if (!alive) return;
-        setTags(list);
-        setLoadError(null);
-      },
-      (err: unknown) => {
-        if (!alive) return;
-        console.warn("[prompt-enhancer] 标签加载失败", err);
-        setTags([]);
-        setLoadError(reasonOf(err));
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, [reloadSeq]);
+  // 重拉**不清**旧错误行（`clearErrorOnStart` 缺省 false）：本仓两处刻意让旧提示留到重拉成功。
+  const { items: tags, error: loadError } = useAsyncList(() => api.listTags(), [reloadSeq], { label: "标签加载失败" });
 
   /** 开始一次写动作前的统一收口：旧提示清掉，忙标记置位。 */
   const begin = (): void => {

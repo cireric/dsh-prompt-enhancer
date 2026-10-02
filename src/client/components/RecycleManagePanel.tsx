@@ -36,6 +36,7 @@ import {
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
 import { reasonOf } from "../../err-text.ts";
+import { useAsyncList } from "../utils/async-list.ts";
 
 export interface RecycleManagePanelProps {
   /** 宿主的命名空间翻译函数（由 PromptManagerModal 透传）。 */
@@ -51,8 +52,6 @@ function deletedAtText(ms: number): string {
 /** 回收站页。 */
 export function RecycleManagePanel({ t }: RecycleManagePanelProps): React.ReactElement {
   /** null = 本次还没加载完。 */
-  const [items, setItems] = React.useState<TrashItem[] | null>(null);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [failure, setFailure] = React.useState<{ key: PromptEnhancerKey; detail: string } | null>(null);
   /** 正在处理的那一条（整表禁用，避免并发删同一批）；`empty` 表示正在清空。 */
@@ -69,25 +68,8 @@ export function RecycleManagePanel({ t }: RecycleManagePanelProps): React.ReactE
 
   useDataChanged(() => setReloadSeq((n) => n + 1));
 
-  React.useEffect(() => {
-    let alive = true;
-    api.listTrash().then(
-      (list) => {
-        if (!alive) return;
-        setItems(list);
-        setLoadError(null);
-      },
-      (err: unknown) => {
-        if (!alive) return;
-        console.warn("[prompt-enhancer] 回收站加载失败", err);
-        setItems([]);
-        setLoadError(reasonOf(err));
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, [reloadSeq]);
+  // 重拉**不清**旧错误行（`clearErrorOnStart` 缺省 false）：本仓两处刻意让旧提示留到重拉成功。
+  const { items, error: loadError } = useAsyncList(() => api.listTrash(), [reloadSeq], { label: "回收站加载失败" });
 
   /** 开始一次写动作前的统一收口：旧提示清掉（忙标记由各动作自己置位）。 */
   const begin = (): void => {

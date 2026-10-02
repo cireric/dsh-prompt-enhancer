@@ -79,6 +79,7 @@ import { TagManagePanel } from "./TagManagePanel.tsx";
 // type-only：面板值住在弹窗宿主（PromptSurfaceHost），本文件只消费它（类型擦除 → 无运行期循环）。
 import type { ManagerPanelValue } from "./PromptSurfaceHost.tsx";
 import { reasonOf } from "../../err-text.ts";
+import { useAsyncList } from "../utils/async-list.ts";
 
 /** 面板文案取值器：即 `PropsLocale<'prompt-enhancer'>` 的 `t`。 */
 export type ManagerTranslate = TranslateNS<"prompt-enhancer">;
@@ -342,9 +343,7 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
   const [sort, setSort] = React.useState<PromptSort>("default");
   const [tag, setTag] = React.useState("");
   /** null = 本次还没加载完。 */
-  const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
   const [tags, setTags] = React.useState<Array<{ name: string; count: number }> | null>(null);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [tagsError, setTagsError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   /** 正在删除的那一行（整表禁删，避免并发删同一批）。 */
@@ -377,26 +376,14 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
   // 同进程数据同步（D6，无 WebSocket）：任何增删改成功后重拉列表与标签。
   useDataChanged(() => setReloadSeq((n) => n + 1));
 
-  React.useEffect(() => {
-    let alive = true;
-    setPrompts(null);
-    setLoadError(null);
-    api.listPrompts({ q: applied.trim() || undefined, tag: tag || undefined, sort }).then(
-      (list) => {
-        if (alive) setPrompts(list);
-      },
-      (err: unknown) => {
-        if (!alive) return;
-        console.warn("[prompt-enhancer] 提示词列表加载失败", err);
-        setPrompts([]);
-        setLoadError(reasonOf(err));
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, [applied, tag, sort, reloadSeq]);
+  const { items: prompts, error: loadError } = useAsyncList(
+    () => api.listPrompts({ q: applied.trim() || undefined, tag: tag || undefined, sort }),
+    [applied, tag, sort, reloadSeq],
+    { label: "提示词列表加载失败", clearOnStart: true, clearErrorOnStart: true },
+  );
 
+  // 这条**不**走 `useAsyncList`：失败时它把标签写回 `null`（= 未落地）而不是空数组，错误行也是独立
+  // 状态 `tagsError`——与其余 5 处不同构，故留手写（`utils/async-list.ts` 的 hook 只收同构的那 5 处）。
   React.useEffect(() => {
     let alive = true;
     api.listTags().then(

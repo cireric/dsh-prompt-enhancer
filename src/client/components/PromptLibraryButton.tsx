@@ -30,8 +30,8 @@ import {
 } from "../utils/ui-state.ts";
 import { SelectionAddPrompt } from "./SelectionAddPrompt.tsx";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
-import { reasonOf } from "../../err-text.ts";
 import { useDismissOnOutside } from "../utils/dismiss-outside.ts";
+import { useAsyncList } from "../utils/async-list.ts";
 
 /** 输入框旁「词库」按钮（任务 5 落地完整行为）。 */
 export type PromptLibraryButtonProps =
@@ -106,8 +106,6 @@ export function PromptLibraryButton({
   const settings = useSettings();
   const [open, setOpen] = React.useState(false);
   /** null = 本次打开还没加载完。 */
-  const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
-  const [loadError, setLoadError] = React.useState<string | null>(null);
   /**
    * 已删除提示。带 seq 而不是裸字符串：同一条文案再次触发时 React 不为同值 setState
    * 重跑 effect，4s 计时器就不会重置——seq 每次 +1 让 effect 依赖真的变化。
@@ -153,26 +151,11 @@ export function PromptLibraryButton({
   // 每次打开都重新拉取（列表可能在管理面板里被改过）。
   // 只依赖 open：失败文案的本地化由渲染期的 t 负责，把它放进依赖会让
   // 「t 身份不稳定」的实现变成重拉循环。
-  React.useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    setPrompts(null);
-    setLoadError(null);
-    api.listPrompts({ sort: "default" }).then(
-      (list) => {
-        if (alive) setPrompts(list);
-      },
-      (err: unknown) => {
-        if (!alive) return;
-        console.warn("[prompt-enhancer] 提示词列表加载失败", err);
-        setPrompts([]);
-        setLoadError(reasonOf(err));
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, [open]);
+  const { items: prompts, error: loadError, setItems: setPrompts } = useAsyncList(
+    () => api.listPrompts({ sort: "default" }),
+    [open],
+    { label: "提示词列表加载失败", active: open, clearOnStart: true, clearErrorOnStart: true },
+  );
 
   // 点浮层外收起（三处浮层共用同一实现，见 utils/dismiss-outside.ts；宿主标准 props 没有这个座位，
   // 与官方 ui-commands 的 PopupSelectView 同款：document 捕获阶段的纯监听，不改宿主 DOM）。
