@@ -460,3 +460,27 @@ test("孤儿标签清理不越界：软删除（进回收站）不清标签，�
   assert.equal(store.restorePrompts([p.id]), 1);
   assert.ok(store.getPrompt(p.id).tags.includes("软删标签"), "恢复后引用完整");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 搜索口径的跨侧一致性（口径已归一到 src/search-match.ts；这条需要 DB 装配，故落在这里）
+//
+// 为什么需要它：口径此前有两份实现、靠注释维系，实测已分叉——客户端把标签拼成串匹配，
+// 跨标签边界的查询词（tags=["ab","cd"] 配 "b c"）在客户端命中、在宿主不命中。
+// 本用例钉住「两处入口对同一个库、同一个查询词给出同一成员集」。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("搜索口径一致性：filterPrompts 与 listPrompts 对同一查询词给出同一成员集", async () => {
+  const { filterPrompts } = await import("../src/client/utils/hash-token.ts");
+  store.createPrompt({ title: "跨标签候选", body: "无关正文", tags: ["ab", "cd"] });
+  const all = store.listPrompts();
+  const ids = (rows) => rows.map((x) => x.id).sort();
+  for (const q of ["ab", "cd", "b c", "ab cd", "无关", "zzzz"]) {
+    assert.deepEqual(
+      ids(filterPrompts(all, q, all.length)),
+      ids(store.listPrompts({ q })),
+      "查询词 " + JSON.stringify(q) + " 的成员集必须两处一致",
+    );
+  }
+  assert.equal(store.listPrompts({ q: "b c" }).length, 0, "跨标签边界的查询词两处都不得命中");
+});
+

@@ -1,4 +1,5 @@
 import type { Prompt } from "../../types.ts";
+import { matchRank, normalizeQuery } from "../../search-match.ts";
 
 /**
  * 读草稿末尾的 `#查询词` 令牌。
@@ -54,23 +55,21 @@ export function replaceHashToken(draft: string, body: string): string {
 /**
  * 候选过滤：标题命中优先，其次标签，最后正文；同分保持原顺序。
  *
- * **三处同一口径**（本函数服务 `#` 候选浮层，2026-09-30 起也服务词库按钮的快速列表；
- * 第三处是宿主 `store.listPrompts` 的 `q` 过滤）：只匹配 **title / tags / body**，
- * **summary 一律不参与**——它是「用途摘要」，不是提示词本体。
+ * 字段集与命中档位**只有一处定义**：`src/search-match.ts`（`matchRank` / `normalizeQuery`）。
+ * 宿主 `store.listPrompts` 的 `q` 过滤与这里是同一份口径，「两处给出一致成员集」由
+ * `tests/store.test.mjs` 末尾的交叉用例钉住，行为表在 `tests/search-match.test.mjs`。
  *
- * 任一处要加 summary，必须**三处一起改**：否则同一个词在「快速列表」与「管理面板」里搜出不同结果，
- * 而这种口径漂移是静默的（两处都"有搜索结果"，没人会去对比）。行为锁见
- * `tests/hash-token.test.mjs` 的「summary 不参与匹配」用例。
+ * ⚠️ 修正记录：此前本函数把标签拼成 `p.tags.join(" ").toLowerCase()` 再 `.includes(q)`，
+ * 于是跨标签边界的查询词（tags = ["ab", "cd"] 配 "b c"）在快速列表命中、在管理面板不命中——
+ * 已改为**逐标签**匹配（原子标签，与宿主一致）。可见后果：含空格且只靠跨标签拼接命中的查询词，
+ * 不再把那些条目带进快速列表。
  */
 export function filterPrompts(prompts: Prompt[], query: string, limit = 5): Prompt[] {
-  const q = query.trim().toLowerCase();
+  const q = normalizeQuery(query);
   if (!q) return prompts.slice(0, limit);
   const scored: Array<{ p: Prompt; score: number }> = [];
   for (const p of prompts) {
-    const title = p.title.toLowerCase();
-    const tags = p.tags.join(" ").toLowerCase();
-    const body = p.body.toLowerCase();
-    const score = title.includes(q) ? 3 : tags.includes(q) ? 2 : body.includes(q) ? 1 : 0;
+    const score = matchRank(p, q);
     if (score > 0) scored.push({ p, score });
   }
   return scored.sort((a, b) => b.score - a.score).slice(0, limit).map((x) => x.p);

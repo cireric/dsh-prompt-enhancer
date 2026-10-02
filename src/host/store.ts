@@ -17,6 +17,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createDatabase } from "./node-sqlite.ts";
 import { dbPath } from "./paths.ts";
 import { compareEvictionOrder } from "../eviction-order.ts";
+import { matchRank, normalizeQuery } from "../search-match.ts";
 import {
   BACKUP_VERSION,
   SCHEMA_VERSION,
@@ -429,19 +430,12 @@ export function deleteMetaValue(key: string): boolean {
 
 // ── 提示词 ─────────────────────────────────────────────────────────────────
 
-/** 列表：`q` 大小写不敏感子串（title / body / tags），`tag` 精确过滤，`sort` 见 {@link PromptSort}。 */
+/** 列表：`q` 大小写不敏感子串（title / body / tags，口径见 `src/search-match.ts`），`tag` 精确过滤，`sort` 见 {@link PromptSort}。 */
 export function listPrompts(options: ListPromptsOptions = {}): Prompt[] {
   let out = selectAllPrompts().map(rowToPrompt);
 
-  const q = options.q?.trim().toLowerCase();
-  if (q) {
-    out = out.filter(
-      (p) =>
-        p.title.toLowerCase().includes(q) ||
-        p.body.toLowerCase().includes(q) ||
-        p.tags.some((t) => t.toLowerCase().includes(q)),
-    );
-  }
+  const q = normalizeQuery(options.q);
+  if (q) out = out.filter((p) => matchRank(p, q) > 0);
   const tag = options.tag;
   if (tag) out = out.filter((p) => p.tags.includes(tag));
 
