@@ -51,6 +51,10 @@ npm run smoke       # 真实执行 client bundle，校验注册 id 与导出形�
 
 Issues live in GitHub Issues (`cireric/dsh-prompt-enhancer`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
 
+### Triage labels
+
+Canonical triage roles use their default strings (`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`); 分类沿用 GitHub 默认 `bug` / `enhancement`，缺失的状态标签按用即建。See `docs/agents/triage-labels.md`.
+
 ### Domain docs
 
-single-context: root `CONTEXT.md` + `docs/adr/`, created lazily. See `docs/agents/domain.md`.
+single-context: root `GLOSSARY.md` + `docs/adr/`, created lazily. See `docs/agents/domain.md`.
