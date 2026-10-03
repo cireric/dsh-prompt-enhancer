@@ -29,9 +29,10 @@
 ## 命令与完成标准
 
 ```sh
+npm run verify      # 四道门一次跑满（= typecheck && test && build && smoke）；**提交前必须跑它**
 npm run typecheck   # tsc --noEmit
-npm test            # node --test（43 个用例文件、448 条用例，覆盖 host 与 client 纯模块）
-npm run build       # lib/index.js + lib/client.js
+npm test            # node --test（45 个用例文件、458 条用例，覆盖 host 与 client 纯模块）
+npm run build       # lib/index.js + lib/client.js（含「产物只由 src/ 组成」的 metafile 闸门）
 npm run smoke       # 真实执行 client bundle，校验注册 id 与导出形状
 ```
 

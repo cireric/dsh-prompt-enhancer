@@ -18,7 +18,8 @@
     "build:dev": "node scripts/build.mjs --dev",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run smoke"
   },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

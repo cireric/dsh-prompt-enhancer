@@ -1,0 +1,27 @@
+# 最小 CI：只跑**干净 runner 上跑得动**的那一道门（构建契约）。
+#
+# 为什么这里没有 typecheck / test / smoke：本仓的 typecheck 与 458 条用例都要 import 宿主侧的
+# @deepseek-ai/dsh-llm / @deepseek-ai/schemastery（0.2.0 契约）。它们来自本机 DSH profile 的
+# `npm run link-dsh-deps`；package.json 把这两个 peer 标成 optional ⇒ `npm ci` 不会装，
+# 而 registry 上也只有 0.0.1-rc.1 一代（实测：npm view @deepseek-ai/dsh-llm version → 0.0.1-rc.1）。
+# 拿 0.0.1-rc.1 去 typecheck 是按**错误契约**判卷（0.2.0 才有的 ctx.settings.update 之类在旧包里
+# 根本不存在），装了比不装更糟。宿主的 0.2.0 包发布到 registry 之后，把那三道命令补回本 job 即可
+# （本地先用 `npm run verify` 一次跑满）。
+#
+# 这一道仍然值得有：它钉住硬约束 1 与 4 —— 客户端模块 id 必须等于包名、宿主包一律 external，
+# 以及 build.mjs 的 metafile 闸门（产物只能由本仓 src/ 组成）。
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci --cache .npm-cache
+      - run: npm run build
