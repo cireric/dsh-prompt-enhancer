@@ -4,13 +4,14 @@
  * 为什么单独成模块：仓内 5 处组件各写一份近乎相同的 effect——`let alive = true` 守卫、成功写列表、
  * 失败 `console.warn` + 写空数组 + `reasonOf(err)` 进错误行。差异只有三处，且都在选项里可见：
  *   · `active`：为假时不拉（`PromptLibraryButton` 的 `if (!open) return`）；
- *   · `clearOnStart`：起手把列表清成 `null`（3 处中 2 处清；`SkillExportModal` 用注释明说不清）；
+ *   · `clearOnStart`：起手把列表清成 `null`（5 处中 2 处清；`SkillExportModal` 用注释明说不清）；
  *   · `clearErrorOnStart`：起手清错误行（3 处清；`TagManagePanel` / `RecycleManagePanel` 刻意不清，
  *     旧提示留到重拉成功——本仓唯一一处 2:3 的分歧，写在这里与调用点，不藏在默认值里）。
  *
- * **不收的两类**（不同构，留手写 + 注释）：
+ * **不收的三类**（不同构，留手写 + 注释）：
  *   · 失败时写 `null` 而非空数组、且错误行是独立状态（`PromptManagerModal` 的标签那条）；
- *   · 起手要额外复位别的 state、或**日志必须先于存活守卫**（`HashSuggestOverlay` / `SettingsSection`）。
+ *   · 起手要额外复位别的 state、或**日志必须先于存活守卫**（`HashSuggestOverlay` / `SettingsSection`）；
+ *   · 没有存活守卫、也没有错误行，重拉由外部调用触发（`ContextRecommendations` 的 `load()`）。
  *
  * react 经 `react-hooks.ts` 惰性解析，不静态 import（与 ui-state.ts / settings-store.ts 同款）。
  */
@@ -21,7 +22,13 @@ import { hooks } from "./react-hooks.ts";
 export interface AsyncListOptions {
   /** 失败时的警告文案：`console.warn("[prompt-enhancer] " + label, err)`。 */
   label: string;
-  /** 为假时不拉。缺省为真。 */
+  /**
+   * 为假时不拉。缺省为真。
+   *
+   * ⚠️ 它**必须与 `deps` 里某个值同源**（例：`active: open` 配 `[open]`）：`active` 变化本身不会触发重跑，
+   * 重跑只由 `deps` 驱动——若写成别的值，就是「参数看着对、界面却不更新」的静默失效（面板停在旧列表，
+   * 连错误行都不会有）。
+   */
   active?: boolean;
   /** 起手把列表清成 `null`。缺省 false（多数站点刻意不清，避免重拉闪一下「加载中」）。 */
   clearOnStart?: boolean;
@@ -34,7 +41,7 @@ export interface AsyncListResult<T> {
   /** `null` = 尚未落地（或起手清空后的加载中）；**失败时是空数组**，不是 null。 */
   items: T[] | null;
   error: string | null;
-  setItems: (next: T[] | null | ((prev: T[] | null) => T[] | null)) => void;
+  setItems: (next: T[] | ((prev: T[] | null) => T[] | null)) => void;
 }
 
 /**

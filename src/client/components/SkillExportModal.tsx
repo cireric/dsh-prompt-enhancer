@@ -69,7 +69,6 @@ export interface SkillExportModalProps {
 /** 在途动作（AI 补全 / 导出）互斥：任一在途时其它按钮一律禁用。 */
 type Busy = "idle" | "describing" | "exporting";
 
-
 export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.ReactElement {
   /** 勾选的提示词 id（**与加载顺序无关**：全选/筛选都经纯函数在同一集合上运算）。 */
   const [selected, setSelected] = React.useState<string[]>([]);

@@ -39,7 +39,6 @@ export interface TagManagePanelProps {
   t: ManagerTranslate;
 }
 
-
 /** 标签页。 */
 export function TagManagePanel({ t }: TagManagePanelProps): React.ReactElement {
   /** null = 本次还没加载完。 */

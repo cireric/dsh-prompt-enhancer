@@ -43,7 +43,6 @@ export interface RecycleManagePanelProps {
   t: ManagerTranslate;
 }
 
-
 /** 删除时间：本地时区可读串（不引日期库）。 */
 function deletedAtText(ms: number): string {
   return new Date(ms).toLocaleString();

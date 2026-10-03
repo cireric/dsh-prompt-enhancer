@@ -9,10 +9,10 @@
  * react 经 `react-hooks.ts` **惰性解析**，不静态 import——与 ui-state.ts / data-sync.ts /
  * settings-store.ts 同款（静态 import 会让所有 import 本模块的 `.ts` 从 `node --test` 掉出去）。
  *
- * 依赖数组含 `onDismiss`：调用点传内联箭头时每次渲染会重挂一次监听。这里**刻意接受**——
- * 监听重挂是幂等的（cleanup 先摘旧的），而把它藏进 ref 需要把 `hooks()` 的接口面扩到 `useRef`；
- * 前者代价可忽略，后者是为省一次重挂而扩接口。（对比：拉取 effect 把不稳定的依赖放进数组会变成
- * 重拉循环，那才是必须用 ref 的场景——两者不是同一回事。）
+ * 依赖数组含 `onDismiss`：调用点传内联箭头时每次渲染会重挂一次监听。这里**刻意接受**——重挂是幂等的，
+ * 且 cleanup 与 setup 在同一次同步提交里背靠背完成、中间不会有事件插进来，代价可忽略。
+ * 想省掉这次重挂时，最直接的修法在**调用点**（用 `React.useCallback` 固定回调），不必扩 `hooks()` 的接口面。
+ * （对比：拉取 effect 把不稳定的依赖放进数组会变成重拉循环，那才是必须用 ref 的场景——两者不是同一回事。）
  */
 import { hooks } from "./react-hooks.ts";
 
