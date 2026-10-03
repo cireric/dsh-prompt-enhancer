@@ -106,22 +106,6 @@ export function stripAiFiller(text: string): string {
   return stripAiFillerDetailed(text).text;
 }
 
-/** 从模型输出中容错解析用途摘要 JSON（容忍 ```json 包裹 / 前后杂质）；失败返回 undefined。 */
-export function parseSummaryJson(text: string): string | undefined {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1]! : text;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end <= start) return undefined;
-  try {
-    const obj = JSON.parse(candidate.slice(start, end + 1)) as Record<string, unknown>;
-    const summary = typeof obj.summary === "string" ? obj.summary.trim() : "";
-    return summary || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** 抽出正文里的模板变量名（`{{变量名}}`），去重前先 trim 去空。 */
 export function extractVariables(body: string): string[] {
   return [...body.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((m) => m[1]!.trim()).filter(Boolean);

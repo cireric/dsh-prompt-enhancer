@@ -106,7 +106,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 失败码 | 7 值枚举 `no-llm` / `route` / `timeout` / `empty-output` / `parse` / `schema-mismatch` / `unknown`，跨层传 code、client 走 i18n 字典（`ai.code.*`） | `ai-errors.ts:14-21` |
 | 重试 | `callLlmWithRetry`：候选轮询；诊断重试**只重试一次**（把失败原因 + 上次输出问题摘要拼进重试 prompt），**文案按能力分形**——润色是纯文本口径（"直接输出正文"，不得出现 JSON 字样），完善/摘要/技能描述符仍要求 JSON 对象。**重试不许叠加**（Issue #6 收口：技能描述符 3 轮 = 恰 3 次调用） | `ai.ts#callLlmWithRetry`、`ai-errors.ts#failureDiagnosis` |
 | 结果缓存 | 读穿式 LRU + TTL：键 = hash(system + user + route)，TTL 30 分钟、上限 50 条、重启即清；失败不入缓存 | `ai-cache.ts:13-14,48-56` |
-| 输出后处理 | 剥套话（整体代码围栏 + 首尾套话行）**并把被剥的行写进诊断日志**；摘要 JSON 容错解析 | `text.ts:71-123` |
+| 输出后处理 | 剥套话（整体代码围栏 + 首尾套话行）**并把被剥的行写进诊断日志** | `text.ts:71-123` |
 | 客户端超时 | AI 路由 120s（用户裁定）· 探测 15s · 清键 15s；`TimeoutError` 按名字判定，探测超时带 `probe` 标记以区分文案 | `api.ts:11-35,141` |
 
 **已识别的质量缺口**（见 `docs/proposals/2026-10-03-…md` B1/B2）：润色的产出**没有任何事实/长度校验**——system prompt 里只有祈使句（`ai.ts:279-280`）。

@@ -373,19 +373,15 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const opts = { keepVariables: body.keepVariables !== false };
-      // 两条 Core 都可能失败；成功分支归一为旧 data 形状（`{polished}` / `{polished, summary?}`，
-      // 不把能力层的 `ok:true` 泄进响应体——客户端按 data 形状消费）。
-      const outcome = body.withSummary === true
-        ? await ai.polishPromptBodyWithSummaryCore(text, getSettings(), opts).then((core) =>
-            core.ok
-              ? { ok: true as const, data: core.summary === undefined ? { polished: core.polished } : { polished: core.polished, summary: core.summary } }
-              : { ok: false as const, code: core.code },
-          )
-        : await ai.polishPromptBodyCore(text, getSettings(), opts).then((core) =>
-            core.ok
-              ? { ok: true as const, data: { polished: core.polished } }
-              : { ok: false as const, code: core.code },
-          );
+      // 成功分支归一为 data 形状（`{polished}`），不把能力层的 `ok:true` 泄进响应体。
+      // 此前的 `body.withSummary === true` 变体已删（审查 #9）：唯一发送方 `client/utils/api.ts`
+      // 恒传 false，那条分支连同它的 Core 在客户端不可达（死代码）；用途摘要由 `/ai/refine`
+      // 的 summary 字段提供，UI 走的就是那条。
+      const outcome = await ai.polishPromptBodyCore(text, getSettings(), opts).then((core) =>
+        core.ok
+          ? { ok: true as const, data: { polished: core.polished } }
+          : { ok: false as const, code: core.code },
+      );
       if (!outcome.ok) return failWithCode(res, 503, { code: outcome.code, message: devMessage(outcome.code) });
       return ok(res, outcome.data);
     }

@@ -171,36 +171,3 @@ test("R3 预算耗尽：技能描述符的 3 轮循环同样不发请求", async
   assert.equal(cap.calls, 0);
 });
 
-test("R3 共用预算：润色 + 摘要两轮共用一个 deadline（预算耗尽时摘要不得另开一份）", async () => {
-  // 润色那一轮真的等 150ms（> 预算 100ms），摘要轮开始时就必然已耗尽：
-  // 若两轮各开一份预算（各 100ms），摘要会照常跑并拿到「用途摘要」——正是要挡的形态。
-  const cap = capturingRuntime([
-    [{ wait: 150 }, "润色稿A", STOP],
-    ["{\"summary\":\"用途摘要\"}", STOP],
-  ]);
-  ai.registerLlm(cap.runtime);
-  const budget = budgetMod.startAiBudget(100);
-  const r = await ai.polishPromptBodyWithSummaryCore("草稿", settings, { budget });
-
-  assert.equal(r.ok, true);
-  assert.equal(r.polished, "润色稿A");
-  assert.equal(r.summary, undefined, "预算已耗尽 ⇒ 摘要必须被跳过，而不是另开一份预算继续跑");
-  assert.equal(cap.calls, 1, "只允许润色那一次模型调用");
-});
-
-test("R3 连带修正：摘要失败不得被当成成功结果缓存（同输入第二次必须再试）", async () => {
-  const cap = capturingRuntime([
-    ["润色稿A", STOP],                        // 第一次调用：润色
-    EMPTY,                                    // 第一次调用：摘要（空输出）
-    EMPTY,                                    // 第一次调用：摘要重试（仍空输出）⇒ 整体摘要失败
-    ["{\"summary\":\"用途摘要\"}", STOP],   // 第二次调用：摘要重试必须真的发生
-  ]);
-  ai.registerLlm(cap.runtime);
-
-  const first = await ai.polishPromptBodyWithSummaryCore("草稿", settings);
-  assert.deepEqual(first, { ok: true, polished: "润色稿A", summary: undefined });
-
-  const second = await ai.polishPromptBodyWithSummaryCore("草稿", settings);
-  assert.equal(second.summary, "用途摘要", "摘要失败若被缓存，这里永远拿不到它（旧实现即如此）");
-  assert.equal(cap.calls, 4, "润色命中缓存（0 次）+ 摘要 2 次 + 摘要 2 次 = 4");
-});

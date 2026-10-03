@@ -54,6 +54,10 @@ import { useDismissOnOutside } from "../utils/dismiss-outside.ts";
 export type HashSuggestOverlayProps =
   PropsRuntime<"conversation.input.overlay"> & PropsLocale<"prompt-enhancer">;
 
+/** `#` 浮层的渲染上限：**刻意**只出 5 条（候选是「快速挑一条」，不是浏览全库），
+ *  超出部分在底部给一行提示——修前这个 5 藏在 `filterPrompts` 的默认参数里，静默截断、无任何提示。 */
+const HASH_LIST_LIMIT = 5;
+
 export function HashSuggestOverlay({
   t,
   useInput,
@@ -261,7 +265,11 @@ export function HashSuggestOverlay({
     );
   }
 
-  const filtered = filterPrompts(prompts ?? [], token.query);
+  // 显式传「全部」再自己截（与快速列表同一思路，见 PromptLibraryButton 的同名注释）：
+  // 需要先拿到全部命中数，截掉的条数要用来渲染底部那行提示。
+  const matched = filterPrompts(prompts ?? [], token.query, Number.MAX_SAFE_INTEGER);
+  const shown = matched.slice(0, HASH_LIST_LIMIT);
+  const hiddenCount = matched.length - shown.length;
 
   return (
     <div ref={rootRef} style={ANCHOR}>
@@ -273,11 +281,11 @@ export function HashSuggestOverlay({
           </div>
         )}
         {loadError === null && prompts === null && <div style={MUTED}>{t("list.loading")}</div>}
-        {loadError === null && prompts !== null && filtered.length === 0 && (
+        {loadError === null && prompts !== null && matched.length === 0 && (
           <div style={MUTED}>{t("hash.empty")}</div>
         )}
         {loadError === null &&
-          filtered.map((prompt) => (
+          shown.map((prompt) => (
             <button
               key={prompt.id}
               type="button"
@@ -302,6 +310,9 @@ export function HashSuggestOverlay({
               )}
             </button>
           ))}
+        {loadError === null && hiddenCount > 0 && (
+          <div style={MUTED}>{hiddenCount}{t("list.overflow")}</div>
+        )}
       </div>
     </div>
   );

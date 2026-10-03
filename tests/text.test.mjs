@@ -138,26 +138,6 @@ test("stripAiFillerDetailed：回报被剥掉的行，供诊断日志留痕", ()
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseSummaryJson
-// ─────────────────────────────────────────────────────────────────────────────
-
-test("parseSummaryJson：解析 {summary}，容忍围栏与前后杂质", () => {
-  assert.equal(text.parseSummaryJson('{"summary":"把长文压成三点"}'), "把长文压成三点");
-  assert.equal(text.parseSummaryJson('```json\n{"summary":"摘要"}\n```'), "摘要");
-  assert.equal(text.parseSummaryJson('好的，结果如下：{"summary":"摘要"} 希望有帮助'), "摘要");
-  assert.equal(text.parseSummaryJson('{"summary":"  前后有空格  "}'), "前后有空格");
-});
-
-test("parseSummaryJson：非法输入一律返回 undefined（不得抛）", () => {
-  assert.equal(text.parseSummaryJson(""), undefined);
-  assert.equal(text.parseSummaryJson("没有任何 JSON"), undefined);
-  assert.equal(text.parseSummaryJson("{坏 JSON}"), undefined);
-  assert.equal(text.parseSummaryJson('{"other":"x"}'), undefined, "缺 summary 键 → undefined");
-  assert.equal(text.parseSummaryJson('{"summary":""}'), undefined, "空摘要 → undefined");
-  assert.equal(text.parseSummaryJson('{"summary":123}'), undefined, "非字符串摘要 → undefined");
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // parseRefineResult（refine.ts）
 // ─────────────────────────────────────────────────────────────────────────────
 

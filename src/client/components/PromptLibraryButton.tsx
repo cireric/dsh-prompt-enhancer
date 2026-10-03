@@ -440,7 +440,9 @@ export function PromptLibraryButton({
                       <span style={ROW_TEXT}>
                         <span style={ROW_TITLE}>{prompt.title}</span>
                         <span style={ROW_SUMMARY}>{promptSummary(prompt)}</span>
-                        {(prompt.summary ?? "").trim() !== "" && (prompt.tags ?? []).length > 0 && (
+                        {/* 标签不再被「有摘要」门住（审查 #9）：有标签没摘要的条目此前整块不显示标签，
+                            而管理面板列表是无条件渲染标签的——同一份数据两处口径不一致。 */}
+                        {(prompt.tags ?? []).length > 0 && (
                           <span style={TAGS}>
                             {(prompt.tags ?? []).map((tag) => (
                               <span key={tag} style={TAG}>

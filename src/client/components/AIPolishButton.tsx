@@ -119,6 +119,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   /** 一键完善的失败：只作 `done` 面板内一行，不推翻已有润色结果。 */
   const [refineErrorKey, setRefineErrorKey] = React.useState<PromptEnhancerKey | null>(null);
   const [copied, setCopied] = React.useState(false);
+  /** 复制失败：在**按钮文案**上可见（不占用面板的 error 视图——那会顶掉用户刚拿到的结果）。 */
+  const [copyFailed, setCopyFailed] = React.useState(false);
   const rootRef = React.useRef<HTMLSpanElement | null>(null);
   /** 可用性探测缓存（D-P5-7）：null = 未探测；组件重挂载才重探，失败不落缓存。 */
   const providersRef = React.useRef<AiSelectable[] | null>(null);
@@ -208,6 +210,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setErrorKey(null);
     setRefineErrorKey(null);
     setCopied(false);
+    setCopyFailed(false);
   };
 
   // 点浮层外收起（实现见 utils/dismiss-outside.ts；三处浮层共用同一份捕获阶段纯监听）。
@@ -249,6 +252,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setOriginal(snapshot);
     setShowOriginal(false);
     setCopied(false);
+    setCopyFailed(false);
     setStatus("polishing");
     void (async () => {
       try {
@@ -412,9 +416,18 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     void (async () => {
       try {
         await navigator.clipboard.writeText(text);
-        if (aliveRef.current) setCopied(true);
+        if (aliveRef.current) {
+          setCopied(true);
+          setCopyFailed(false);
+        }
       } catch (err) {
+        // 失败必须**在用户点的地方**可见（审查 #9）：先前只进 console.warn，用户看到的只是
+        // 按钮没变成「已复制」，无从判断发生了什么。
         console.warn("[prompt-enhancer] 复制失败", err);
+        if (aliveRef.current) {
+          setCopied(false);
+          setCopyFailed(true);
+        }
       }
     })();
   };
@@ -538,7 +551,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                     {t("ai.refine")}
                   </button>
                   <button type="button" style={PANEL_BUTTON} onClick={() => copy(polished)}>
-                    {copied ? t("ai.copied") : t("ai.copy")}
+                    {copyFailed ? t("ai.copyFail") : copied ? t("ai.copied") : t("ai.copy")}
                   </button>
                   <button type="button" style={PANEL_BUTTON} onClick={close}>
                     {t("ai.close")}
@@ -586,7 +599,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                     {t("ai.save")}
                   </button>
                   <button type="button" style={PANEL_BUTTON} onClick={() => copy(refined.body)}>
-                    {copied ? t("ai.copied") : t("ai.copy")}
+                    {copyFailed ? t("ai.copyFail") : copied ? t("ai.copied") : t("ai.copy")}
                   </button>
                   <button type="button" style={PANEL_BUTTON} onClick={close}>
                     {t("ai.close")}

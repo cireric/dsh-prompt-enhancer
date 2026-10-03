@@ -42,7 +42,7 @@ import {
   type DiagnosisExpectation,
 } from "./ai-errors.ts";
 import { parseRefineResult, type AiRefineResult } from "./refine.ts";
-import { extractVariables, parseSummaryJson, stripAiFillerDetailed } from "./text.ts";
+import { extractVariables, stripAiFillerDetailed } from "./text.ts";
 import type { PluginSettings } from "../types.ts";
 
 /** 一条候选路由（provider + model）。 */
@@ -73,21 +73,10 @@ export interface SkillDescriptor {
 /** 润色的**能力层**结果：成功带文本；失败带跨层 code（路由层负责信封，T3）。 */
 export type PolishCoreResult = { ok: true; polished: string } | { ok: false; code: AiErrorCode };
 
-/** 润色 + 用途摘要的**能力层**结果；`summary` 缺失表示摘要生成失败（不影响正文返回）。 */
-export type PolishWithSummaryCoreResult =
-  | { ok: true; polished: string; summary?: string }
-  | { ok: false; code: AiErrorCode };
-
 /** 一键完善的**能力层**结果（`refine.ts` 的解析产物 / 失败 code）。 */
 export type RefineCoreResult =
   | { ok: true; refined: AiRefineResult }
   | { ok: false; code: AiErrorCode };
-
-/** 润色 + 用途摘要的最终结果；`summary` 缺失表示摘要生成失败（不影响正文返回）。 */
-export interface PolishWithSummary {
-  polished: string;
-  summary?: string;
-}
 
 const AI_MAX_TOKENS = 2048;
 const ROUTE_CACHE_TTL_MS = 30_000;
@@ -292,17 +281,6 @@ function polishSystemPrompt(keepVariables: boolean): string {
   ].join("\n");
 }
 
-function summarySystemPrompt(): string {
-  return [
-    "你是一名专业的提示词分析师，擅长用一句话概括提示词的用途与用法。",
-    "",
-    "要求：",
-    "- 用一两句话说明这条提示词的核心用途与大致使用方法（适用场景/使用方式）；",
-    "- 简洁自然，不要复述正文的具体细节与步骤，50 字以内；",
-    '- 直接输出 JSON：{ "summary": "用途摘要" }，不要任何解释或 Markdown 代码块。',
-  ].join("\n");
-}
-
 function skillSystemPrompt(vars: string[]): string {
   return [
     "你是一名 DSH 技能（SKILL）设计助手。用户会给你一条提示词，请把它转化为一个规范、可直接复用的技能。",
@@ -427,10 +405,10 @@ async function attemptAllCandidates(
 
 /**
  * 诊断注入重试 + 候选轮询的组合出口（T3）：只重试一次、重试带失败诊断、
- * 仍失败返回最终 code。润色 / 摘要 / 一键完善三条能力共用。
+ * 仍失败返回最终 code。润色与一键完善两条能力共用。
  *
  * `expectation`（R1）只决定诊断文案的形态：润色传 `"text"`（纯文本正文），
- * 摘要与一键完善传 `"json"`。`budget`（R3）由能力入口创建并贯穿两轮尝试。
+ * 一键完善传 `"json"`。`budget`（R3）由能力入口创建并贯穿两轮尝试。
  */
 function callLlmWithRetry(
   runtime: LlmRuntime,
@@ -448,7 +426,7 @@ function callLlmWithRetry(
 
 // ── 结果缓存接入（Issue #3 / T2a 收尾）────────────────────────────────────
 //
-// 只缓存**纯读**的两项：润色（含摘要变体）与一键完善。写回类操作（技能描述符由导出
+// 只缓存**纯读**的两项：润色与一键完善。写回类操作（技能描述符由导出
 // 流程消费、meta 写入、导出技能）不经过缓存。
 // - 键 = 哈希(system + user + route)：route 进键 ⇒ 换模型不命中旧缓存；
 // - 失败（`{ ok:false }` / 抛错）不入缓存：缓存里只有成功结果；
@@ -491,8 +469,7 @@ async function withResultCache<T>(
  * 结果缓存接入点（T2a 收尾）：同 system+user+route 直接命中，零模型调用。
  *
  * 诊断重试用 `"text"` 期望形态（R1：润色的契约是纯文本，要 JSON 的自纠提示会把它带偏）；
- * `opts.budget` 缺省则自己开一份（`polishPromptBodyWithSummaryCore` 会把同一份传进来，
- * 让「润色 + 摘要」两轮共用一个总预算）。
+ * `opts.budget` 缺省则自己开一份（调用方可以传入共享预算，把多轮调用收在同一个总预算下）。
  */
 export async function polishPromptBodyCore(
   body: string,
@@ -523,44 +500,6 @@ export async function polishPromptBodyCore(
     }
     return { ok: true, polished: cleaned } as const;
   });
-}
-
-/** 摘要子调用的结果：`ok:false` 专门用来**不被缓存**（见下方注释）。 */
-type SummaryOutcome = { ok: true; summary?: string } | { ok: false };
-
-/**
- * 润色 + 用途摘要的**能力层**（摘要失败时只返回正文，不视为整体失败）。
- *
- * 两条约束（R3 的顺带修正）：
- *   · **两轮共用一个预算**：入口开一份 `AiBudget` 传给润色与摘要——各开一份会让一次调用最坏
- *     变成 2 × 110s，正好把 R3 要收口的那个洞从后门放回来；
- *   · **摘要失败不入缓存**：失败分支返回 `{ ok:false }` 而不是 `{ ok:true, summary:undefined }`。
- *     旧形态会被 `withResultCache` 判定为「成功结果」而缓存 30 分钟 ⇒ 用户在同一份草稿上重试，
- *     摘要永远不再生成（与「失败不入缓存」的承诺相反）。
- */
-export async function polishPromptBodyWithSummaryCore(
-  body: string,
-  settings: PluginSettings,
-  opts?: { keepVariables?: boolean; budget?: AiBudget },
-): Promise<PolishWithSummaryCoreResult> {
-  const budget = opts?.budget ?? startAiBudget();
-  const polished = await polishPromptBodyCore(body, settings, { ...opts, budget });
-  if (!polished.ok) return polished;
-  if (!llm) return { ok: true, polished: polished.polished };
-
-  const candidates = await resolveCandidates(llm, settings);
-  if (candidates.length === 0) return { ok: true, polished: polished.polished };
-
-  const system = summarySystemPrompt();
-  const content = `请为以下提示词生成用途摘要：\n\n${polished.polished}`;
-  // 摘要单独一轮 LLM 调用：它有自己的 system/user，键与润色那轮天然不同，走同一读穿缓存。
-  const summary = await withResultCache(system, content, primaryRoute(candidates), async (): Promise<SummaryOutcome> => {
-    const result = await callLlmWithRetry(llm!, candidates, system, content, "json", budget);
-    if (!result.ok) return { ok: false };
-    const parsed = parseSummaryJson(result.text);
-    return { ok: true, summary: parsed ?? undefined };
-  });
-  return { ok: true, polished: polished.polished, summary: summary.ok ? summary.summary : undefined };
 }
 
 // ── 能力 2：一键完善 ───────────────────────────────────────────────────────
