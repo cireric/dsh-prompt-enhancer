@@ -58,7 +58,7 @@ The work ran as eight plans (P1–P8) under `docs/superpowers/plans/`; the desig
 
 ## Known limitations
 
-These are deliberate trade-offs recorded during development, not open bugs — please don't "fix" them without a design decision (spec §13.10-五, §13.11-五, §13.12-五):
+These are deliberate trade-offs recorded during development, not open bugs — please don't "fix" them without a design decision. (They are also listed in [`docs/architecture.md`](docs/architecture.md) §8; the `spec §` numbers below point into the frozen `docs/superpowers/specs/` records. Spec §13.10-五, §13.11-五, §13.12-五):
 
 1. **While the `#` overlay is on screen, a non-pointer activation cannot open the library panel** (spec §13.10-五-1). The gate branches on the activation channel: an activation with `event.detail === 0` — keyboard Enter/Space, `element.click()`, some assistive technology — is only let through when the overlay is absent, while a real pointer click (`detail > 0`) always is. A non-pointer activation does not latch the panel open, so once the overlay disappears you have to activate once more. The pointer path is unaffected, down to a down→up interval of 0 ms.
 2. **Per-keystroke input in the variable fill dialog is lost when the dialog unmounts** (spec §13.10-五-2). `values` is component-local state of `TemplateVariablesDialog`; closing the panel unmounts it. Only the selected prompt and the pending action survive.
@@ -99,7 +99,7 @@ npm run smoke                    # artifact shape checks: really executes the cl
 npm test                         # node --test
 ```
 
-Stack: TypeScript (`noEmit`, typecheck only) + esbuild (two entries) + Node's built-in `node --test`; runtime uses `node:sqlite` (Node ≥ 22.19, verified on v24). The build contract lives in `docs/superpowers/specs/`.
+Stack: TypeScript (`noEmit`, typecheck only) + esbuild (two entries) + Node's built-in `node --test`; runtime uses `node:sqlite` (Node ≥ 22.19, verified on v24). The build contract and the rest of the design live in [`docs/architecture.md`](docs/architecture.md) (the live architecture document); frozen history is in `docs/superpowers/`.
 
 ## Layout
 

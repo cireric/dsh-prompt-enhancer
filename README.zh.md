@@ -58,7 +58,7 @@ DSH（DeepSeek Harness）提示词增强插件：只做**提示词本身**的事
 
 ## 已知限制
 
-以下都是施工期**显式留档的取舍，不是缺陷**——没有设计决策前请勿「顺手修」（规格 §13.10-五、§13.11-五、§13.12-五）：
+以下都是施工期**显式留档的取舍，不是缺陷**——没有设计决策前请勿「顺手修」。它们同时列在 [`docs/architecture.md`](docs/architecture.md) §8；下面的「规格 §」编号指向已冻结的 `docs/superpowers/specs/` 记录（规格 §13.10-五、§13.11-五、§13.12-五）：
 
 1. **`#` 浮层在屏时，非指针激活打不开词库面板**（规格 §13.10-五-1）：闸门按**激活通道**分叉——`event.detail === 0` 的激活（键盘 Enter/空格、`element.click()`、部分辅助技术）仅在浮层不在屏时放行，真实指针点击（`detail > 0`）一律放行。非指针激活**不置位**面板打开状态，浮层消失后需**再激活一次**。指针路径完全不受影响，含 down→up 间隔 0ms 的极短点击。
 2. **变量填窗的逐字输入随卸载丢失**（规格 §13.10-五-2）：`values` 是 `TemplateVariablesDialog` 的组件局部 state，面板一关即卸载；只有「已选提示词 + 待执行动作」能保住。
@@ -99,7 +99,7 @@ npm run smoke                    # 产物形状校验：真实执行 client bund
 npm test                         # node --test
 ```
 
-技术栈：TypeScript（`noEmit`，仅类型检查）+ esbuild（双入口打包）+ Node 内置 `node --test`；运行时依赖 `node:sqlite`（Node ≥ 22.19，实测 v24）。构建契约见 `docs/superpowers/specs/`。
+技术栈：TypeScript（`noEmit`，仅类型检查）+ esbuild（双入口打包）+ Node 内置 `node --test`；运行时依赖 `node:sqlite`（Node ≥ 22.19，实测 v24）。构建契约与其余设计见 [`docs/architecture.md`](docs/architecture.md)（架构活文档）；冻结的历史资料在 `docs/superpowers/`。
 
 ## 目录结构
 

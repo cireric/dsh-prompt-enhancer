@@ -4,15 +4,15 @@
 
 ## 权威来源
 
-- 设计规格 `docs/superpowers/specs/2026-09-24-dsh-prompt-enhancer-design.md` **已定稿**，是范围与契约的唯一权威。
-- 实施计划 `docs/superpowers/plans/` 与规格冲突时**以规格为准**，并回头修正计划。
-- `.tmp/dsh-prompt-library/` 是上游参考项目（v0.16.0），**只读**：禁止修改；一切修复落在本项目侧。
+- `docs/architecture.md` 是**设计意图与架构事实的活文档**（运行时结构、数据不变量、接口面、决策台账、已知取舍）。与本文件冲突时以本文件为准（本文件是硬规则），否则以它为准。
+- 其余 `docs/` 子目录是历史资料，**不是施工依据**：`superpowers/specs/`（定稿规格与 §13 自检收敛记录，已冻结）· `superpowers/plans/`（P1–P8 计划与活体验收记录）· `analysis-dsh-prompt-library/`（上游 v0.16.0 参考分析）· `proposals/`（待定，已挂起）。目录角色见 `docs/README.md`。
+- 新增设计决策写进 `docs/architecture.md` 的 §6 台账；大段历史不进活文档。
 
 ## 硬约束
 
 1. **客户端模块 id 必须等于包名**：从 `package.json.name` 派生，禁止在 `scripts/build.mjs` 或源码中硬编码。
 2. **systemPrompt section 数恒为 0**：本插件不注册任何 section。这是产品承诺，不是遗漏，不得「顺手补上」。
-3. **只用官方插槽**：禁止 MutationObserver、DOM 注入等 hack（规格 §7.3）。
+3. **只用官方插槽**：禁止 MutationObserver、DOM 注入等 hack（`docs/architecture.md` §2）。
 4. **`react` / `react/jsx-runtime` / `@deepseek-ai/*` 一律 external**，由宿主在运行时解析，禁止打包。
 5. **不引入规格外依赖与能力**：尤其不得引入 `js-yaml`；不得引入 WebSocket、人格/SOUL、技能反向导入、活同步引擎。
 6. **上游 MIT 署名不可删**：`LICENSE` 的 `master1Sun` 行与 README 的来源声明必须保留。
@@ -24,12 +24,13 @@
 12. **`src/host/store.ts` 不得 import 宿主能力**（cordis / 任何服务）：存储层必须能脱离 `dsh` 单测，宿主能力一律留在别的模块。
 13. **存储层的测试隔离靠环境变量，不得加 test-only API**：测试在自己的进程里把 `DSH_HOME` 指向临时目录；`paths.ts` 全部为调用期求值。
 14. **db 结构变更必须走 `MIGRATIONS` + 升 `SCHEMA_VERSION`**：迁移要幂等（先探测再 `ALTER`，不要「执行失败就吞掉」）。
+15. **可测判定不进 `.tsx`**：本仓库无 react-dom / jsdom（硬约束 5 禁装），`node --test` 读不了组件文件 ⇒ 判定 / 映射 / 归一化一律下沉到零依赖纯模块，组件只做接线；没有自动化断言的接线行为归活体验收（`docs/architecture.md` §4.3、§7）。
 
 ## 命令与完成标准
 
 ```sh
 npm run typecheck   # tsc --noEmit
-npm test            # node --test（存储层单测，P2 起）
+npm test            # node --test（43 个用例文件、448 条用例，覆盖 host 与 client 纯模块）
 npm run build       # lib/index.js + lib/client.js
 npm run smoke       # 真实执行 client bundle，校验注册 id 与导出形状
 ```
@@ -58,3 +59,5 @@ Canonical triage roles use their default strings (`needs-triage` / `needs-info` 
 ### Domain docs
 
 single-context: root `GLOSSARY.md` + `docs/adr/`, created lazily. See `docs/agents/domain.md`.
+
+**现状（2026-10-03）**：两者都还不存在。**不要预先创建它们**——域词汇与 ADR 只在术语/决策真正被解决时才补，架构事实与决策台账的当前落点是 `docs/architecture.md`（§6 台账、§9 术语表）。
