@@ -71,6 +71,9 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 信封统一 `{ ok, data }` / `{ ok:false, error }`；AI 路由的失败信封扩为 `{ ok:false, error:{ code, message } }`（code 跨层传枚举，message 仅开发诊断）。状态码：400 参数 / 403 跨源写入被拒 / 404 未找到 / 409 同名冲突 / 500 未预期 / 503 AI 或设置不可用（`routes.ts` 文件头）。
 
+**路由清单单一真源**（2026-10-03，D13）：`routes.ts#ROUTE_SPECS` 是路由的唯一一份清单——`dispatch`
+按它匹配分发，`tests/api.test.mjs` 的覆盖账本按 `pattern` 与它双向对齐（加路由不加覆盖行即红）。
+
 **跨源写入闸**（2026-10-03，D9）：写方法（POST/PUT/DELETE）只接受同源请求——命中 `Sec-Fetch-Site: cross-site`、或 `Origin` 存在且与 `Host` 不同源（含 `Origin: null`）即 403，且**在读请求体之前**就返回。判据只认正向的跨源证据：`curl` / 脚本 / 宿主 agent 不带这些头，同源页面的写请求带 `Origin` 且与 `Host` 同值。GET 不挡（无副作用，响应本来也读不到）。
 
 | 组 | 路由 |
@@ -138,6 +141,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D10 | **AI 总预算**：一次能力共享 110s 墙钟预算（< 客户端 120s），每次尝试 = min(30s, 剩余)，耗尽即停手；诊断文案按能力分形（润色=纯文本） | 本文 §5、`ai-budget.ts`、`ai-errors.ts` |
 | D11 | **超限响应先于关连接**：5 MB 闸不得先 `req.destroy()`（会连 socket 一起拆，客户端只见 EPIPE）；改为停止读取 + `Connection: close`，让 400 正常写出 | 本文 §4.1、`routes.ts#readBody` |
 | D12 | **产物源码指纹**：`build` 把 `src/**` 的 hash 写进 `.build-meta.json`，`smoke` 比对当前 src 并红——「改完 src 不重建就提交」是本仓唯一能骗过其它所有门的失效模式（`npm test` 测 src、`smoke` 测 lib） | 本文 §7、`scripts/source-hash.mjs` |
+| D13 | **路由清单单一真源**：`ROUTE_SPECS` 驱动 `dispatch`，测试的覆盖账本按 `pattern` 与它双向对齐（此前 dispatch 是手写 if 链、测试另有一份手抄副本） | 本文 §4.1、`routes.ts#ROUTE_SPECS` |
 
 ---
 

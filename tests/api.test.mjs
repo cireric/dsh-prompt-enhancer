@@ -8,6 +8,8 @@ import { makeDispatch } from "./helpers/fake-http.mjs";
 const { api, ApiError, AI_TIMEOUT_MS, AI_PROBE_TIMEOUT_MS, CLEAR_TIMEOUT_MS } = await import(
   "../src/client/utils/api.ts"
 );
+// 路由清单的**单一真源**（审查 #10-③）：下面的覆盖账本按它双向对齐，不再手抄。
+const { ROUTE_SPECS } = await import("../src/host/routes.ts");
 
 /**
  * D（批一第二条）：本文件被加载那一刻的 `DSH_HOME`。下面那条**真分发**用例会在进程里覆盖它，
@@ -331,8 +333,26 @@ const EXEMPT_ROUTES = [
 /** 有客户端方法的路由（行为断言的输入）。 */
 const COVERED = ROUTES.filter((r) => r.client !== null);
 
-test("路由覆盖：宿主 27 条逻辑路由 = 客户端方法覆盖 + 显式豁免（R19，不看源码文本）", () => {
-  assert.equal(ROUTES.length, 27, "宿主路由表共 27 条逻辑路由");
+test("路由覆盖：覆盖账本与产物路由清单**双向对齐**（R19；清单来自 routes.ts，不再手抄）", () => {
+  // 判据 = 「产物清单 ↔ 覆盖账本」集合相等：加第 28 条路由而不加覆盖行（或反过来）直接红。
+  // 此前两边各有一份 27 行的手抄副本，加路由时全套测试毫无反应——这正是本条的原始缺陷（#10-③）。
+  const produced = ROUTE_SPECS.map((s) => s.pattern).sort();
+  assert.deepEqual(
+    ROUTES.map((r) => r.route).sort(),
+    produced,
+    "覆盖账本必须与 ROUTE_SPECS 逐条对齐（加路由必须加覆盖行或豁免行）",
+  );
+  assert.equal(produced.length, 27, "宿主逻辑路由共 27 条");
+
+  // 覆盖行里的 method 也钉一遍：它是手抄表最容易写错的一格，而错了「逐方法」那条用例查不出来
+  // （它比对的是真实请求的方法与覆盖行的方法，两边一起错就一起绿）。
+  for (const r of ROUTES) {
+    const spec = ROUTE_SPECS.find((s) => s.pattern === r.route);
+    assert.ok(spec !== undefined, r.route + " 必须存在于 ROUTE_SPECS");
+    assert.equal(r.route.split(" ")[0], spec.method, r.route + " 的 pattern 前缀必须就是它的方法");
+    if (r.method !== undefined) assert.equal(r.method, spec.method, r.route + " 的覆盖行方法必须与产物一致");
+  }
+
   const gaps = ROUTES.filter((r) => r.client === null).map((r) => r.route);
   const exemptWithoutClient = EXEMPT_ROUTES.filter((e) => e.coveredBy === undefined).map((e) => e.route);
   // 顺序无关：两边只是同一批路由的两种枚举顺序，比集合而不是比序列。

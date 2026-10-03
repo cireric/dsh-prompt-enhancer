@@ -1,5 +1,10 @@
 /**
- * Host HTTP API：单条 prefix 路由 + 手写分发（规格 §5，共 27 条逻辑路由）。
+ * Host HTTP API：单条 prefix 路由 + **分发表驱动**（规格 §5，共 27 条逻辑路由）。
+ *
+ * 路由清单（`ROUTE_SPECS`）是**单一真源**（审查 #10-③）：`dispatch` 按它匹配与分发，
+ * `tests/api.test.mjs` 的覆盖账本按 `pattern` 与它**双向对齐**——加一条路由必须同时加一条覆盖行
+ * （或豁免行），否则那条用例直接红。此前 dispatch 是手写 if 链、测试另有一份手抄的 27 行副本，
+ * 两边各自漂移且无人发现。
  *
  * 本文件是**薄路由层**：只做「解析请求 → 调 store / ai / skills / settings → 组装信封 → 错误映射」，
  * 业务语义全部在各自模块里且已有测试。响应信封固定 `{ ok, data?, error? }`——
@@ -213,25 +218,51 @@ function stamp(): string {
 
 // ── 分发 ───────────────────────────────────────────────────────────────────
 
-async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const method = (req.method ?? "GET").toUpperCase();
-  const url = new URL(req.url ?? "/", "http://localhost");
-  const seg = segments(url.pathname);
-  const [a, b, c] = seg;
+// ── 路由清单（单一真源）────────────────────────────────────────────────────
 
-  // 写方法先过跨源闸：GET/HEAD/OPTIONS 无副作用，不挡（跨源 GET 的响应本来也读不到，
-  // 有 CORS 兜着）；写方法在触库/触模型之前就拒，连请求体都不读。
-  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && isCrossSiteWrite(req)) {
-    console.error(
-      "[prompt-enhancer] 已拒绝跨源写请求 " + method + " " + url.pathname
-        + "（Origin: " + String(req.headers.origin) + " / Host: " + String(req.headers.host) + "）",
-    );
-    return fail(res, 403, "跨源写入被拒绝（本插件的写接口只接受同源请求）");
-  }
+/** 处理函数拿到的上下文：请求、响应、**已切好的路径段**与已解析的 URL。 */
+interface RouteContext {
+  req: IncomingMessage;
+  res: ServerResponse;
+  /** API_PREFIX 之后、已 decodeURIComponent 的路径段。 */
+  seg: string[];
+  /** 已解析的请求 URL（查询参数从它取）。 */
+  url: URL;
+}
 
-  try {
-    // ── 提示词 ────────────────────────────────────────────────────────────
-    if (method === "GET" && seg.length === 1 && a === "prompts") {
+/** 段匹配器：逐段比对，`null` = 任意参数段；**段数必须精确相等**。 */
+function shape(...fixed: Array<string | null>): (seg: string[]) => boolean {
+  return (seg) =>
+    seg.length === fixed.length && fixed.every((want, i) => want === null || seg[i] === want);
+}
+
+/**
+ * 一条逻辑路由。**这份清单是路由的单一真源**（审查 #10-③）：
+ *   · `dispatch` 按它匹配与分发；
+ *   · 测试侧的覆盖账本（`tests/api.test.mjs#ROUTE_CASES`）按 `pattern` 与它**双向对齐**——
+ *     加一条路由必须同时加一条覆盖行（或豁免行），否则那条用例直接红。
+ *     此前测试手里那 27 行是**手抄副本**，加第 28 条路由时全套测试毫无反应。
+ */
+interface RouteSpec {
+  method: "GET" | "POST" | "PUT" | "DELETE";
+  /** 形状，如 `POST /prompts/:id/use`；测试的覆盖账本按它作键。 */
+  pattern: string;
+  match: (seg: string[]) => boolean;
+  handle: (ctx: RouteContext) => Promise<void> | void;
+}
+
+/**
+ * 全部逻辑路由（27 条）。**顺序无关**：没有两条 route 的方法 + 段形状重叠——三条
+ * `GET/PUT/DELETE /prompts/:id` 靠方法区分，`/trash` 与 `/trash/:id` 靠段数区分，
+ * 三条 `/meta/:key` 同样靠方法区分。
+ */
+export const ROUTE_SPECS: readonly RouteSpec[] = [
+  // ── 提示词 ──────────────────────────────────────────────────────────────
+  {
+    method: "GET",
+    pattern: "GET /prompts",
+    match: shape("prompts"),
+    handle: ({ res, url }) => {
       const sort = url.searchParams.get("sort") ?? undefined;
       const allowed: PromptSort[] = ["default", "updated", "used", "created"];
       if (sort !== undefined && !allowed.includes(sort as PromptSort)) {
@@ -242,9 +273,13 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         tag: url.searchParams.get("tag") ?? undefined,
         sort: sort as PromptSort | undefined,
       }));
-    }
-
-    if (method === "POST" && seg.length === 1 && a === "prompts") {
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /prompts",
+    match: shape("prompts"),
+    handle: async ({ req, res }) => {
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text) return fail(res, 400, "缺少 body");
@@ -260,115 +295,161 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       // 而客户端的二次确认只看得见插入前的集合（D-1：确认框撒谎 + 刚保存的记录被静默销毁）。
       const evicted = store.enforceMaxCount(getSettings().maxPromptCount, { exceptId: created.id });
       return ok(res, { prompt: created, evicted });
-    }
-
-    if (seg.length === 2 && a === "prompts") {
-      const id = b!;
-      if (method === "GET") {
-        const found = store.getPrompt(id);
-        return found ? ok(res, found) : fail(res, 404, "提示词不存在");
+    },
+  },
+  {
+    method: "GET",
+    pattern: "GET /prompts/:id",
+    match: shape("prompts", null),
+    handle: ({ res, seg }) => {
+      const found = store.getPrompt(seg[1]!);
+      return found ? ok(res, found) : fail(res, 404, "提示词不存在");
+    },
+  },
+  {
+    method: "PUT",
+    pattern: "PUT /prompts/:id",
+    match: shape("prompts", null),
+    handle: async ({ req, res, seg }) => {
+      const id = seg[1]!;
+      const body = await readBody(req, res);
+      const patch: PromptWritablePatch = {};
+      if (body.title !== undefined) patch.title = asString(body.title) ?? "";
+      if (body.body !== undefined) {
+        const text = asString(body.body);
+        if (text === undefined) return fail(res, 400, "body 必须是字符串");
+        // 与 POST /prompts 同一条非空口径（审查 2026-10-03 实测：PUT body:"" → 200 且正文落成
+        // 空串，而 POST 同样入参是 400）——同一资源的两条写入口不得一条拒空、一条收空。
+        if (!text) return fail(res, 400, "body 不能为空");
+        patch.body = text;
       }
-      if (method === "PUT") {
-        const body = await readBody(req, res);
-        const patch: PromptWritablePatch = {};
-        if (body.title !== undefined) patch.title = asString(body.title) ?? "";
-        if (body.body !== undefined) {
-          const text = asString(body.body);
-          if (text === undefined) return fail(res, 400, "body 必须是字符串");
-          // 与 POST /prompts 同一条非空口径（审查 2026-10-03 实测：PUT body:"" → 200 且正文落成
-          // 空串，而 POST 同样入参是 400）——同一资源的两条写入口不得一条拒空、一条收空。
-          if (!text) return fail(res, 400, "body 不能为空");
-          patch.body = text;
-        }
-        if (body.tags !== undefined) patch.tags = asStringArray(body.tags) ?? [];
-        if (body.summary !== undefined) patch.summary = asString(body.summary) ?? "";
-        if (body.skillName !== undefined) patch.skillName = asString(body.skillName);
-        if (body.skillExportedAt !== undefined) {
-          const at = asFiniteNumber(body.skillExportedAt);
-          if (at === undefined) return fail(res, 400, "skillExportedAt 必须是有限数字");
-          patch.skillExportedAt = at;
-        }
-        const updated = store.updatePrompt(id, patch, { aiWriteBack: body.aiWriteBack === true });
-        return updated ? ok(res, updated) : fail(res, 404, "提示词不存在");
+      if (body.tags !== undefined) patch.tags = asStringArray(body.tags) ?? [];
+      if (body.summary !== undefined) patch.summary = asString(body.summary) ?? "";
+      if (body.skillName !== undefined) patch.skillName = asString(body.skillName);
+      if (body.skillExportedAt !== undefined) {
+        const at = asFiniteNumber(body.skillExportedAt);
+        if (at === undefined) return fail(res, 400, "skillExportedAt 必须是有限数字");
+        patch.skillExportedAt = at;
       }
-      if (method === "DELETE") {
-        return store.deletePrompt(id) ? ok(res, { deleted: true }) : fail(res, 404, "提示词不存在");
-      }
-    }
-
-    if (method === "POST" && seg.length === 3 && a === "prompts" && c === "use") {
-      const used = store.recordUsage(b!);
+      const updated = store.updatePrompt(id, patch, { aiWriteBack: body.aiWriteBack === true });
+      return updated ? ok(res, updated) : fail(res, 404, "提示词不存在");
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: "DELETE /prompts/:id",
+    match: shape("prompts", null),
+    handle: ({ res, seg }) =>
+      store.deletePrompt(seg[1]!) ? ok(res, { deleted: true }) : fail(res, 404, "提示词不存在"),
+  },
+  {
+    method: "POST",
+    pattern: "POST /prompts/:id/use",
+    match: shape("prompts", null, "use"),
+    handle: ({ res, seg }) => {
+      const used = store.recordUsage(seg[1]!);
       return used ? ok(res, used) : fail(res, 404, "提示词不存在");
-    }
-
-    if (method === "POST" && seg.length === 3 && a === "prompts" && c === "rollback") {
-      const result = store.rollbackPrompt(b!);
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /prompts/:id/rollback",
+    match: shape("prompts", null, "rollback"),
+    handle: ({ res, seg }) => {
+      const result = store.rollbackPrompt(seg[1]!);
       if (!result.ok) {
         return result.error === "提示词不存在"
           ? fail(res, 404, result.error)
           : fail(res, 400, result.error ?? "回滚失败");
       }
       return ok(res, result.prompt);
-    }
+    },
+  },
 
-    // ── 标签 ──────────────────────────────────────────────────────────────
-    if (method === "GET" && seg.length === 1 && a === "tags") {
-      return ok(res, store.listTags());
-    }
-
-    if (method === "POST" && seg.length === 1 && a === "tags") {
+  // ── 标签 ────────────────────────────────────────────────────────────────
+  { method: "GET", pattern: "GET /tags", match: shape("tags"), handle: ({ res }) => ok(res, store.listTags()) },
+  {
+    method: "POST",
+    pattern: "POST /tags",
+    match: shape("tags"),
+    handle: async ({ req, res }) => {
       const body = await readBody(req, res);
       const name = asString(body.name);
       if (!name?.trim()) return fail(res, 400, "缺少 name");
       return ok(res, { name: store.createTag(name) });
-    }
-
-    if (method === "PUT" && seg.length === 2 && a === "tags") {
+    },
+  },
+  {
+    method: "PUT",
+    pattern: "PUT /tags/:from",
+    match: shape("tags", null),
+    handle: async ({ req, res, seg }) => {
       const body = await readBody(req, res);
       const to = asString(body.to);
       if (!to?.trim()) return fail(res, 400, "缺少 to");
-      return ok(res, { affected: store.renameTag(b!, to) });
-    }
-
-    if (method === "DELETE" && seg.length === 2 && a === "tags") {
-      const result = store.deleteTag(b!);
+      return ok(res, { affected: store.renameTag(seg[1]!, to) });
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: "DELETE /tags/:name",
+    match: shape("tags", null),
+    handle: ({ res, seg }) => {
+      const result = store.deleteTag(seg[1]!);
       if (!result.deleted) {
         return result.inUse > 0
           ? fail(res, 400, `标签正在被 ${result.inUse} 条提示词使用，无法删除`)
           : fail(res, 404, "标签不存在");
       }
       return ok(res, result);
-    }
+    },
+  },
 
-    // ── 回收站 ────────────────────────────────────────────────────────────
-    if (method === "GET" && seg.length === 1 && a === "trash") {
-      return ok(res, store.listTrash());
-    }
-
-    if (method === "POST" && seg.length === 3 && a === "trash" && c === "restore") {
-      const restored = store.restorePrompts([b!]);
+  // ── 回收站 ──────────────────────────────────────────────────────────────
+  { method: "GET", pattern: "GET /trash", match: shape("trash"), handle: ({ res }) => ok(res, store.listTrash()) },
+  {
+    method: "POST",
+    pattern: "POST /trash/:id/restore",
+    match: shape("trash", null, "restore"),
+    handle: ({ res, seg }) => {
+      const restored = store.restorePrompts([seg[1]!]);
       return restored > 0 ? ok(res, { restored }) : fail(res, 404, "回收站中没有这条提示词");
-    }
-
-    if (method === "DELETE" && seg.length === 1 && a === "trash") {
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: "DELETE /trash",
+    match: shape("trash"),
+    handle: ({ res }) => {
       // T7 ⑦（修复轮 1）：`removed` 仍是**条数**（既有信封形状不破坏）；被删的 id 列表**新增**在 `ids`。
       // 客户端只能按宿主回执清 per-prompt meta —— 面板列出的 items 是打开那一刻的快照，清空与列表之间
       // 存在竞态窗口，窗口内新增的回收站行同样被删掉却不在快照里。`ids.length === removed`。
       const ids = store.emptyTrash();
       return ok(res, { removed: ids.length, ids });
-    }
-
-    if (method === "DELETE" && seg.length === 2 && a === "trash") {
-      const removed = store.deleteTrash([b!]);
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: "DELETE /trash/:id",
+    match: shape("trash", null),
+    handle: ({ res, seg }) => {
+      const removed = store.deleteTrash([seg[1]!]);
       return removed > 0 ? ok(res, { removed }) : fail(res, 404, "回收站中没有这条提示词");
-    }
+    },
+  },
 
-    // ── AI ────────────────────────────────────────────────────────────────
-    if (method === "GET" && seg.length === 2 && a === "ai" && b === "providers") {
-      return ok(res, await ai.listAiSelectables());
-    }
-
-    if (method === "POST" && seg.length === 2 && a === "ai" && b === "polish") {
+  // ── AI ──────────────────────────────────────────────────────────────────
+  {
+    method: "GET",
+    pattern: "GET /ai/providers",
+    match: shape("ai", "providers"),
+    handle: async ({ res }) => ok(res, await ai.listAiSelectables()),
+  },
+  {
+    method: "POST",
+    pattern: "POST /ai/polish",
+    match: shape("ai", "polish"),
+    handle: async ({ req, res }) => {
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
@@ -384,9 +465,13 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       );
       if (!outcome.ok) return failWithCode(res, 503, { code: outcome.code, message: devMessage(outcome.code) });
       return ok(res, outcome.data);
-    }
-
-    if (method === "POST" && seg.length === 2 && a === "ai" && b === "refine") {
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /ai/refine",
+    match: shape("ai", "refine"),
+    handle: async ({ req, res }) => {
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
@@ -394,9 +479,13 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       const refined = await ai.refinePromptCore(text, getSettings(), existingTags);
       if (!refined.ok) return failWithCode(res, 503, { code: refined.code, message: devMessage(refined.code) });
       return ok(res, refined.refined);
-    }
-
-    if (method === "POST" && seg.length === 2 && a === "ai" && b === "skill-descriptor") {
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /ai/skill-descriptor",
+    match: shape("ai", "skill-descriptor"),
+    handle: async ({ req, res }) => {
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
@@ -412,14 +501,16 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       return "desc" in result
         ? ok(res, result.desc)
         : failWithCode(res, 503, { code: result.fail, message: devMessage(result.fail) });
-    }
+    },
+  },
 
-    // ── 设置 ──────────────────────────────────────────────────────────────
-    if (method === "GET" && seg.length === 1 && a === "settings") {
-      return ok(res, getSettings());
-    }
-
-    if (method === "PUT" && seg.length === 1 && a === "settings") {
+  // ── 设置 ────────────────────────────────────────────────────────────────
+  { method: "GET", pattern: "GET /settings", match: shape("settings"), handle: ({ res }) => ok(res, getSettings()) },
+  {
+    method: "PUT",
+    pattern: "PUT /settings",
+    match: shape("settings"),
+    handle: async ({ req, res }) => {
       if (!isSettingsAvailable()) return fail(res, 503, "设置服务不可用（宿主未提供 settings 服务）");
       const body = await readBody(req, res);
       const patch: Record<string, unknown> = {};
@@ -434,10 +525,15 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       } catch (e) {
         return fail(res, 400, "设置写入被拒绝：" + String(e));
       }
-    }
+    },
+  },
 
-    // ── 导入导出 ──────────────────────────────────────────────────────────
-    if (method === "POST" && seg.length === 2 && a === "export" && b === "save") {
+  // ── 导入导出 ────────────────────────────────────────────────────────────
+  {
+    method: "POST",
+    pattern: "POST /export/save",
+    match: shape("export", "save"),
+    handle: async ({ req, res }) => {
       const body = await readBody(req, res);
       const dir = asString(body.dir);
       if (!dir) return fail(res, 400, "缺少 dir");
@@ -453,24 +549,43 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         return fail(res, 500, "写盘失败：" + String(e));
       }
       return ok(res, { path: target, prompts: backup.prompts.length, tags: backup.tags.length });
-    }
-
-    if (method === "POST" && seg.length === 1 && a === "import") {
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /import",
+    match: shape("import"),
+    handle: async ({ req, res }) => {
       const body = await readBody(req, res);
       const result = store.importPrompts(body.backup, { confirm: body.confirm === true });
       return result.ok ? ok(res, result) : fail(res, 400, result.error ?? "导入被拒绝");
-    }
+    },
+  },
 
-    // ── meta（模板变量记忆）───────────────────────────────────────────────
-    if (seg.length === 2 && a === "meta") {
-      if (method === "GET") return ok(res, { key: b, value: store.getMetaValue(b!) });
-      if (method === "PUT") {
-        const body = await readBody(req, res);
-        const value = asString(body.value);
-        if (value === undefined) return fail(res, 400, "缺少 value");
-        store.setMetaValue(b!, value);
-        return ok(res, { key: b, value });
-      }
+  // ── meta（模板变量记忆）─────────────────────────────────────────────────
+  {
+    method: "GET",
+    pattern: "GET /meta/:key",
+    match: shape("meta", null),
+    handle: ({ res, seg }) => ok(res, { key: seg[1], value: store.getMetaValue(seg[1]!) }),
+  },
+  {
+    method: "PUT",
+    pattern: "PUT /meta/:key",
+    match: shape("meta", null),
+    handle: async ({ req, res, seg }) => {
+      const body = await readBody(req, res);
+      const value = asString(body.value);
+      if (value === undefined) return fail(res, 400, "缺少 value");
+      store.setMetaValue(seg[1]!, value);
+      return ok(res, { key: seg[1], value });
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: "DELETE /meta/:key",
+    match: shape("meta", null),
+    handle: ({ res, seg }) => {
       /**
        * DELETE（T6 / O-1）：清键通道。**通用形态**——宿主不认识 `pl:` 这类客户端键名约定，
        * 也不做任何特判（键名归客户端，写进宿主就是两处耦合）。**幂等**：键不存在同样回 200，
@@ -479,11 +594,16 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
        * 客户端只在**不可逆删除点**（单条永久删除 / 清空回收站）用它清 per-prompt 残键；
        * **软删除（进回收站）绝不清**——回收站可恢复且复用同一 id，清了键会让「删除 → 恢复」重演 I-1。
        */
-      if (method === "DELETE") return ok(res, { key: b, deleted: store.deleteMetaValue(b!) });
-    }
+      return ok(res, { key: seg[1], deleted: store.deleteMetaValue(seg[1]!) });
+    },
+  },
 
-    // ── 技能导出 ──────────────────────────────────────────────────────────
-    if (method === "POST" && seg.length === 2 && a === "skills" && b === "export") {
+  // ── 技能导出 ────────────────────────────────────────────────────────────
+  {
+    method: "POST",
+    pattern: "POST /skills/export",
+    match: shape("skills", "export"),
+    handle: async ({ req, res }) => {
       const body = await readBody(req, res);
       const promptId = asString(body.promptId);
       if (!promptId) return fail(res, 400, "缺少 promptId");
@@ -535,8 +655,33 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         skillExportedAt: Date.now(),
       });
       return ok(res, { name: result.name, path: result.path, prompt: updated });
-    }
+    },
+  },
+];
 
+// ── 分发 ───────────────────────────────────────────────────────────────────
+
+async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const method = (req.method ?? "GET").toUpperCase();
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const seg = segments(url.pathname);
+
+  // 写方法先过跨源闸：GET/HEAD/OPTIONS 无副作用，不挡（跨源 GET 的响应本来也读不到，
+  // 有 CORS 兜着）；写方法在触库/触模型之前就拒，连请求体都不读。
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && isCrossSiteWrite(req)) {
+    console.error(
+      "[prompt-enhancer] 已拒绝跨源写请求 " + method + " " + url.pathname
+        + "（Origin: " + String(req.headers.origin) + " / Host: " + String(req.headers.host) + "）",
+    );
+    return fail(res, 403, "跨源写入被拒绝（本插件的写接口只接受同源请求）");
+  }
+
+  try {
+    const ctx: RouteContext = { req, res, seg, url };
+    for (const route of ROUTE_SPECS) {
+      if (route.method !== method || !route.match(seg)) continue;
+      return await route.handle(ctx);
+    }
     return fail(res, 404, `no route ${method} ${url.pathname}`);
   } catch (e) {
     if (e instanceof BadRequest) return fail(res, 400, e.message);
