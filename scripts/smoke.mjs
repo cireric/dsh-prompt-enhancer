@@ -9,6 +9,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { sourceHash } from "./source-hash.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
@@ -270,6 +271,15 @@ if (meta === null) {
   const parsed = JSON.parse(meta);
   if (parsed.id !== pkg.name) fail("lib/.build-meta.json 的 id 与包名不一致");
   else ok("lib/.build-meta.json id = " + pkg.name);
+
+  // 产物必须与**当前** src 同代：改完 src 不重建就跑 smoke，这里必须红
+  // （提交一份旧 lib 是本仓唯一能骗过其它所有闸门的失效模式）。
+  const expected = await sourceHash(root);
+  if (parsed.sources === undefined) {
+    fail("lib/.build-meta.json 缺少 sources 指纹（旧版产物？先 npm run build）");
+  } else if (parsed.sources !== expected) {
+    fail("lib 与 src 不同步：产物指纹 " + parsed.sources + " ≠ 当前 src " + expected + "（先 npm run build）");
+  } else ok("lib 与 src 同步（源码指纹 " + expected + "）");
 }
 
 console.log(failures === 0 ? "smoke: PASSED" : "smoke: FAILED（" + failures + " 项）");

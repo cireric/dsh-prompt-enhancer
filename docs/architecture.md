@@ -137,16 +137,19 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D9 | **跨源写入闸**：写方法只接受同源请求（403 且不读体）；宿主 webServer 无 origin/token/CSRF 守卫，故闸门落在插件路由层 | 本文 §4.1、`routes.ts#isCrossSiteWrite` |
 | D10 | **AI 总预算**：一次能力共享 110s 墙钟预算（< 客户端 120s），每次尝试 = min(30s, 剩余)，耗尽即停手；诊断文案按能力分形（润色=纯文本） | 本文 §5、`ai-budget.ts`、`ai-errors.ts` |
 | D11 | **超限响应先于关连接**：5 MB 闸不得先 `req.destroy()`（会连 socket 一起拆，客户端只见 EPIPE）；改为停止读取 + `Connection: close`，让 400 正常写出 | 本文 §4.1、`routes.ts#readBody` |
+| D12 | **产物源码指纹**：`build` 把 `src/**` 的 hash 写进 `.build-meta.json`，`smoke` 比对当前 src 并红——「改完 src 不重建就提交」是本仓唯一能骗过其它所有门的失效模式（`npm test` 测 src、`smoke` 测 lib） | 本文 §7、`scripts/source-hash.mjs` |
 
 ---
 
 ## 7. 质量门禁与验收纪律
 
 ```sh
+npm run verify      # 四道门一次跑满（= typecheck && test && build && smoke）；提交前必须跑它
 npm run typecheck   # tsc --noEmit
-npm test            # node --test（43 个测试文件）
-npm run build       # lib/index.js + lib/client.js
-npm run smoke       # 真实执行 client bundle：校验注册 id、7 个插槽的账本顺序、inject 段序、导出形状
+npm test            # node --test（45 个用例文件、460 条用例）
+npm run build       # lib/index.js + lib/client.js（同时把源码指纹写进 .build-meta.json）
+npm run smoke       # 真实执行 client bundle：注册 id、7 个插槽的账本顺序、inject 段序、导出形状、
+                    # 产物只由 src/ 组成（metafile 闸门）、lib 与 src 同代（源码指纹）
 ```
 
 - 每个任务结束时**四项全绿**；新增负样本必须先用**变异验证**（临时改坏实现 → 用例必须红 → 复原）。

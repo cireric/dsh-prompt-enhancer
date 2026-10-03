@@ -10,6 +10,7 @@
 // 契约来源：DSH 官方 client bundle 构建器 packages/client/tsdown.client.ts
 //（`window.__ModuleLoader__.load({ id: <包名>, factory: (require) => {`）。
 import { build as esbuildBuild } from "esbuild";
+import { sourceHash } from "./source-hash.mjs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -122,13 +123,16 @@ const clientBuild = await esbuildBuild({
 });
 assertOnlyOwnSources(clientBuild.metafile, "lib/client.js");
 
+// 源码指纹写进构建元数据：smoke 拿它比对产物与 src 是否同代（见 source-hash.mjs 的文件头）。
+const sources = await sourceHash(root);
+
 await writeFile(
   join(libDir, ".build-meta.json"),
   JSON.stringify(
-    { id: PLUGIN_ID, version: PLUGIN_VERSION, builtAt: new Date().toISOString() },
+    { id: PLUGIN_ID, version: PLUGIN_VERSION, builtAt: new Date().toISOString(), sources },
     null,
     2,
   ) + "\n",
 );
 
-console.log("build: done (lib/index.js, lib/client.js)");
+console.log("build: done (lib/index.js, lib/client.js; sources " + sources + ")");
