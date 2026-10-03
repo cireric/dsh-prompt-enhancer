@@ -346,6 +346,20 @@ test("标签重命名：空标签（无人使用但字典里有）也必须改�
   assert.ok(store.getPrompt(p.id).tags.includes("连带新名"));
 });
 
+test("标签重命名：撞上该条已有的标签必须去重（不得写出重复标签，计数不得虚高）", () => {
+  // 审查 2026-10-03 的实测缺陷：tags = ["x","y"] 上把 x 改成 y，旧实现写出 ["y","y"]，
+  // 于是 listTags 把同一条提示词算两次（2 条提示词报成 count=3）。
+  const a = store.createPrompt({ title: "碰撞甲", body: "x", tags: ["碰撞源", "碰撞目标"] });
+  const b = store.createPrompt({ title: "碰撞乙", body: "y", tags: ["碰撞目标"] });
+
+  assert.equal(store.renameTag("碰撞源", "碰撞目标"), 1, "受影响提示词 1 条");
+  assert.deepEqual(store.getPrompt(a.id).tags, ["碰撞目标"], "同条内的重复标签必须被去掉");
+  assert.deepEqual(store.getPrompt(b.id).tags, ["碰撞目标"], "未受影响的条目保持不变");
+
+  const target = store.listTags().find((t) => t.name === "碰撞目标");
+  assert.equal(target.count, 2, "计数 = 用了该标签的提示词条数（2），不是标签出现次数（3）");
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 超限淘汰：N5 + N6（本文件最后一个用例，会清空全库以构造受控数据集）
 // ─────────────────────────────────────────────────────────────────────────────

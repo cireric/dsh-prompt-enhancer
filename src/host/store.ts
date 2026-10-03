@@ -609,7 +609,14 @@ export function renameTag(from: string, to: string): number {
     cur.prepare("DELETE FROM tags WHERE name = ?").run(from);
     const now = Date.now();
     for (const p of affected) {
-      writePrompt(cur, { ...p, tags: p.tags.map((t) => (t === from ? target : t)), updatedAt: now });
+      // 归一化不可省（审查 2026-10-03）：改名可能**撞上该条已有的标签**（tags = ["x","y"] 上把 x
+      // 改成 y），直接 map 会写出 ["y","y"]。这条路径此前是唯一不经 normalizeTags 的标签写入点，
+      // 重复标签会让 listTags 的计数虚高（同一条算两次：实测 2 条提示词报成 3）。
+      writePrompt(cur, {
+        ...p,
+        tags: normalizeTags(p.tags.map((t) => (t === from ? target : t))),
+        updatedAt: now,
+      });
     }
     return affected.length;
   });
