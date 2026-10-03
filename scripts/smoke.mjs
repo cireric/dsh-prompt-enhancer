@@ -253,6 +253,86 @@ if (clientSrc === null) {
   }
 }
 
+// ---------- 2.5) host 行为断言：假 ctx 真跑 apply()（审查 #10-②）----------
+// 为什么必须有：本仓的 host 入口在此前**从未被任何自动化执行过**——smoke 只 import 产物并断言
+// name / typeof apply，于是「路由注册与卸载、两条 ctx.inject、volatile-update 监听、设置面绑定」
+// 全部无判据（client 侧早有同款账本，host 侧是缺口）。
+// 假 ctx 只实现 apply 真正用到的方法：一旦它开始注册别的东西（比如 systemPrompt section，
+// 硬约束 2 的零 section 承诺），这里会因为调用了不存在的方法而**直接炸**。
+// 自带一次 import：section 1 的 mod 是块级作用域，这里取不到。
+const hostMod = await import(pathToFileURL(join(root, "lib", "index.js")).href).catch(() => null);
+if (hostMod !== null && typeof hostMod.apply === "function") {
+  const calls = [];
+  const disposers = [];
+  // 假 Config 直接由**产物导出的 Config** 解析而来（13 个 volatile 引用，与宿主真实形状一致）。
+  const fakeConfig = hostMod.Config({});
+  const fakeCtx = {
+    inject(deps, callback) {
+      calls.push(["inject", deps.join(",")]);
+      // 只给 apply 真正要的服务：llm（可以为空）与 webServer（记录注册的路由）
+      const scope = {
+        llm: undefined,
+        effect(fn, name) {
+          calls.push(["effect", name]);
+          const dispose = fn();
+          disposers.push(typeof dispose === "function" ? dispose : () => {});
+          return typeof dispose === "function" ? dispose : () => {};
+        },
+        webServer: {
+          register(route) {
+            calls.push(["register", route.kind + " " + route.path]);
+            return () => {};
+          },
+        },
+      };
+      callback(scope);
+    },
+    on(event, handler) {
+      calls.push(["on", event + " " + (typeof handler === "function" ? "fn" : "?")]);
+    },
+    effect(fn, name) {
+      calls.push(["effect", name]);
+      const dispose = fn();
+      disposers.push(typeof dispose === "function" ? dispose : () => {});
+      return typeof dispose === "function" ? dispose : () => {};
+    },
+  };
+  try {
+    hostMod.apply(fakeCtx, fakeConfig);
+    ok("host apply() 在假 ctx 上执行成功（无异常）");
+  } catch (e) {
+    fail("host apply(fakeCtx) 抛错：" + (e instanceof Error ? e.message : String(e)));
+  }
+
+  const kinds = calls.map((c) => c[0] + (c[1] !== undefined ? ":" + c[1] : ""));
+  // 顺序按 src/index.ts 的 apply() 逐条列：webServer 的 inject 回调里挂着 routes effect，
+  // 那条 effect 里注册路由——账本把「谁在谁里面」也一并钉住。
+  const wantOrder = [
+    "inject:llm",
+    "inject:webServer",
+    "effect:prompt-enhancer: routes",
+    "register:prefix /api/prompt-enhancer",
+    "on:loader/volatile-update fn",
+    "effect:prompt-enhancer: lifecycle",
+  ];
+  if (!same(kinds, wantOrder)) {
+    fail("host 装配账本不符（应为 inject llm → inject webServer → on volatile-update → effect lifecycle）\n"
+      + "      期望 " + JSON.stringify(wantOrder) + "\n      实为 " + JSON.stringify(kinds));
+  } else ok("host 装配账本逐条相符 " + JSON.stringify(kinds));
+
+  const registers = calls.filter((c) => c[0] === "register");
+  if (registers.length !== 1 || registers[0][1] !== "prefix " + "/api/prompt-enhancer") {
+    fail("host 应恰好注册 1 条 prefix 路由 /api/prompt-enhancer，实为 " + JSON.stringify(registers));
+  } else ok("host 注册 1 条 prefix 路由 /api/prompt-enhancer（20+ 条子路由由该 handler 分发）");
+
+  // 卸载路径：apply 期间 ctx.effect 返回的 dispose 全部可调用且不抛（fiber 卸载即走这里）
+  const before = failures;
+  for (const dispose of disposers) {
+    try { dispose(); } catch (e) { fail("host 卸载回调抛错：" + (e instanceof Error ? e.message : String(e))); }
+  }
+  if (failures === before) ok("host 卸载回调可调用且不抛（" + disposers.length + " 个）");
+}
+
 // ---------- 3) cordis.patch.yml 与包名一致 ----------
 const patch = await readFile(join(root, "cordis.patch.yml"), "utf8").catch(() => null);
 if (patch === null) {
