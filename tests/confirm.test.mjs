@@ -105,11 +105,20 @@ test("订阅：请求发布与落地各派发一次，退订后不再收到", as
 });
 
 test("useConfirmRequest：Node 侧无 react 时抛可读错误（不静默降级成死快照）", () => {
+  // 「不静默降级」这半句原先只靠 `console.warn = () => {}` 把告警吞掉来回避——告警本身没有判据
+  // （2026-10-03 补：与 skill-badge 那三处同形）。改成捕获并断言文案，顺手也不再往输出里丢裸告警。
+  const warns = [];
   const original = console.warn;
-  console.warn = () => {};
+  console.warn = (...args) => {
+    warns.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(" "));
+  };
   try {
     assert.throws(() => confirm.useConfirmRequest(), /react 运行时不可用/);
   } finally {
     console.warn = original;
   }
+  assert.ok(
+    warns.some((w) => w.includes("hook 不可用") || w.includes("无法解析 react")),
+    "必须留下可读告警（这才是「不静默」），实收 " + JSON.stringify(warns),
+  );
 });
