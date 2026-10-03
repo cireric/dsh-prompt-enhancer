@@ -275,6 +275,9 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         if (body.body !== undefined) {
           const text = asString(body.body);
           if (text === undefined) return fail(res, 400, "body 必须是字符串");
+          // 与 POST /prompts 同一条非空口径（审查 2026-10-03 实测：PUT body:"" → 200 且正文落成
+          // 空串，而 POST 同样入参是 400）——同一资源的两条写入口不得一条拒空、一条收空。
+          if (!text) return fail(res, 400, "body 不能为空");
           patch.body = text;
         }
         if (body.tags !== undefined) patch.tags = asStringArray(body.tags) ?? [];

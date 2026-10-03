@@ -25,6 +25,7 @@ test("R1+R2 负样本：skillExportedAt 有限数字校验 + 请求体 5MB 上�
   try {
     const { makeRoutes } = await import("../src/host/routes.ts");
     const { API_PREFIX } = await import("../src/types.ts");
+    const store = await import("../src/host/store.ts");
     const dispatch = makeDispatch({ makeRoutes, API_PREFIX });
 
     // 建一条提示词作为 PUT 的靶子
@@ -72,6 +73,14 @@ test("R1+R2 负样本：skillExportedAt 有限数字校验 + 请求体 5MB 上�
     assert.equal(res.statusCode, 400, "超限必须先产出 400 响应");
     assert.equal(req.destroyCalls, 0, "写出响应前不得 destroy 请求流（会把 socket 一起拆掉）");
     assert.equal(res.headers.Connection, "close", "超限响应必须带 Connection: close（剩余上传由关连接兜住）");
+
+    // ── 空 body 口径：POST 拒 → PUT 也必须拒（此前 PUT 放行，正文静默落成空串） ──
+    const emptyPost = await dispatch("POST", "/prompts", { title: "空体", body: "" });
+    assert.equal(emptyPost.status, 400, "POST 空 body 必须被拒（既有口径）");
+    const emptyPut = await dispatch("PUT", "/prompts/" + id, { body: "" });
+    assert.equal(emptyPut.status, 400, "PUT 空 body 必须与 POST 同判");
+    assert.ok(emptyPut.envelope.error.includes("不能为空"));
+    assert.equal(store.getPrompt(id).body, "正文", "被拒的写不得改动正文");
 
     // ── R2 后进程仍正常服务（destroy 不炸假夹具，路由层未被污染） ──
     const after = await dispatch("POST", "/prompts", { title: "正常", body: "第二条" });
