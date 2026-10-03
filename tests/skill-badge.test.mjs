@@ -306,17 +306,43 @@ test("降级：meta 缺失（从未落过）⇒ 请求体回到「只有 promptI
   assert.deepEqual(spy.calls[0], { promptId: "never" });
 });
 
+/**
+ * 在捕获 `console.warn` 的同时跑一段代码。
+ *
+ * 为什么要它：本文件的两条用例在**标题**里承诺了「可见告警 / 只告警」，而它们原先只断言返回值——
+ * 2026-10-03 变异实测：把 skill-export.ts 那 4 处 warn 全部改成静默，套件照样 458/458 全绿
+ * ⇒ 这条承诺当时没有任何判据（与已修的「恒真用例」同形）。捕获后既让断言真实存在，也不再让
+ * **预期内**的告警混进 `npm test` 的输出（真失败从此一眼可辨）。
+ */
+async function withCapturedWarn(sink, run) {
+  const original = console.warn;
+  console.warn = (...args) => {
+    sink.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(" "));
+  };
+  try {
+    return await run();
+  } finally {
+    console.warn = original;
+  }
+}
+
 test("降级：meta 损坏（坏 JSON / 形状不符）⇒ undefined + 可见告警，照样不失败", async () => {
+  // 二元组 = [坏值, 该坏值应触发的告警关键字]：坏 JSON 走「不是合法 JSON」，其余走「形状不符」。
   const bad = [
-    "{不是 JSON",
-    JSON.stringify({ description: "只有描述" }),
-    JSON.stringify({ name: 42, description: "d" }),
-    JSON.stringify({ name: "n", description: "d", whenToUse: 7 }),
-    JSON.stringify("字符串不是对象"),
+    ["{不是 JSON", "不是合法 JSON"],
+    [JSON.stringify({ description: "只有描述" }), "形状不符"],
+    [JSON.stringify({ name: 42, description: "d" }), "形状不符"],
+    [JSON.stringify({ name: "n", description: "d", whenToUse: 7 }), "形状不符"],
+    [JSON.stringify("字符串不是对象"), "形状不符"],
   ];
-  for (const raw of bad) {
-    const loaded = await exportUtils.loadStoredDescriptor("p1", async () => raw);
+  for (const [raw, expected] of bad) {
+    const warns = [];
+    const loaded = await withCapturedWarn(warns, () => exportUtils.loadStoredDescriptor("p1", async () => raw));
     assert.equal(loaded, undefined, "坏值必须降级：「" + raw + "」");
+    assert.ok(
+      warns.some((w) => w.includes(expected)),
+      "「" + raw + "」必须留下可见告警（含「" + expected + "」），实收 " + JSON.stringify(warns),
+    );
   }
   const spy = scriptedSend([receipt]);
   const outcome = await badge.reExportSkill("p1", spy.send, undefined);
@@ -370,11 +396,24 @@ test("读写失败都不阻断：setMeta 抛错、getMeta 抛错都只告警（�
     throw new TypeError("Failed to parse URL from /api/prompt-enhancer/meta/pl:skill-descriptor:p1");
   };
   try {
-    await exportUtils.persistDescriptor("p1", aiDescriptor); // 不得抛（它只是提质信息）
-    const loaded = await exportUtils.loadStoredDescriptor("p1", async () => {
+    // 写失败：不得抛（descriptor 只是提质信息），但必须留痕——标题承诺的「只告警」在这里被断言。
+    const writeWarns = [];
+    await withCapturedWarn(writeWarns, () => exportUtils.persistDescriptor("p1", aiDescriptor));
+    assert.ok(
+      writeWarns.some((w) => w.includes("落 meta 失败")),
+      "写失败必须留痕，实收 " + JSON.stringify(writeWarns),
+    );
+
+    // 读失败：同样降级为 undefined + 留痕。
+    const readWarns = [];
+    const loaded = await withCapturedWarn(readWarns, () => exportUtils.loadStoredDescriptor("p1", async () => {
       throw new Error("宿主 500");
-    });
+    }));
     assert.equal(loaded, undefined);
+    assert.ok(
+      readWarns.some((w) => w.includes("读取技能 descriptor 失败")),
+      "读失败必须留痕，实收 " + JSON.stringify(readWarns),
+    );
   } finally {
     globalThis.fetch = original;
   }

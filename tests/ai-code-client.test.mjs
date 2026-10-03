@@ -8,6 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
 
 const { api, ApiError } = await import("../src/client/utils/api.ts");
 const { aiErrorKey } = await import("../src/client/utils/ai-flow.ts");
@@ -118,8 +119,29 @@ test("i18n：七个 ai.code.* 键在 zh/en 双字典齐备、非空且键集全�
   // 每个宿主 code 都能在 zh 字典里找到自己的键（snakeCase → camelCase 的映射表钉在 ai-flow.ts）。
 });
 
-test("i18n：ai.code.* 键在 src/** 有字面量引用（死键检查的针对性前哨；全量检查在 i18n.test.mjs）", () => {
-  // 真引用点：ai-flow.ts 的 keyForCode。这里只断言映射表真正用到了键（防「加了键没人引用」）。
-  const { aiErrorKey: fn } = { aiErrorKey };
-  assert.equal(typeof fn, "function");
+/** 递归收集 src/** 下的 .ts / .tsx（按 URL 走，跨平台且不依赖 cwd）。 */
+async function srcFiles(dir = new URL("../src/", import.meta.url)) {
+  const out = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) out.push(...(await srcFiles(new URL(entry.name + "/", dir))));
+    else if (/\.tsx?$/.test(entry.name)) out.push(new URL(entry.name, dir));
+  }
+  return out;
+}
+
+test("i18n：六个 ai.code.* 键在 src/** 有字面量引用（死键检查的针对性前哨；全量检查在 i18n.test.mjs）", async () => {
+  // 真引用点是 ai-flow.ts 的 keyForCode。旧实现只断言「aiErrorKey 是函数」——恒真，键改名或掉线
+  // 时它照样绿（审查 2026-10-03 抓到的空转用例）。这里改成真的扫源码文本。
+  const codeKeys = [
+    "ai.code.noLlm", "ai.code.route", "ai.code.timeout",
+    "ai.code.emptyOutput", "ai.code.parse", "ai.code.schemaMismatch",
+  ];
+  // ⚠️ 必须排除字典文件本身（变异实测教训）：`"ai.code.timeout"` 在 i18n.ts 里作为**键定义**也存在，
+  // 连它一起扫的话，把 ai-flow.ts 的引用改名后用例照样绿——那正是本用例要修的空转形态。
+  const files = (await srcFiles()).filter((file) => !String(file).endsWith("/utils/i18n.ts"));
+  assert.ok(files.length > 0, "src/** 扫不到文件 ⇒ 本用例的判据本身失效");
+  const text = (await Promise.all(files.map((file) => readFile(file, "utf8")))).join("\n");
+  for (const key of codeKeys) {
+    assert.ok(text.includes('"' + key + '"'), key + " 在 src/** 里没有任何字面量引用（死键）");
+  }
 });
