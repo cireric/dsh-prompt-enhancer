@@ -416,70 +416,72 @@ export function PromptLibraryButton({
               onChange={(ev) => setQuery(ev.target.value)}
               style={FILTER}
             />
-            {loadError !== null && (
-              <span role="alert" style={ERROR}>
-                <span>{t("error.load")}</span>
-                <span style={ERROR_DETAIL} title={loadError}>
-                  {loadError}
-                </span>
-              </span>
-            )}
-            {loadError === null && prompts === null && <span style={MUTED}>{t("list.loading")}</span>}
-            {loadError === null && prompts !== null && prompts.length === 0 && (
-              <span style={MUTED}>{t("list.empty")}</span>
-            )}
-            {/* 有内容但筛不出结果：与管理面板的「搜索无结果」同一种说法（复用 `hash.empty`）。 */}
-            {loadError === null && prompts !== null && prompts.length > 0 && matched.length === 0 && (
-              <span style={MUTED}>{t("hash.empty")}</span>
-            )}
-            {loadError === null && shown.length > 0 && (
-              <span role="list" style={LIST}>
-                {shown.map((prompt) => (
-                  <span key={prompt.id} role="listitem" aria-label={prompt.title} style={ROW}>
-                    <span style={ROW_TEXT}>
-                      <span style={ROW_TITLE}>{prompt.title}</span>
-                      <span style={ROW_SUMMARY}>{promptSummary(prompt)}</span>
-                      {(prompt.summary ?? "").trim() !== "" && (prompt.tags ?? []).length > 0 && (
-                        <span style={TAGS}>
-                          {(prompt.tags ?? []).map((tag) => (
-                            <span key={tag} style={TAG}>
-                              {tag}
-                            </span>
-                          ))}
-                        </span>
-                      )}
-                    </span>
-                    <span style={ROW_ACTIONS}>
-                      {ACTIONS.map(({ mode, label }) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          style={ACTION_BUTTON}
-                          title={`${t(label)} ${prompt.title}`}
-                          aria-label={`${t(label)} ${prompt.title}`}
-                          onClick={() => choose(prompt, mode)}
-                        >
-                          {t(label)}
-                        </button>
-                      ))}
-                    </span>
+            <span style={PANEL_BODY}>
+              {loadError !== null && (
+                <span role="alert" style={ERROR}>
+                  <span>{t("error.load")}</span>
+                  <span style={ERROR_DETAIL} title={loadError}>
+                    {loadError}
                   </span>
-                ))}
-              </span>
-            )}
-            {/* 渲染上限的越界提示：整行可点，直接把用户送到真正能搜全库的地方。 */}
-            {loadError === null && hiddenCount > 0 && (
-              <button
-                type="button"
-                style={MORE}
-                onClick={() => {
-                  close();
-                  openManager();
-                }}
-              >
-                {hiddenCount}{t("list.overflow")}
-              </button>
-            )}
+                </span>
+              )}
+              {loadError === null && prompts === null && <span style={MUTED}>{t("list.loading")}</span>}
+              {loadError === null && prompts !== null && prompts.length === 0 && (
+                <span style={MUTED}>{t("list.empty")}</span>
+              )}
+              {/* 有内容但筛不出结果：与管理面板的「搜索无结果」同一种说法（复用 `hash.empty`）。 */}
+              {loadError === null && prompts !== null && prompts.length > 0 && matched.length === 0 && (
+                <span style={MUTED}>{t("hash.empty")}</span>
+              )}
+              {loadError === null && shown.length > 0 && (
+                <span role="list" style={LIST}>
+                  {shown.map((prompt) => (
+                    <span key={prompt.id} role="listitem" aria-label={prompt.title} style={ROW}>
+                      <span style={ROW_TEXT}>
+                        <span style={ROW_TITLE}>{prompt.title}</span>
+                        <span style={ROW_SUMMARY}>{promptSummary(prompt)}</span>
+                        {(prompt.summary ?? "").trim() !== "" && (prompt.tags ?? []).length > 0 && (
+                          <span style={TAGS}>
+                            {(prompt.tags ?? []).map((tag) => (
+                              <span key={tag} style={TAG}>
+                                {tag}
+                              </span>
+                            ))}
+                          </span>
+                        )}
+                      </span>
+                      <span style={ROW_ACTIONS}>
+                        {ACTIONS.map(({ mode, label }) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            style={ACTION_BUTTON}
+                            title={`${t(label)} ${prompt.title}`}
+                            aria-label={`${t(label)} ${prompt.title}`}
+                            onClick={() => choose(prompt, mode)}
+                          >
+                            {t(label)}
+                          </button>
+                        ))}
+                      </span>
+                    </span>
+                  ))}
+                </span>
+              )}
+              {/* 渲染上限的越界提示：整行可点，直接把用户送到真正能搜全库的地方。 */}
+              {loadError === null && hiddenCount > 0 && (
+                <button
+                  type="button"
+                  style={MORE}
+                  onClick={() => {
+                    close();
+                    openManager();
+                  }}
+                >
+                  {hiddenCount}{t("list.overflow")}
+                </button>
+              )}
+            </span>
           </span>
         </span>
       )}
@@ -547,17 +549,37 @@ const ANCHOR: React.CSSProperties = {
   maxWidth: "calc(100vw - 24px)",
 };
 
-/** 列表容器：设计上限 320，超出在卡内滚动。 */
+/**
+ * 面板骨架：头部（标题 / 存为提示词 / 管理）与过滤框**钉在卡内**，只有下面的 PANEL_BODY 滚动。
+ *
+ * 这条分工就是不变式本身：把 overflowY: auto 留在卡上 ⇒ 整卡滚动，长列表会把头部与筛选框
+ * 一起滚出视野（用户反馈：滚到列表后半段就看不见筛选框了）。
+ */
 const PANEL: React.CSSProperties = {
   ...overlayBase,
   display: "flex",
   flexDirection: "column",
   gap: 6,
   width: 320,
-  maxHeight: 320,
-  overflowY: "auto",
+  // 高度上限 320 → 420（用户反馈：一屏只装得下四五条）。同时留一道视口护栏——卡是向上弹的
+  // （ANCHOR 贴输入框上沿），窗口矮时不许顶出屏幕。
+  maxHeight: "min(420px, calc(100vh - 120px))",
+  overflow: "hidden",
   padding: 8,
   fontSize: 12,
+};
+
+/**
+ * 列表滚动区：本卡唯一可滚的部分（加载 / 错误 / 空态、提示词行、底部「另有 N 条」都在这里）。
+ * minHeight: 0 不可省：flex 子项的自动最小尺寸是内容高度，不覆盖它就永远不收缩、滚动不生效。
+ */
+const PANEL_BODY: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  flex: "1 1 auto",
+  minHeight: 0,
+  overflowY: "auto",
 };
 
 /** 面板头：标题 + 动作组（草稿存为提示词 / 管理）；窄面板下动作组换行，不挤掉标题。 */

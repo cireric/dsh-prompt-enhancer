@@ -56,6 +56,7 @@ import {
   textInput,
   toolbar,
 } from "../utils/dialog-style.ts";
+import { TOKEN } from "../utils/theme.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { promptSummary } from "../utils/insert.ts";
 // T7 ⑧-①：决策**只在 `applyToggleDirection` 内求值一次**，组件不再 import `toggleDirectionWrite`
@@ -325,6 +326,37 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
   );
 }
 
+/**
+ * 列表页工具行：**钉在内容区顶部**——列表滚动时搜索 / 排序 / 标签筛选不随行走。
+ *
+ * 为什么是 `position: sticky` 而不是把工具行移出滚动容器：`dialogBody` 是全仓**唯一**的弹窗滚动容器
+ * （四个页签与其余三个弹窗共用），把第 5 个消费者改成自带滚动区会让那条不变式失效；粘性头不动容器
+ * 结构，滚动条也仍贴在卡片边缘。
+ *
+ * 两组数值与 `dialogBody` 的排版**成对耦合**（改一处必须同改，否则会露出会滚动的缝）：
+ *
+ *   · `top: -12` + `paddingTop: 12` + `marginTop: -12`：抵消内容区的 12px 上内边距。静止时工具行与
+ *     不加粘性时**逐像素同位置**（实测内容偏移恒为 13）；滚动时贴齐滚动口上沿，故工具行上方不会
+ *     留出「行内容从缝里滑过」的 12px 带。
+ *   · `paddingBottom: 8` + `marginBottom: -8`：盖住 `gap: 8`，否则行内容会从工具行**下方**的缝里滑过。
+ *
+ * 两组都是「内边距盖住 + 负外边距抵消」，故静止排版与从前一致（只有盒高变大，不占额外流空间）；
+ * 上边距那一组的自平衡性也顺带给了容错：若 `dialogBody` 日后去掉上内边距，粘住时被裁掉的是本元素
+ * 自己的 12px 内边距，控件仍完整可见。
+ */
+const LIST_TOOLBAR: React.CSSProperties = {
+  ...toolbar,
+  position: "sticky",
+  top: -12,
+  // 粘性盒必须自带不透明底色并压在行之上，否则列表行会从它背后透出来。
+  zIndex: 1,
+  background: TOKEN.bg,
+  paddingTop: 12,
+  marginTop: -12,
+  paddingBottom: 8,
+  marginBottom: -8,
+};
+
 interface PromptListProps {
   t: ManagerTranslate;
   onCreate: () => void;
@@ -437,7 +469,7 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
 
   return (
     <>
-      <div style={toolbar}>
+      <div style={LIST_TOOLBAR}>
         <input
           type="search"
           aria-label={t("manager.list.search")}
