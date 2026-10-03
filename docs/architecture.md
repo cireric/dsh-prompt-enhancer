@@ -26,7 +26,7 @@ DSH web host
 ├── dsh-prompt-enhancer (host)   src/index.ts（唯一装配点，86 行）
 │   ├── export Config = PromptEnhancerSettingsSchema   ← dsh 0.2.0：设置即插件 Config
 │   ├── ctx.inject(["llm"])        → registerLlm()     缺失 ⇒ AI 路由 503，其余功能不受影响
-│   ├── ctx.inject(["webServer"]) → 单条 prefix 路由 /api/prompt-enhancer（20 条子路由）
+│   ├── ctx.inject(["webServer"]) → 单条 prefix 路由 /api/prompt-enhancer（27 条逻辑路由）
 │   ├── ctx.on("loader/volatile-update") → clearRouteCache()（改 provider/model 必须换路由）
 │   └── ctx.effect(lifecycle 日志；卸载时解绑设置面)
 │   ✗ 无 systemPrompt section   ✗ 无 agent/session 监听   ✗ 无 registerUpgrade（无 WS）
@@ -67,9 +67,11 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 ## 4. 接口面
 
-### 4.1 HTTP（单条 prefix 路由，20 条）
+### 4.1 HTTP（单条 prefix 路由，27 条）
 
-信封统一 `{ ok, data }` / `{ ok:false, error }`；AI 路由的失败信封扩为 `{ ok:false, error:{ code, message } }`（code 跨层传枚举，message 仅开发诊断）。状态码：400 参数 / 404 未找到 / 409 同名冲突 / 500 未预期 / 503 AI 或设置不可用（`routes.ts:13`）。
+信封统一 `{ ok, data }` / `{ ok:false, error }`；AI 路由的失败信封扩为 `{ ok:false, error:{ code, message } }`（code 跨层传枚举，message 仅开发诊断）。状态码：400 参数 / 403 跨源写入被拒 / 404 未找到 / 409 同名冲突 / 500 未预期 / 503 AI 或设置不可用（`routes.ts` 文件头）。
+
+**跨源写入闸**（2026-10-03，D9）：写方法（POST/PUT/DELETE）只接受同源请求——命中 `Sec-Fetch-Site: cross-site`、或 `Origin` 存在且与 `Host` 不同源（含 `Origin: null`）即 403，且**在读请求体之前**就返回。判据只认正向的跨源证据：`curl` / 脚本 / 宿主 agent 不带这些头，同源页面的写请求带 `Origin` 且与 `Host` 同值。GET 不挡（无副作用，响应本来也读不到）。
 
 | 组 | 路由 |
 |---|---|
@@ -99,9 +101,10 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 面 | 现状 | 出处 |
 |---|---|---|
 | 模型路由 | 设置里的 provider+model 优先（需核验可用）→ 否则遍历 provider、每 provider 取 `/chat\|deepseek/i` 命中的模型，去重成有序候选；30s TTL 缓存 | `ai.ts:186-224` |
-| 调用 | 全局**串行锁**（同时只允许一个 LLM 调用，防并发打爆额度）· 每候选 30s `AbortSignal` · `AI_MAX_TOKENS = 2048` · `temperature 0.4` | `ai.ts:137,88-89,341-343` |
+| 调用 | 全局**串行锁**（同时只允许一个 LLM 调用，防并发打爆额度）· 每次尝试超时 = **min(30s, 剩余预算)** · `AI_MAX_TOKENS = 2048` · `temperature 0.4` | `ai.ts#collectText`、`ai-budget.ts` |
+| 总预算 | 一次能力共享一个 `AiBudget`（`AI_TOTAL_BUDGET_MS = 110s`，**严格小于**客户端 120s）；候选轮询与诊断重试都在预算内，耗尽即停手（不再发请求）。预算从能力入口起算 ⇒ 串行锁排队也算在里面 | `ai-budget.ts`、`ai.ts#polishPromptBodyCore` |
 | 失败码 | 7 值枚举 `no-llm` / `route` / `timeout` / `empty-output` / `parse` / `schema-mismatch` / `unknown`，跨层传 code、client 走 i18n 字典（`ai.code.*`） | `ai-errors.ts:14-21` |
-| 重试 | `callLlmWithRetry`：候选轮询；诊断重试**只重试一次**（把失败原因 + 上次输出问题摘要拼进重试 prompt）。**重试不许叠加**（Issue #6 收口：技能描述符 3 轮 = 恰 3 次调用） | `ai.ts:491-501`、`ai.ts:583-623` |
+| 重试 | `callLlmWithRetry`：候选轮询；诊断重试**只重试一次**（把失败原因 + 上次输出问题摘要拼进重试 prompt），**文案按能力分形**——润色是纯文本口径（"直接输出正文"，不得出现 JSON 字样），完善/摘要/技能描述符仍要求 JSON 对象。**重试不许叠加**（Issue #6 收口：技能描述符 3 轮 = 恰 3 次调用） | `ai.ts#callLlmWithRetry`、`ai-errors.ts#failureDiagnosis` |
 | 结果缓存 | 读穿式 LRU + TTL：键 = hash(system + user + route)，TTL 30 分钟、上限 50 条、重启即清；失败不入缓存 | `ai-cache.ts:13-14,48-56` |
 | 输出后处理 | 剥套话（整体代码围栏 + 首尾套话行）**并把被剥的行写进诊断日志**；摘要 JSON 容错解析 | `text.ts:71-123` |
 | 客户端超时 | AI 路由 120s（用户裁定）· 探测 15s · 清键 15s；`TimeoutError` 按名字判定，探测超时带 `probe` 标记以区分文案 | `api.ts:11-35,141` |
@@ -131,6 +134,9 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | §13.13 | 写回缝在 store 层收口：补丁类型收窄，AI 三字段「传不进来」（而非「靠没人传」） | 本文 §3、`src/types.ts:79-89` |
 | dsh 0.2.0 迁移 | 设置从 `settingsScope` → `configForms` + `Config`；`ctx.settings.update(entryId, patch)` 取代 `register`（旧写法启动即抛，是设置页保存 503 的根因） | `src/index.ts:4-14` |
 | 首包（已交付） | 统一 AI 错误码 + 诊断注入重试 · AI 结果缓存 · 推荐相关性重排（usage ×0.15 封顶 + 草稿词硬门槛） | issues #1–#6（全 CLOSED） |
+| D9 | **跨源写入闸**：写方法只接受同源请求（403 且不读体）；宿主 webServer 无 origin/token/CSRF 守卫，故闸门落在插件路由层 | 本文 §4.1、`routes.ts#isCrossSiteWrite` |
+| D10 | **AI 总预算**：一次能力共享 110s 墙钟预算（< 客户端 120s），每次尝试 = min(30s, 剩余)，耗尽即停手；诊断文案按能力分形（润色=纯文本） | 本文 §5、`ai-budget.ts`、`ai-errors.ts` |
+| D11 | **超限响应先于关连接**：5 MB 闸不得先 `req.destroy()`（会连 socket 一起拆，客户端只见 EPIPE）；改为停止读取 + `Connection: close`，让 400 正常写出 | 本文 §4.1、`routes.ts#readBody` |
 
 ---
 
