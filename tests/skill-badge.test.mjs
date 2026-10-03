@@ -374,14 +374,24 @@ test("多余键丢弃（T7 ④ 补的用例）：meta 里多出来的字段一�
   assert.deepEqual(Object.keys(twoFields), ["name", "description"]);
 });
 
-test("丢弃 ≠ 拒绝（P8 T5 独立反面对照）：未知键与缺必填字段分属两侧，各自单独可判假", () => {
+test("丢弃 ≠ 拒绝（P8 T5 独立反面对照）：未知键与缺必填字段分属两侧，各自单独可判假", async () => {
   // 修前这条「反面对照」挂在上面那条用例里、复用的正是它刚断言过的 `withExtras`：那条断言被前一条
   // `deepEqual` 蕴含（withExtras 若是 undefined，上面先红），它自己永远不可能是首先失败的那条，等于
   // 没断言。现在自己造输入、自己给期望值，且是**独立用例**——与任何前序用例无状态耦合。
-  assert.equal(
+  // 拒绝侧同样要断言「可见告警」：`parseStoredDescriptor` 本身就是打告警的那一层，
+  // 直接调它而不过捕获，这条告警就会以裸文本混进 `npm test` 的输出（2026-10-03 收尾时发现的漏网）。
+  const rejectWarns = [];
+  const rejected = await withCapturedWarn(rejectWarns, async () =>
     exportUtils.parseStoredDescriptor('{"extra":1,"whenToUse":"只有多余键、没有必填字段"}'),
+  );
+  assert.equal(
+    rejected,
     undefined,
     "拒绝侧：缺 name/description ⇒ 形状不符（不得因为「多了个 whenToUse」就放行）",
+  );
+  assert.ok(
+    rejectWarns.some((w) => w.includes("形状不符")),
+    "拒绝侧必须留下可见告警，实收 " + JSON.stringify(rejectWarns),
   );
   assert.deepEqual(
     exportUtils.parseStoredDescriptor('{"name":"solo","description":"独立输入","nested":{"a":1}}'),
