@@ -25,13 +25,28 @@ export interface RootRef {
  * 挂「点浮层外部收起」监听：`active` 为假时不挂（对应各面自己的门）。
  * 命中判定 = `ev.target` 不在 `rootRef.current` 之内；根节点尚未挂载（`null`）时一律视为「外部」。
  */
+/** 命中判定所需的窄接口：只要一个 `contains`（测试可传假对象，不必有 DOM）。 */
+export interface ContainsRoot {
+  contains(node: unknown): boolean;
+}
+
+/**
+ * 「这一下算不算点在浮层外面」——抽成纯函数以便用 `node --test` 钉住：hook 本体要 react + DOM（本仓都
+ * 没有），但这条判定不需要。`isNode` 由调用方给（宿主里就是 `(v) => v instanceof Node`），
+ * 免得本模块静态依赖 DOM 全局。
+ *
+ * 语义与搬迁前逐字一致：根节点为 `null`、或 `target` 不是节点、或不在根节点内 ⇒ 都算「外面」。
+ */
+export function isOutside(root: ContainsRoot | null, target: unknown, isNode: (value: unknown) => boolean): boolean {
+  return !(root !== null && isNode(target) && root.contains(target));
+}
+
 export function useDismissOnOutside(rootRef: RootRef, active: boolean, onDismiss: () => void): void {
   const { useEffect } = hooks();
   useEffect(() => {
     if (!active) return;
     const onPointerDown = (ev: PointerEvent): void => {
-      const root = rootRef.current;
-      if (root !== null && ev.target instanceof Node && root.contains(ev.target)) return;
+      if (!isOutside(rootRef.current, ev.target, (v) => v instanceof Node)) return;
       onDismiss();
     };
     document.addEventListener("pointerdown", onPointerDown, true);

@@ -121,7 +121,8 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
 
   // 重拉**不清空**列表（不清成 null / []）：导出过程中列表不该闪一下「加载中」；首帧本来就是 null。
   // 读整库（技能导出的候选就是**全部**提示词；标签筛选在客户端做，与列表页的服务端筛选是两条独立路径）。
-  const { items: prompts, error: loadError, setItems: setPrompts } = useAsyncList(() => api.listPrompts(), [reloadSeq], { label: "技能导出：提示词加载失败", clearErrorOnStart: true });
+  const loadPrompts = React.useCallback(() => api.listPrompts(), [reloadSeq]);
+  const { items: prompts, error: loadError, setItems: setPrompts } = useAsyncList(loadPrompts, { label: "技能导出：提示词加载失败", clearErrorOnStart: true });
 
   const list = prompts ?? [];
   const visible = React.useMemo(() => filterByTag(list, tag), [list, tag]);

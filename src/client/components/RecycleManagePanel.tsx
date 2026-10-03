@@ -68,7 +68,8 @@ export function RecycleManagePanel({ t }: RecycleManagePanelProps): React.ReactE
   useDataChanged(() => setReloadSeq((n) => n + 1));
 
   // 重拉**不清**旧错误行（`clearErrorOnStart` 缺省 false）：本仓两处刻意让旧提示留到重拉成功。
-  const { items, error: loadError } = useAsyncList(() => api.listTrash(), [reloadSeq], { label: "回收站加载失败" });
+  const loadTrash = React.useCallback(() => api.listTrash(), [reloadSeq]);
+  const { items, error: loadError } = useAsyncList(loadTrash, { label: "回收站加载失败" });
 
   /** 开始一次写动作前的统一收口：旧提示清掉（忙标记由各动作自己置位）。 */
   const begin = (): void => {

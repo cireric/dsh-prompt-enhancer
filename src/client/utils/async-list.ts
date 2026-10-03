@@ -25,9 +25,8 @@ export interface AsyncListOptions {
   /**
    * 为假时不拉。缺省为真。
    *
-   * ⚠️ 它**必须与 `deps` 里某个值同源**（例：`active: open` 配 `[open]`）：`active` 变化本身不会触发重跑，
-   * 重跑只由 `deps` 驱动——若写成别的值，就是「参数看着对、界面却不更新」的静默失效（面板停在旧列表，
-   * 连错误行都不会有）。
+   * 它就是 hook 内部的一个依赖：调用点传什么值，`active` 就跟着它变——`active: open` 时开关面板即触发/停止
+   * 拉取，不需要在别处再声明一次（这正是「依赖数组收进 hook」后的收益）。
    */
   active?: boolean;
   /** 起手把列表清成 `null`。缺省 false（多数站点刻意不清，避免重拉闪一下「加载中」）。 */
@@ -47,21 +46,47 @@ export interface AsyncListResult<T> {
 /**
  * 拉取一个列表并维护 `{ items, error }`：`deps` 变化时重拉（`active` 为假则完全不拉）。
  *
- * ⚠️ `deps` 是**显式传入**的依赖数组（与 `React.useEffect` 同语义）：调用点的 `load` 通常是内联箭头，
- * 每次渲染都是新函数——把它放进依赖就会变成重拉循环，这正是各站点只传变量依赖的原因。
+ * ⚠️ `load` **必须是稳定引用**：调用点用 `React.useCallback` 包住它，并把「什么时候该重拉」写进它的依赖数组
+ * （例：`React.useCallback(() => api.listTags(), [reloadSeq])`）。hook 内部把 `load` 与各选项当依赖，
+ * 于是「看不见的依赖数组」这个概念从调用点消失——读者用 React 自己的 `useCallback` 契约就能读懂。
  */
+/** 选项解析后的形态（把「缺省值」与「只有 `=== true` 才算」的判定收在一处，便于单测钉住）。 */
+export interface ResolvedAsyncListOptions {
+  label: string;
+  active: boolean;
+  clearOnStart: boolean;
+  clearErrorOnStart: boolean;
+}
+
+/**
+ * 解析选项：只有 `active` 缺省为真（判定是 `!== false`），两个 `clear*` 缺省为假（必须显式传 `true`）。
+ * 这三条判定此前散在 hook 体内、没有任何判据——抽出来就是为了能被 `tests/async-list.test.mjs` 钉住。
+ */
+export function resolveOptions(options: AsyncListOptions): ResolvedAsyncListOptions {
+  return {
+    label: options.label,
+    active: options.active !== false,
+    clearOnStart: options.clearOnStart === true,
+    clearErrorOnStart: options.clearErrorOnStart === true,
+  };
+}
+
+/**
+ * 失败态的归一：**列表一定是空数组**（不是 `null`——`null` 在调用点表示「还没落地」，写成 `null` 会让界面
+ * 永远显示加载中）。错误行交给 `reasonOf`。
+ */
+export function failureState<T>(err: unknown): { items: T[]; error: string } {
+  return { items: [], error: reasonOf(err) };
+}
+
 export function useAsyncList<T>(
   load: () => Promise<T[]>,
-  deps: unknown[],
   options: AsyncListOptions,
 ): AsyncListResult<T> {
   const { useState, useEffect } = hooks();
   const [items, setItems] = useState<T[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const active = options.active !== false;
-  const clearOnStart = options.clearOnStart === true;
-  const clearErrorOnStart = options.clearErrorOnStart === true;
-  const label = options.label;
+  const { label, active, clearOnStart, clearErrorOnStart } = resolveOptions(options);
   useEffect(() => {
     if (!active) return;
     let alive = true;
@@ -76,13 +101,14 @@ export function useAsyncList<T>(
       (err: unknown) => {
         if (!alive) return;
         console.warn("[prompt-enhancer] " + label, err);
-        setItems([]);
-        setError(reasonOf(err));
+        const failed = failureState<T>(err);
+        setItems(failed.items);
+        setError(failed.error);
       },
     );
     return () => {
       alive = false;
     };
-  }, deps);
+  }, [load, active, clearOnStart, clearErrorOnStart, label]);
   return { items, error, setItems };
 }

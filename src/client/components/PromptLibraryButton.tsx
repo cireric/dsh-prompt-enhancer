@@ -149,13 +149,15 @@ export function PromptLibraryButton({
   }, [open, settings.showComposerButton]);
 
   // 每次打开都重新拉取（列表可能在管理面板里被改过）。
-  // 只依赖 open：失败文案的本地化由渲染期的 t 负责，把它放进依赖会让
+  // 依赖全部写在 loadPrompts 的 useCallback 里（空数组）：失败文案的本地化由渲染期的 t 负责，
   // 「t 身份不稳定」的实现变成重拉循环。
-  const { items: prompts, error: loadError, setItems: setPrompts } = useAsyncList(
-    () => api.listPrompts({ sort: "default" }),
-    [open],
-    { label: "提示词列表加载失败", active: open, clearOnStart: true, clearErrorOnStart: true },
-  );
+  const loadPrompts = React.useCallback(() => api.listPrompts({ sort: "default" }), []);
+  const { items: prompts, error: loadError, setItems: setPrompts } = useAsyncList(loadPrompts, {
+    label: "提示词列表加载失败",
+    active: open,
+    clearOnStart: true,
+    clearErrorOnStart: true,
+  });
 
   // 点浮层外收起（三处浮层共用同一实现，见 utils/dismiss-outside.ts；宿主标准 props 没有这个座位，
   // 与官方 ui-commands 的 PopupSelectView 同款：document 捕获阶段的纯监听，不改宿主 DOM）。

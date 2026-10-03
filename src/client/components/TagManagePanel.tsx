@@ -64,7 +64,8 @@ export function TagManagePanel({ t }: TagManagePanelProps): React.ReactElement {
   useDataChanged(() => setReloadSeq((n) => n + 1));
 
   // 重拉**不清**旧错误行（`clearErrorOnStart` 缺省 false）：本仓两处刻意让旧提示留到重拉成功。
-  const { items: tags, error: loadError } = useAsyncList(() => api.listTags(), [reloadSeq], { label: "标签加载失败" });
+  const loadTags = React.useCallback(() => api.listTags(), [reloadSeq]);
+  const { items: tags, error: loadError } = useAsyncList(loadTags, { label: "标签加载失败" });
 
   /** 开始一次写动作前的统一收口：旧提示清掉，忙标记置位。 */
   const begin = (): void => {

@@ -375,9 +375,11 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
   // 同进程数据同步（D6，无 WebSocket）：任何增删改成功后重拉列表与标签。
   useDataChanged(() => setReloadSeq((n) => n + 1));
 
-  const { items: prompts, error: loadError } = useAsyncList(
+  const loadPrompts = React.useCallback(
     () => api.listPrompts({ q: applied.trim() || undefined, tag: tag || undefined, sort }),
     [applied, tag, sort, reloadSeq],
+  );
+  const { items: prompts, error: loadError } = useAsyncList(loadPrompts,
     { label: "提示词列表加载失败", clearOnStart: true, clearErrorOnStart: true },
   );
 
