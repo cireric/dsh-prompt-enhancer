@@ -18,7 +18,12 @@
  * 依赖面刻意收窄：本文件不 import cordis / 宿主服务，跑 `node --test` 时直接调用即可。
  */
 import z from "@deepseek-ai/schemastery";
-import { normalizeSettings, SETTINGS_NAMESPACE as CONFIG_NAMESPACE } from "../settings-shape.ts";
+import {
+  MAX_PROMPT_COUNT_BOUNDS,
+  normalizeSettings,
+  PANEL_SIZE_BOUNDS,
+  SETTINGS_NAMESPACE as CONFIG_NAMESPACE,
+} from "../settings-shape.ts";
 import { DEFAULT_SETTINGS, type PluginSettings } from "../types.ts";
 
 /**
@@ -30,8 +35,8 @@ export { CONFIG_NAMESPACE };
 
 /** 插件 Config（0.2.0 契约）：13 个字段全部 volatile，设置页热编辑、变更经事件推送。 */
 export const PromptEnhancerSettingsSchema = z.object({
-  panelWidth: z.number().step(1).min(200).max(2000).default(DEFAULT_SETTINGS.panelWidth).volatile(),
-  panelHeight: z.number().step(1).min(200).max(2000).default(DEFAULT_SETTINGS.panelHeight).volatile(),
+  panelWidth: z.number().step(1).min(PANEL_SIZE_BOUNDS.min).max(PANEL_SIZE_BOUNDS.max).default(DEFAULT_SETTINGS.panelWidth).volatile(),
+  panelHeight: z.number().step(1).min(PANEL_SIZE_BOUNDS.min).max(PANEL_SIZE_BOUNDS.max).default(DEFAULT_SETTINGS.panelHeight).volatile(),
   showComposerButton: z.boolean().default(DEFAULT_SETTINGS.showComposerButton).volatile(),
   composerButtonIconOnly: z.boolean().default(DEFAULT_SETTINGS.composerButtonIconOnly).volatile(),
   showAIPolishButton: z.boolean().default(DEFAULT_SETTINGS.showAIPolishButton).volatile(),
@@ -40,7 +45,7 @@ export const PromptEnhancerSettingsSchema = z.object({
   contextRecommendEnabled: z.boolean().default(DEFAULT_SETTINGS.contextRecommendEnabled).volatile(),
   selectionAddEnabled: z.boolean().default(DEFAULT_SETTINGS.selectionAddEnabled).volatile(),
   showSidebarButton: z.boolean().default(DEFAULT_SETTINGS.showSidebarButton).volatile(),
-  maxPromptCount: z.number().step(1).min(1).max(10000).default(DEFAULT_SETTINGS.maxPromptCount).volatile(),
+  maxPromptCount: z.number().step(1).min(MAX_PROMPT_COUNT_BOUNDS.min).max(MAX_PROMPT_COUNT_BOUNDS.max).default(DEFAULT_SETTINGS.maxPromptCount).volatile(),
   aiProvider: z.string().default(DEFAULT_SETTINGS.aiProvider).volatile(),
   aiModel: z.string().default(DEFAULT_SETTINGS.aiModel).volatile(),
 });

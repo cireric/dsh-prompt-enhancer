@@ -20,6 +20,7 @@
  * 真正的受害者名单由 `store.enforceMaxCount` 决定）。
  */
 import { clampTitle, type Prompt } from "../../types.ts";
+import { firstNonEmptyLine } from "../../first-line.ts";
 import { deletePrompts } from "./prompt-meta.ts";
 import { api } from "./api.ts";
 import { requestConfirm } from "./confirm.ts";
@@ -42,12 +43,6 @@ export interface CaptureInput {
 export type CaptureOutcome =
   | { ok: true; prompt: Prompt; evicted: string[] }
   | { ok: false; reason: "cancelled" };
-
-/** 标题兜底：没给标题（或只有空白）时取正文**首个非空行**（与 `ai-flow#libraryCreateInput` 同口径）。 */
-function fallbackTitle(body: string): string {
-  const firstLine = body.split(/\r\n|\n|\r/).find((line) => line.trim() !== "") ?? "";
-  return firstLine.trim();
-}
 
 /** 创建一条提示词（超限时先二次确认）并广播数据变更。 */
 export async function createFromCapture(input: CaptureInput): Promise<CaptureOutcome> {
@@ -90,7 +85,7 @@ export async function createFromCapture(input: CaptureInput): Promise<CaptureOut
 
   // 4) 落库（失败上抛）；结果提示以响应里的 evicted 为准。
   const created = await api.createPrompt({
-    title: clampTitle((input.title ?? "").trim() || fallbackTitle(input.body)),
+    title: clampTitle((input.title ?? "").trim() || firstNonEmptyLine(input.body)),
     body: input.body,
     tags: input.tags,
     summary: input.summary,

@@ -15,8 +15,9 @@
  * 宿主 `src/host/skills.ts` 改为 import + **re-export**——既有导出面逐字不变。
  *
  * ⚠️ `body.split("\n")` 是**刻意保留**的既有行为：`\r`-only 正文不切分（整串当作一个「首行」再 trim）。
- * `ai-flow.ts#libraryCreateInput` 用的是 `split(/\r\n|\n|\r/)`，同一仓里两种口径——统一它是**产品行为
- * 变化**（`\r`-only 正文的 description 取值会变），不是重构，故不在这里顺手做。
+ * 另外三处（`capture.ts` / `ai-flow.ts` / `PromptManagerModal.tsx`）已在审查 #7 收敛到
+ * `src/first-line.ts#firstNonEmptyLine`（方言 `/\r\n|\n|\r/`）；本处**不跟着换**——统一它是**产品行为
+ * 变化**（`\r`-only 正文的 description 取值会变），不是重构，故单独决策。
  */
 
 /** 兜底链只读这三个字段：宿主 `SkillPromptLike` 与客户端 `SkillCandidate` 都结构兼容。 */

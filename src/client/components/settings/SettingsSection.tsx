@@ -21,7 +21,7 @@ import * as React from "react";
 import type { PropsLocale, PropsRuntime, TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
 // type-only：拉入 ui-settings 的 SlotMap 合并（'settings.section' 座位与 SettingsSectionOwnerProps）
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
-import { SETTINGS_KEYS } from "../../../settings-shape.ts";
+import { MAX_PROMPT_COUNT_BOUNDS, PANEL_SIZE_BOUNDS, SETTINGS_KEYS } from "../../../settings-shape.ts";
 import type { PluginSettings } from "../../../types.ts";
 import { type AiSelectable, api } from "../../utils/api.ts";
 import { errorDetail, errorText, muted, select, textInput } from "../../utils/dialog-style.ts";
@@ -29,12 +29,11 @@ import { updateSettings, useSettings } from "../../utils/settings-store.ts";
 import { TOKEN } from "../../utils/theme.ts";
 import { reasonOf } from "../../../err-text.ts";
 
-/** 一行的数值边界（与宿主 schema 逐格同值：`src/host/settings.ts:37-38,47` 的 step/min/max）。 */
+/**
+ * 一行的数值边界**类型**。值一律从 `src/settings-shape.ts` 取（审查 #7）——本文件此前手抄了两份
+ * 字面量，与宿主 schema 同值但无任何判据，漂移是静默的。
+ */
 interface NumberBounds { min: number; max: number }
-/** 面板宽 / 高：宿主 schema `z.number().step(1).min(200).max(2000)`。 */
-const PANEL_SIZE_BOUNDS: NumberBounds = { min: 200, max: 2000 };
-/** 存储上限：宿主 schema `z.number().step(1).min(1).max(10000)`（超限淘汰在宿主侧）。 */
-const MAX_PROMPT_COUNT_BOUNDS: NumberBounds = { min: 1, max: 10000 };
 
 /** 一次写入失败的可读面：固定文案（走 `t`）+ 宿主原文（同一份进控制台）。 */
 interface WriteFailure { message: string; detail: string }

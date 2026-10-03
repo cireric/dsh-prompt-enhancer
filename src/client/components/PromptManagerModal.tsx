@@ -19,6 +19,7 @@ import {
   type PromptSort,
   type PromptWritablePatch,
 } from "../../types.ts";
+import { firstNonEmptyLine } from "../../first-line.ts";
 import { canToggle } from "../utils/ai-flow.ts";
 import { deletePrompts } from "../utils/prompt-meta.ts";
 import { ApiError, api } from "../utils/api.ts";
@@ -133,12 +134,6 @@ function parseTagList(text: string): string[] {
     if (tag !== "" && !out.includes(tag)) out.push(tag);
   }
   return out;
-}
-
-/** 标题兜底：用户没填时取正文**首个非空行**（与 `ai-flow#libraryCreateInput` 同口径）。 */
-function fallbackTitle(body: string): string {
-  const firstLine = body.split(/\r\n|\n|\r/).find((line) => line.trim() !== "") ?? "";
-  return firstLine.trim();
 }
 
 /**
@@ -680,7 +675,7 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     const editing = current;
     // 白名单字段（PromptWritablePatch）：标题走 clampTitle + 首行兜底，标签按逗号切分。
     const input: PromptWriteInput = {
-      title: clampTitle(title.trim() || fallbackTitle(body)),
+      title: clampTitle(title.trim() || firstNonEmptyLine(body)),
       body,
       tags: parseTagList(tagsText),
       summary: summary.trim(),

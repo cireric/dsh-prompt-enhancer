@@ -9,6 +9,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 const settings = await import("../src/host/settings.ts");
+const shape = await import("../src/settings-shape.ts");
 const { DEFAULT_SETTINGS } = await import("../src/types.ts");
 
 /** 把普通对象包成 volatile 引用形态（resolvePluginSettings 只认 ref.get()）。 */
@@ -140,4 +141,20 @@ test("schema：空输入给出全部 13 个默认值，越界值被拦下", () =
   assert.equal(resolved.maxPromptCount.get(), DEFAULT_SETTINGS.maxPromptCount);
   assert.throws(() => settings.PromptEnhancerSettingsSchema({ panelWidth: 99999 }), /expected number/);
   assert.throws(() => settings.PromptEnhancerSettingsSchema({ maxPromptCount: 0 }), /expected number/);
+});
+
+test("边界单一真源（#7）：宿主 schema 的收发边界就是 settings-shape 的那两个常量", () => {
+  // 判据是**两侧同值**：改 schema 的 .min/.max 而不改常量（或反过来）必须在这里红，
+  // 否则界面允许输入的数值与宿主实际收下的数值会静默分叉。
+  const width = (v) => settings.PromptEnhancerSettingsSchema({ panelWidth: v }).panelWidth.get();
+  assert.equal(width(shape.PANEL_SIZE_BOUNDS.min), shape.PANEL_SIZE_BOUNDS.min, "下界必须被 schema 接受");
+  assert.equal(width(shape.PANEL_SIZE_BOUNDS.max), shape.PANEL_SIZE_BOUNDS.max, "上界必须被 schema 接受");
+  assert.throws(() => width(shape.PANEL_SIZE_BOUNDS.min - 1), /expected number/, "下界 −1 必须被拒");
+  assert.throws(() => width(shape.PANEL_SIZE_BOUNDS.max + 1), /expected number/, "上界 +1 必须被拒");
+
+  const count = (v) => settings.PromptEnhancerSettingsSchema({ maxPromptCount: v }).maxPromptCount.get();
+  assert.equal(count(shape.MAX_PROMPT_COUNT_BOUNDS.min), shape.MAX_PROMPT_COUNT_BOUNDS.min);
+  assert.equal(count(shape.MAX_PROMPT_COUNT_BOUNDS.max), shape.MAX_PROMPT_COUNT_BOUNDS.max);
+  assert.throws(() => count(shape.MAX_PROMPT_COUNT_BOUNDS.min - 1), /expected number/);
+  assert.throws(() => count(shape.MAX_PROMPT_COUNT_BOUNDS.max + 1), /expected number/);
 });

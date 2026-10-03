@@ -32,6 +32,16 @@ export const SETTINGS_KEYS = [
   "maxPromptCount",
 ] as const satisfies readonly (keyof PluginSettings)[];
 
+/**
+ * 两个数值字段的边界——**唯一真源**（审查 #7）：宿主 schema（`host/settings.ts`）与客户端设置页的
+ * 数值控件（`SettingsSection`）都读这里。
+ *
+ * 收口前两侧各写一份字面量（`{ min: 200, max: 2000 }` / `{ min: 1, max: 10000 }`）：今天同值，
+ * 漂移却是**静默**的——界面允许输入 5000、宿主 schema 拒收，用户只会看到一次保存失败。
+ */
+export const PANEL_SIZE_BOUNDS = { min: 200, max: 2000 } as const;
+export const MAX_PROMPT_COUNT_BOUNDS = { min: 1, max: 10000 } as const;
+
 function pickNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
