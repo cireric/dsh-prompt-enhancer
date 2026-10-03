@@ -117,3 +117,12 @@ console.log(
   "link-dsh-deps: linked " + linked + " @deepseek-ai/* packages"
   + " (healed " + healed + ", unresolved " + unresolved + ")",
 );
+
+// 悬空且没找回的包必须**显式失败**：本脚本存在的唯一理由就是让 tsc 能解析这些包，
+// 「unresolved 却 exit 0」会把「tsc 马上要红」藏成输出里的一句话——串联脚本与 CI 都不看它。
+if (unresolved > 0) {
+  console.error(
+    "link-dsh-deps: " + unresolved + " 个包仍是悬空链接（checkout 里没找到同名源码），tsc 会解析失败",
+  );
+  process.exitCode = 1;
+}

@@ -60,6 +60,12 @@ if (clientSrc === null) {
     fail("lib/client.js 缺少纯净的 { apply, inject } 导出重写（检查 build.mjs 的 footer）");
   } else ok("lib/client.js 含 { apply, inject } 导出重写");
 
+  // 硬约束 4 的第二道闸（build.mjs 的 forbidBundledDshPackages 是第一道）：产物里不得出现
+  // 宿主包的运行时 require——它们必须由加载器在运行时解析，打进产物即版本耦合。
+  if (/require\(\s*["']@deepseek-ai\//.test(clientSrc)) {
+    fail("lib/client.js 出现 @deepseek-ai/* 的运行时 require（宿主包必须 external）");
+  } else ok("lib/client.js 无 @deepseek-ai/* 运行时 require");
+
   // 在受控沙箱中真实执行 bundle，捕获 __ModuleLoader__.load 的入参
   let captured = null;
   const fakeWindow = { __ModuleLoader__: { load: (entry) => { captured = entry; } } };
