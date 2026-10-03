@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeDispatch } from "./helpers/fake-http.mjs";
+import { makeDispatch, fakeReq, fakeRes } from "./helpers/fake-http.mjs";
 
 test("R1+R2 负样本：skillExportedAt 有限数字校验 + 请求体 5MB 上限（真分发）", async () => {
   const home = mkdtempSync(join(tmpdir(), "dpe-body-limits-"));
@@ -55,6 +55,23 @@ test("R1+R2 负样本：skillExportedAt 有限数字校验 + 请求体 5MB 上�
     const tooBig = await dispatch("POST", "/prompts", huge);
     assert.equal(tooBig.status, 400, "超限请求体必须被拒");
     assert.ok(tooBig.envelope.error.includes("上限"), "错误信息须说明是体积超限");
+
+    // ── R2 负样本（多块累计）：单块不超、跨块累计超限 → 400 ──
+    // 单块夹具测不到这条：旧实现的累计逻辑只在「同一块内」被触发过。
+    const half = "x".repeat(3 * 1024 * 1024);
+    const multi = await dispatch("POST", "/prompts", ['{"body":"' + half, half + '"}']);
+    assert.equal(multi.status, 400, "跨 chunk 累计超限必须被拒");
+    assert.ok(multi.envelope.error.includes("上限"));
+
+    // ── R2 负样本（响应先于关连接）：不得在写出响应前 destroy 请求流 ──
+    // 旧实现先 `req.destroy()` ——真实 socket 一并被拆，客户端只拿到 EPIPE（实测），
+    // 文档承诺的 400 永远到不了。夹具的 destroy 只记账，故这条断言真的在守那个顺序。
+    const req = fakeReq("POST", API_PREFIX + "/prompts", huge);
+    const res = fakeRes();
+    await makeRoutes()[0].handler(req, res);
+    assert.equal(res.statusCode, 400, "超限必须先产出 400 响应");
+    assert.equal(req.destroyCalls, 0, "写出响应前不得 destroy 请求流（会把 socket 一起拆掉）");
+    assert.equal(res.headers.Connection, "close", "超限响应必须带 Connection: close（剩余上传由关连接兜住）");
 
     // ── R2 后进程仍正常服务（destroy 不炸假夹具，路由层未被污染） ──
     const after = await dispatch("POST", "/prompts", { title: "正常", body: "第二条" });

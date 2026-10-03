@@ -15,22 +15,47 @@
  */
 
 /**
- * 假 IncomingMessage：`readBody` 用 `for await` 读它，故实现 async 迭代器。
- * body 传**字符串**时按原样发送（负样本要用 `1e999` 这类 JSON.parse 后为 Infinity 的字面量，
- * 而 JSON.stringify 对非有限数字只会产出 null，走对象通道送不进去）。
+ * 假 IncomingMessage：既是**事件流**（`on("data"|"end"|"error")`）也是**异步可迭代**
+ * ——与真实 `IncomingMessage` 同形，故被测代码换读取通道时夹具不必跟着改。
+ *
+ * body 形态：
+ *   - 字符串 → 原样发送（负样本要用 `1e999` 这类 JSON.parse 后为 Infinity 的字面量，
+ *     而 JSON.stringify 对非有限数字只会产出 null，走对象通道送不进去）；
+ *   - 对象 → JSON.stringify 后发送；
+ *   - **数组 → 逐块发送**（跨 chunk 累计上限只有多块夹具才测得到）。
+ *
+ * `destroy()` 只**记账**不真拆：真实实现的 destroy 会连底层 socket 一起拆掉，而「响应必须先于
+ * 关连接产出」正是要在夹具上断言的不变量（`destroyCalls`）。
  */
-export function fakeReq(method, url, body) {
-  const chunks = body === undefined
-    ? []
-    : [Buffer.from(typeof body === "string" ? body : JSON.stringify(body), "utf8")];
-  return {
+export function fakeReq(method, url, body, headers = {}) {
+  const parts = (body === undefined ? [] : Array.isArray(body) ? body : [body]).map((one) =>
+    Buffer.from(typeof one === "string" ? one : JSON.stringify(one), "utf8"),
+  );
+  const listeners = new Map([["data", new Set()], ["end", new Set()], ["error", new Set()]]);
+  const req = {
     method,
     url,
-    destroy() {}, // 与真实 IncomingMessage 同形：超限路径会调它掐断上传
+    headers,
+    /** 真实 destroy 会拆 socket；夹具只记账，供「超限响应先于关连接」断言。 */
+    destroyCalls: 0,
+    paused: false,
+    destroy() { req.destroyCalls++; },
+    pause() { req.paused = true; },
+    on(type, fn) { listeners.get(type)?.add(fn); return req; },
+    off(type, fn) { listeners.get(type)?.delete(fn); return req; },
     async *[Symbol.asyncIterator]() {
-      for (const chunk of chunks) yield chunk;
+      for (const part of parts) yield part;
     },
   };
+  // 监听器由 handler **同步**挂上，故投喂放微任务：不早于挂载，也不引入定时器。
+  queueMicrotask(() => {
+    for (const part of parts) {
+      if (req.paused) return; // 超限路径：pause 之后不再投喂剩余块
+      for (const fn of [...listeners.get("data")]) fn(part);
+    }
+    for (const fn of [...listeners.get("end")]) fn();
+  });
+  return req;
 }
 
 /** 假 ServerResponse：只实现分发层真正用到的三件事。 */
@@ -54,9 +79,9 @@ export function fakeRes() {
  * ——与三处原实现**逐字同形**（含 `JSON.parse(res.body)`），故调用方的断言不受影响。
  */
 export function makeDispatch({ makeRoutes, API_PREFIX }) {
-  return async function dispatch(method, path, body) {
+  return async function dispatch(method, path, body, headers = {}) {
     const res = fakeRes();
-    await makeRoutes()[0].handler(fakeReq(method, API_PREFIX + path, body), res);
+    await makeRoutes()[0].handler(fakeReq(method, API_PREFIX + path, body, headers), res);
     return { status: res.statusCode, envelope: JSON.parse(res.body) };
   };
 }

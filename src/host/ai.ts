@@ -6,6 +6,8 @@
  * - **不 import store**：需要标签库/已有变量时由调用方传参（P3-D12），故本模块除注入的
  *   runtime 外零副作用，纯文本处理全部落在 `text.ts` / `refine.ts` 以便单测；
  * - 单点网络出口 `collectText()`：所有能力都经它 → `withLlmLock` 全局串行；
+ * - **总预算**（R3）：一次能力共享一个 `AiBudget`，每次尝试的超时 = min(30s, 剩余预算) ⇒
+ *   候选轮询与诊断重试再多也超不过 110s（客户端 AI 超时 120s），排队等待也算在内；
  * - 失败一律**带跨层 code**（`ai-errors.ts`，T3）：能力层返回 `{ ok:false, code }`，
  *   由路由层转 503 + 结构化信封，绝不上抛打断宿主。
  * - 结果缓存（Issue #3 / T2a 接入收尾）：只缓存**纯读**的润色与一键完善；键含 route 维度，
@@ -31,11 +33,13 @@ declare module "@deepseek-ai/dsh-llm" {
 }
 import { logDir } from "./paths.ts";
 import { aiResultCache, hashCacheKey } from "./ai-cache.ts";
+import { attemptTimeoutMs, startAiBudget, type AiBudget } from "./ai-budget.ts";
 import {
   attemptFailure,
   withDiagnosticRetry,
   type AiAttempt,
   type AiErrorCode,
+  type DiagnosisExpectation,
 } from "./ai-errors.ts";
 import { parseRefineResult, type AiRefineResult } from "./refine.ts";
 import { extractVariables, parseSummaryJson, stripAiFillerDetailed } from "./text.ts";
@@ -85,7 +89,6 @@ export interface PolishWithSummary {
   summary?: string;
 }
 
-const AI_TIMEOUT_MS = 30_000;
 const AI_MAX_TOKENS = 2048;
 const ROUTE_CACHE_TTL_MS = 30_000;
 const SKILL_DESCRIBE_ATTEMPTS = 3;
@@ -319,7 +322,7 @@ function skillSystemPrompt(vars: string[]): string {
 /**
  * 单次调用：把流式分片拼成纯文本。失败返回**结构化失败形态**（code + 单行 detail，T3）：
  * - 流抛错 / finish=error 等未归类失败 → `unknown`；
- * - finish=aborted（30s 超时到点）或 finish.failure.code === "timeout" → `timeout`；
+ * - finish=aborted（**本次尝试**的超时到点，超时值由预算给出）或 finish.failure.code === "timeout" → `timeout`；
  * - 调用「成功」但没文本 → `empty-output`。
  */
 async function collectText(
@@ -327,6 +330,7 @@ async function collectText(
   route: AiRoute,
   system: string,
   content: string,
+  timeoutMs: number,
 ): Promise<AiAttempt> {
   const options: GenerateOptions = {
     provider: route.provider,
@@ -340,7 +344,7 @@ async function collectText(
     system,
     maxTokens: AI_MAX_TOKENS,
     temperature: 0.4,
-    signal: AbortSignal.timeout(AI_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   };
 
   const assembler = new BlockAssembler();
@@ -385,13 +389,17 @@ async function collectText(
  * 按候选顺序轮询，第一个成功即采用；全部失败返回**最后一次**的失败形态（T3）。
  * 可选的 `diagnosis`（上次失败诊断）拼进本轮每次调用的 user 消息——由
  * `withDiagnosticRetry` 在整层轮询外注入，本函数不感知重试语义。
+ *
+ * `budget`（R3）：**每次尝试前**取一次超时；返回 0 = 预算耗尽 ⇒ 停止轮询，不再碰后面的候选
+ * （「再试一个 provider」与「用户还在等」是同一件事的两面：预算没了就不许再发请求）。
  */
 async function attemptAllCandidates(
   runtime: LlmRuntime,
   candidates: AiRoute[],
   system: string,
   content: string,
-  diagnosis?: string,
+  diagnosis: string | undefined,
+  budget: AiBudget,
 ): Promise<AiAttempt> {
   if (candidates.length === 0) {
     logAI("fallback: no candidates");
@@ -400,8 +408,13 @@ async function attemptAllCandidates(
   const actualContent = diagnosis ? `${content}\n\n${diagnosis}` : content;
   let lastFailure = attemptFailure("unknown", "fallback: all failed");
   for (const route of candidates) {
+    const timeoutMs = attemptTimeoutMs(budget);
+    if (timeoutMs === 0) {
+      logAI("fallback: budget exhausted");
+      return { ok: false, failure: attemptFailure("timeout", "ai budget exhausted") };
+    }
     logAI(`fallback try ${route.provider}/${route.model}`);
-    const attempt = await withLlmLock(() => collectText(runtime, route, system, actualContent));
+    const attempt = await withLlmLock(() => collectText(runtime, route, system, actualContent, timeoutMs));
     if (attempt.ok) {
       logAI(`fallback use ${route.provider}/${route.model}`);
       return attempt;
@@ -415,15 +428,21 @@ async function attemptAllCandidates(
 /**
  * 诊断注入重试 + 候选轮询的组合出口（T3）：只重试一次、重试带失败诊断、
  * 仍失败返回最终 code。润色 / 摘要 / 一键完善三条能力共用。
+ *
+ * `expectation`（R1）只决定诊断文案的形态：润色传 `"text"`（纯文本正文），
+ * 摘要与一键完善传 `"json"`。`budget`（R3）由能力入口创建并贯穿两轮尝试。
  */
 function callLlmWithRetry(
   runtime: LlmRuntime,
   candidates: AiRoute[],
   system: string,
   content: string,
+  expectation: DiagnosisExpectation,
+  budget: AiBudget,
 ) {
-  return withDiagnosticRetry((diagnosis) =>
-    attemptAllCandidates(runtime, candidates, system, content, diagnosis),
+  return withDiagnosticRetry(
+    (diagnosis) => attemptAllCandidates(runtime, candidates, system, content, diagnosis, budget),
+    expectation,
   );
 }
 
@@ -470,15 +489,20 @@ async function withResultCache<T>(
 /**
  * 润色正文的**能力层**（等长或更精炼），`keepVariables` 默认为 true。
  * 结果缓存接入点（T2a 收尾）：同 system+user+route 直接命中，零模型调用。
+ *
+ * 诊断重试用 `"text"` 期望形态（R1：润色的契约是纯文本，要 JSON 的自纠提示会把它带偏）；
+ * `opts.budget` 缺省则自己开一份（`polishPromptBodyWithSummaryCore` 会把同一份传进来，
+ * 让「润色 + 摘要」两轮共用一个总预算）。
  */
 export async function polishPromptBodyCore(
   body: string,
   settings: PluginSettings,
-  opts?: { keepVariables?: boolean },
+  opts?: { keepVariables?: boolean; budget?: AiBudget },
 ): Promise<PolishCoreResult> {
   if (!llm) return { ok: false, code: "no-llm" };
   const candidates = await resolveCandidates(llm, settings);
   if (candidates.length === 0) return { ok: false, code: "route" };
+  const budget = opts?.budget ?? startAiBudget();
 
   const keepVariables = opts?.keepVariables !== false;
   const existingVars = keepVariables ? extractVariables(body) : [];
@@ -489,7 +513,7 @@ export async function polishPromptBodyCore(
   const system = polishSystemPrompt(keepVariables);
 
   return withResultCache(system, content, primaryRoute(candidates), async () => {
-    const result = await callLlmWithRetry(llm!, candidates, system, content);
+    const result = await callLlmWithRetry(llm!, candidates, system, content, "text", budget);
     if (!result.ok) return result;
     // 剥离套话并**把被剥的行写进诊断日志**：这样「模型吐不吐套话」「有没有误剥正文」
     // 两件事都有原始行可查（仅在 __DEV__ 构建下落盘），不必再靠抽样猜。
@@ -501,13 +525,26 @@ export async function polishPromptBodyCore(
   });
 }
 
-/** 润色 + 用途摘要的**能力层**（摘要失败时只返回正文，不视为整体失败）。 */
+/** 摘要子调用的结果：`ok:false` 专门用来**不被缓存**（见下方注释）。 */
+type SummaryOutcome = { ok: true; summary?: string } | { ok: false };
+
+/**
+ * 润色 + 用途摘要的**能力层**（摘要失败时只返回正文，不视为整体失败）。
+ *
+ * 两条约束（R3 的顺带修正）：
+ *   · **两轮共用一个预算**：入口开一份 `AiBudget` 传给润色与摘要——各开一份会让一次调用最坏
+ *     变成 2 × 110s，正好把 R3 要收口的那个洞从后门放回来；
+ *   · **摘要失败不入缓存**：失败分支返回 `{ ok:false }` 而不是 `{ ok:true, summary:undefined }`。
+ *     旧形态会被 `withResultCache` 判定为「成功结果」而缓存 30 分钟 ⇒ 用户在同一份草稿上重试，
+ *     摘要永远不再生成（与「失败不入缓存」的承诺相反）。
+ */
 export async function polishPromptBodyWithSummaryCore(
   body: string,
   settings: PluginSettings,
-  opts?: { keepVariables?: boolean },
+  opts?: { keepVariables?: boolean; budget?: AiBudget },
 ): Promise<PolishWithSummaryCoreResult> {
-  const polished = await polishPromptBodyCore(body, settings, opts);
+  const budget = opts?.budget ?? startAiBudget();
+  const polished = await polishPromptBodyCore(body, settings, { ...opts, budget });
   if (!polished.ok) return polished;
   if (!llm) return { ok: true, polished: polished.polished };
 
@@ -517,13 +554,13 @@ export async function polishPromptBodyWithSummaryCore(
   const system = summarySystemPrompt();
   const content = `请为以下提示词生成用途摘要：\n\n${polished.polished}`;
   // 摘要单独一轮 LLM 调用：它有自己的 system/user，键与润色那轮天然不同，走同一读穿缓存。
-  const summary = await withResultCache(system, content, primaryRoute(candidates), async () => {
-    const result = await callLlmWithRetry(llm!, candidates, system, content);
-    if (!result.ok) return { ok: true, summary: undefined } as const;
+  const summary = await withResultCache(system, content, primaryRoute(candidates), async (): Promise<SummaryOutcome> => {
+    const result = await callLlmWithRetry(llm!, candidates, system, content, "json", budget);
+    if (!result.ok) return { ok: false };
     const parsed = parseSummaryJson(result.text);
-    return { ok: true, summary: parsed ?? undefined } as const;
+    return { ok: true, summary: parsed ?? undefined };
   });
-  return { ok: true, polished: polished.polished, summary: summary.summary };
+  return { ok: true, polished: polished.polished, summary: summary.ok ? summary.summary : undefined };
 }
 
 // ── 能力 2：一键完善 ───────────────────────────────────────────────────────
@@ -537,17 +574,19 @@ export async function refinePromptCore(
   body: string,
   settings: PluginSettings,
   existingTags: string[] = [],
+  opts: { budget?: AiBudget } = {},
 ): Promise<RefineCoreResult> {
   if (!llm) return { ok: false, code: "no-llm" };
   const candidates = await resolveCandidates(llm, settings);
   if (candidates.length === 0) return { ok: false, code: "route" };
+  const budget = opts.budget ?? startAiBudget();
 
   const existingVars = extractVariables(body);
   const system = enrichSystemPrompt(existingTags, existingVars);
   const content = enrichUserMessage(body, undefined, existingVars);
 
   return withResultCache(system, content, primaryRoute(candidates), async () => {
-    const result = await callLlmWithRetry(llm!, candidates, system, content);
+    const result = await callLlmWithRetry(llm!, candidates, system, content, "json", budget);
     if (!result.ok) return result;
     const refined = parseRefineResult(result.text);
     if (!refined) return { ok: false, code: "schema-mismatch" } as const;
@@ -590,6 +629,7 @@ function parseSkillJson(text: string): SkillDescriptor | undefined {
 export async function generateSkillDescriptor(
   prompt: { title: string; body: string; summary?: string; tags?: string[] },
   settings: PluginSettings,
+  budget: AiBudget = startAiBudget(),
 ): Promise<SkillDescribeResult> {
   if (!llm) return { fail: "no-llm" };
   const candidates = await resolveCandidates(llm, settings);
@@ -608,7 +648,13 @@ export async function generateSkillDescriptor(
 
   let lastCode: AiErrorCode = "unknown";
   for (let attempt = 1; attempt <= SKILL_DESCRIBE_ATTEMPTS; attempt++) {
-    const result = await attemptAllCandidates(llm!, candidates, system, content);
+    // 3 轮循环同样受总预算约束：预算耗尽即停（否则最坏 3 × 候选数 × 30s 远超客户端 120s）。
+    if (attemptTimeoutMs(budget) === 0) {
+      logAI("skill desc: budget exhausted");
+      lastCode = "timeout";
+      break;
+    }
+    const result = await attemptAllCandidates(llm!, candidates, system, content, undefined, budget);
     if (result.ok) {
       const parsed = parseSkillJson(result.text);
       if (parsed) {

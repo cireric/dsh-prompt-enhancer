@@ -39,15 +39,29 @@ export function attemptFailure(code: AiErrorCode, detail: string): AiFailure {
 }
 
 /**
- * 失败诊断块（拼进**重试请求**的 user 消息；诚实披露，方便模型自纠）。
- * 只依赖 code 与 detail，不引用任何宿主文案。
+ * 期望的输出形态（2026-10-03 审查 R1）：
+ *   · `json` —— 一键完善 / 用途摘要 / 技能描述符，契约就是「一个 JSON 对象」；
+ *   · `text` —— 润色，契约是**纯文本正文**（见 `ai.ts#polishSystemPrompt` 的「直接输出润色后的提示词正文」）。
+ *
+ * 为什么必须分开：诊断块原先写死「本次请严格输出一个 JSON 对象」，而润色也复用它——于是润色一旦
+ * 走到重试，user 消息就在要求 JSON，与 system prompt 的「直接输出正文」正面冲突。实测（假 runtime
+ * 捕获重试请求）重试消息含「本次请严格输出一个 JSON 对象」，模型很可能照办，而
+ * `stripAiFillerDetailed` 不剥 JSON ⇒ 用户的提示词正文里会落一段 JSON。
  */
-export function failureDiagnosis(failure: AiFailure): string {
+export type DiagnosisExpectation = "json" | "text";
+
+/**
+ * 失败诊断块（拼进**重试请求**的 user 消息；诚实披露，方便模型自纠）。
+ * 只依赖 code、detail 与期望输出形态，不引用任何宿主文案。
+ */
+export function failureDiagnosis(failure: AiFailure, expectation: DiagnosisExpectation = "json"): string {
   return [
     "上一次尝试失败了，本次请修正：",
     "- 失败类型：" + failure.code,
     ...(failure.detail ? ["- 失败细节：" + failure.detail] : []),
-    "- 上一次的原始输出很可能是空回复、非 JSON 文本或 JSON 缺字段；本次请严格输出一个 JSON 对象，不要 Markdown 代码块，不要任何解释或多余文字。",
+    expectation === "json"
+      ? "- 上一次的原始输出很可能是空回复、非 JSON 文本或 JSON 缺字段；本次请严格输出一个 JSON 对象，不要 Markdown 代码块，不要任何解释或多余文字。"
+      : "- 上一次的请求很可能是超时或空回复；本次请直接输出正文本身——纯文本，不要任何包装、不要 Markdown 代码块、不要任何解释或多余文字。",
   ].join("\n");
 }
 
@@ -59,13 +73,15 @@ export function failureDiagnosis(failure: AiFailure): string {
  * - 仍失败 → 返回**最终那次**的 code / detail（若重试换了一种失败形态，以重试的为准）。
  *
  * 重试与否由调用方（`ai.ts`）按能力决定：技能描述符有自己的 3 轮循环，不再叠加本重试。
+ * `expectation` 只影响诊断文案（R1：润色是纯文本，其余是 JSON），编排语义两种形态完全一致。
  */
 export async function withDiagnosticRetry(
   attempt: (diagnosis?: string) => Promise<AiAttempt>,
+  expectation: DiagnosisExpectation = "json",
 ): Promise<AiCallResult> {
   const first = await attempt();
   if (first.ok) return { ok: true, text: first.text };
-  const second = await attempt(failureDiagnosis(first.failure));
+  const second = await attempt(failureDiagnosis(first.failure, expectation));
   if (second.ok) return { ok: true, text: second.text };
   return second.failure.detail === undefined
     ? { ok: false, code: second.failure.code }

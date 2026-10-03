@@ -10,7 +10,8 @@
  * （仅 __DEV__ 构建下发；宿主**零用户文案**，面向用户的句子只存在于客户端字典）。
  * 两种形态并存是**有意**的：客户端 `ApiError.code` 对旧形缺省为 `undefined`，解析对信封形状透明。
  *
- * 状态码：400 参数错误 / 404 未找到 / 409 同名冲突需确认 / 503 AI 或设置服务不可用 / 500 未预期异常。
+ * 状态码：400 参数错误 / 403 跨源写入被拒（见 isCrossSiteWrite）/ 404 未找到 / 409 同名冲突需确认 /
+ * 503 AI 或设置服务不可用 / 500 未预期异常。
  */
 import { existsSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -65,19 +66,8 @@ function devMessage(detail: string): string | undefined {
 /** 请求体体积上限（5 MB）：提示词正文与导入备份都远小于此；防超大 POST 打满宿主进程内存。 */
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.from(chunk as Uint8Array);
-    total += buf.length;
-    if (total > MAX_BODY_BYTES) {
-      req.destroy(); // 掐断上传：超限后不再让字节继续流入
-      throw new BadRequest("请求体超过上限（" + MAX_BODY_BYTES + " 字节）");
-    }
-    chunks.push(buf);
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+/** 解析已读满的请求体；空体按空对象处理（GET 语义的 POST 也照旧）。 */
+function parseJsonBody(raw: string): Record<string, unknown> {
   if (!raw) return {};
   let parsed: unknown;
   try {
@@ -89,6 +79,99 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
     throw new BadRequest("请求体必须是 JSON 对象");
   }
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * 读请求体（上限 {@link MAX_BODY_BYTES}）。
+ *
+ * ⚠️ 超限时**不得**先 `req.destroy()`：`IncomingMessage.destroy()` 会连底层 socket 一起拆掉，
+ * 响应还没写出去客户端只会拿到 `TypeError: fetch failed (cause: EPIPE)`——文档承诺的 400 信封
+ * 永远到不了（2026-10-03 用真实 server + 6 MB 请求体实测）。改成：**停止读取**（pause，剩余字节
+ * 由连接关闭兜住）+ 给本次响应挂 `Connection: close`，让分发层的 400 正常写出。
+ *
+ * 用事件而非 `for await`：`for await` 在 break/throw 时会对流调 `return()`，同样会提前销毁
+ * 请求流，把上面这条约束从后门放回来。
+ */
+function readBody(req: IncomingMessage, res: ServerResponse): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+
+    function cleanup(): void {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+    }
+
+    function onData(chunk: Buffer): void {
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      total += buf.length;
+      if (total > MAX_BODY_BYTES) {
+        settled = true;
+        cleanup();
+        req.pause();
+        res.setHeader("Connection", "close");
+        reject(new BadRequest("请求体超过上限（" + MAX_BODY_BYTES + " 字节）"));
+        return;
+      }
+      chunks.push(buf);
+    }
+
+    function onEnd(): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        resolve(parseJsonBody(Buffer.concat(chunks).toString("utf8").trim()));
+      } catch (e) {
+        reject(e as Error);
+      }
+    }
+
+    function onError(err: Error): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    }
+
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+  });
+}
+
+/**
+ * 跨源写入闸（安全，2026-10-03 审查 C1）：浏览器对**跨源简单请求**不做预检，而带
+ * `Content-Type: text/plain` 的 POST 恰好能携带任意 JSON 正文——只要用户在浏览器里开着任意
+ * 网页，它就能对固定的 `127.0.0.1:3080` 发起写请求（`/import` 覆盖词库、`/prompts` 灌条目、
+ * `/ai/*` 烧额度、`/export/save` 往已存在目录落文件、`/skills/export` 写技能）。
+ *
+ * 宿主的 webServer 只做「匹配 → route.handler」（packages/host/webserver/src/index.ts 的 handle()），
+ * 没有任何 origin / token / CSRF 守卫，故这道闸必须落在插件自己的路由层；本仓「修复一律在插件侧」
+ * 的纪律也要求如此。
+ *
+ * 判据只认**正向的跨源证据**，没有证据即放行（`curl`、脚本、宿主自己的 agent 都不带这些头；
+ * 同源页面的写请求带 `Origin` 且与 `Host` 同值）：
+ *   - `Sec-Fetch-Site: cross-site`——现代浏览器对跨源请求恒发；
+ *   - `Origin` 存在且与 `Host` 不同源，含 `Origin: null`（沙箱 iframe / `file://`）。
+ * 已知边界：反向代理若把 `Host` 改写成与浏览器 `Origin` 不同源，写请求会被一并挡住——
+ * 本仓未部署该形态，不为它预留开关（留开关等于给这条闸门开一个默认关闭的后门）。
+ */
+function isCrossSiteWrite(req: IncomingMessage): boolean {
+  if (req.headers["sec-fetch-site"] === "cross-site") return true;
+  const origin = req.headers.origin;
+  if (typeof origin !== "string" || origin === "") return false;
+  if (origin === "null") return true;
+  const host = req.headers.host;
+  if (!host) return true;
+  try {
+    return new URL(origin).host !== host;
+  } catch {
+    return true;
+  }
 }
 
 function asString(value: unknown): string | undefined {
@@ -136,6 +219,16 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
   const seg = segments(url.pathname);
   const [a, b, c] = seg;
 
+  // 写方法先过跨源闸：GET/HEAD/OPTIONS 无副作用，不挡（跨源 GET 的响应本来也读不到，
+  // 有 CORS 兜着）；写方法在触库/触模型之前就拒，连请求体都不读。
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && isCrossSiteWrite(req)) {
+    console.error(
+      "[prompt-enhancer] 已拒绝跨源写请求 " + method + " " + url.pathname
+        + "（Origin: " + String(req.headers.origin) + " / Host: " + String(req.headers.host) + "）",
+    );
+    return fail(res, 403, "跨源写入被拒绝（本插件的写接口只接受同源请求）");
+  }
+
   try {
     // ── 提示词 ────────────────────────────────────────────────────────────
     if (method === "GET" && seg.length === 1 && a === "prompts") {
@@ -152,7 +245,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     }
 
     if (method === "POST" && seg.length === 1 && a === "prompts") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text) return fail(res, 400, "缺少 body");
       const created = store.createPrompt({
@@ -176,7 +269,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
         return found ? ok(res, found) : fail(res, 404, "提示词不存在");
       }
       if (method === "PUT") {
-        const body = await readBody(req);
+        const body = await readBody(req, res);
         const patch: PromptWritablePatch = {};
         if (body.title !== undefined) patch.title = asString(body.title) ?? "";
         if (body.body !== undefined) {
@@ -221,14 +314,14 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     }
 
     if (method === "POST" && seg.length === 1 && a === "tags") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const name = asString(body.name);
       if (!name?.trim()) return fail(res, 400, "缺少 name");
       return ok(res, { name: store.createTag(name) });
     }
 
     if (method === "PUT" && seg.length === 2 && a === "tags") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const to = asString(body.to);
       if (!to?.trim()) return fail(res, 400, "缺少 to");
       return ok(res, { affected: store.renameTag(b!, to) });
@@ -273,7 +366,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     }
 
     if (method === "POST" && seg.length === 2 && a === "ai" && b === "polish") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const opts = { keepVariables: body.keepVariables !== false };
@@ -295,7 +388,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     }
 
     if (method === "POST" && seg.length === 2 && a === "ai" && b === "refine") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const existingTags = store.listTags().map((t) => t.name);
@@ -305,7 +398,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     }
 
     if (method === "POST" && seg.length === 2 && a === "ai" && b === "skill-descriptor") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const result = await ai.generateSkillDescriptor(
@@ -329,7 +422,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
 
     if (method === "PUT" && seg.length === 1 && a === "settings") {
       if (!isSettingsAvailable()) return fail(res, 503, "设置服务不可用（宿主未提供 settings 服务）");
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const patch: Record<string, unknown> = {};
       for (const key of Object.keys(getSettings())) {
         if (body[key] !== undefined) patch[key] = body[key];
@@ -346,7 +439,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
 
     // ── 导入导出 ──────────────────────────────────────────────────────────
     if (method === "POST" && seg.length === 2 && a === "export" && b === "save") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const dir = asString(body.dir);
       if (!dir) return fail(res, 400, "缺少 dir");
       if (!isAbsolute(dir)) return fail(res, 400, "dir 必须是绝对路径");
@@ -364,7 +457,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     }
 
     if (method === "POST" && seg.length === 1 && a === "import") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const result = store.importPrompts(body.backup, { confirm: body.confirm === true });
       return result.ok ? ok(res, result) : fail(res, 400, result.error ?? "导入被拒绝");
     }
@@ -373,7 +466,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     if (seg.length === 2 && a === "meta") {
       if (method === "GET") return ok(res, { key: b, value: store.getMetaValue(b!) });
       if (method === "PUT") {
-        const body = await readBody(req);
+        const body = await readBody(req, res);
         const value = asString(body.value);
         if (value === undefined) return fail(res, 400, "缺少 value");
         store.setMetaValue(b!, value);
@@ -392,7 +485,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
 
     // ── 技能导出 ──────────────────────────────────────────────────────────
     if (method === "POST" && seg.length === 2 && a === "skills" && b === "export") {
-      const body = await readBody(req);
+      const body = await readBody(req, res);
       const promptId = asString(body.promptId);
       if (!promptId) return fail(res, 400, "缺少 promptId");
       const prompt = store.getPrompt(promptId);
