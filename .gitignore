@@ -2,6 +2,8 @@ node_modules/
 .npm-cache/
 *.map
 .build-meta.json
+# 构建暂存目录（成功即 rename 成 lib/；失败时留在这里，供人看清half-built 状态）
+.build-stage/
 debug.log
 *.tmp.*
 

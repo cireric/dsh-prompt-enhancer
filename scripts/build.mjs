@@ -11,7 +11,7 @@
 //（`window.__ModuleLoader__.load({ id: <包名>, factory: (require) => {`）。
 import { build as esbuildBuild } from "esbuild";
 import { sourceHash } from "./source-hash.mjs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -21,9 +21,16 @@ const PLUGIN_ID = pkg.name;
 const PLUGIN_VERSION = pkg.version;
 const IS_DEV = process.argv.includes("--dev");
 
+// 先建到**临时暂存目录**，全部成功后再整体替换 `lib/`（审查遗留项）。
+//
+// 为什么：`lib/` 纳入版本控制（硬约束 7），旧写法是「先删空 lib/ 再构建」——中途失败（esbuild
+// 报错 / 契约闸门拦下 / 磁盘满）会把**已跟踪的产物从工作区删掉**，工作树当场变脏且不可诊断。
+// 2026-10-03 现场踩过一次：验证 external 闸门时构建失败，`lib/index.js` 与 `lib/client.js` 一起消失。
+// 暂存目录与 lib/ 同盘，故最后一步 `rename` 是原子的：要么整套新产物，要么原样不动。
 const libDir = join(root, "lib");
-await rm(libDir, { recursive: true, force: true });
-await mkdir(libDir, { recursive: true });
+const stageDir = join(root, ".build-stage");
+await rm(stageDir, { recursive: true, force: true });
+await mkdir(stageDir, { recursive: true });
 
 // React 与 @deepseek-ai/* 由 DSH host / 模块加载器在运行时解析——绝不打包（硬约束 4）。
 //
@@ -70,7 +77,7 @@ const define = {
 // --- 1) host 入口：lib/index.js（Node ESM） ---
 const hostBuild = await esbuildBuild({
   entryPoints: [join(root, "src/index.ts")],
-  outfile: join(libDir, "index.js"),
+  outfile: join(stageDir, "index.js"),
   bundle: true,
   format: "esm",
   platform: "node",
@@ -107,7 +114,7 @@ const clientFooter = [
 
 const clientBuild = await esbuildBuild({
   entryPoints: [join(root, "src/client/index.ts")],
-  outfile: join(libDir, "client.js"),
+  outfile: join(stageDir, "client.js"),
   bundle: true,
   format: "cjs",
   platform: "browser",
@@ -127,12 +134,16 @@ assertOnlyOwnSources(clientBuild.metafile, "lib/client.js");
 const sources = await sourceHash(root);
 
 await writeFile(
-  join(libDir, ".build-meta.json"),
+  join(stageDir, ".build-meta.json"),
   JSON.stringify(
     { id: PLUGIN_ID, version: PLUGIN_VERSION, builtAt: new Date().toISOString(), sources },
     null,
     2,
   ) + "\n",
 );
+
+// 到这里两个 bundle 与元数据都已落盘且闸门都过了 ⇒ 才动 lib/：一次性换掉，不留半新半旧。
+await rm(libDir, { recursive: true, force: true });
+await rename(stageDir, libDir);
 
 console.log("build: done (lib/index.js, lib/client.js; sources " + sources + ")");
