@@ -18,6 +18,7 @@ import { createDatabase } from "./node-sqlite.ts";
 import { dbPath } from "./paths.ts";
 import { compareEvictionOrder } from "../eviction-order.ts";
 import { matchRank, normalizeQuery } from "../search-match.ts";
+import { normalizeTagName, normalizeTags } from "../tags.ts";
 import {
   BACKUP_VERSION,
   SCHEMA_VERSION,
@@ -217,20 +218,6 @@ function parseTags(text: string | null): string[] {
 /** 空数组恒存 `'[]'` 而不是 NULL（P2-D6）。 */
 function tagsToJson(tags: string[]): string {
   return tags.length > 0 ? JSON.stringify(tags) : "[]";
-}
-
-function normalizeTagName(name: string): string {
-  return name.trim();
-}
-
-function normalizeTags(tags: string[] | undefined): string[] {
-  if (!tags) return [];
-  const out: string[] = [];
-  for (const raw of tags) {
-    const name = normalizeTagName(raw);
-    if (name && !out.includes(name)) out.push(name);
-  }
-  return out;
 }
 
 // ── 标签字典（内部）────────────────────────────────────────────────────────

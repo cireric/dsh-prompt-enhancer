@@ -20,6 +20,7 @@ import {
   type PromptWritablePatch,
 } from "../../types.ts";
 import { firstNonEmptyLine } from "../../first-line.ts";
+import { parseTagList } from "../../tags.ts";
 import { canToggle } from "../utils/ai-flow.ts";
 import { deletePrompts } from "../utils/prompt-meta.ts";
 import { ApiError, api } from "../utils/api.ts";
@@ -125,16 +126,6 @@ const SORTS: ReadonlyArray<{ value: PromptSort; label: PromptEnhancerKey }> = [
 
 /** 搜索防抖（简报要求 ≥250ms；取 300ms 留出余量）。 */
 const SEARCH_DEBOUNCE_MS = 300;
-
-/** 标签输入（逗号分隔）→ 数组：去空白、丢空项、保序去重（半角与全角逗号都认）。 */
-function parseTagList(text: string): string[] {
-  const out: string[] = [];
-  for (const raw of text.split(/[,，]/)) {
-    const tag = raw.trim();
-    if (tag !== "" && !out.includes(tag)) out.push(tag);
-  }
-  return out;
-}
 
 /**
  * 落库入参：宿主 POST /prompts 与 PUT /prompts/:id 的白名单字段子集（title / body 必填，

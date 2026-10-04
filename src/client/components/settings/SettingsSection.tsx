@@ -24,6 +24,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { MAX_PROMPT_COUNT_BOUNDS, PANEL_SIZE_BOUNDS, SETTINGS_KEYS } from "../../../settings-shape.ts";
 import type { PluginSettings } from "../../../types.ts";
 import { type AiSelectable, api } from "../../utils/api.ts";
+import { commitNumberDraft, modelOptions, providerOptions } from "../../utils/settings-options.ts";
 import { errorDetail, errorText, muted, select, textInput } from "../../utils/dialog-style.ts";
 import { updateSettings, useSettings } from "../../utils/settings-store.ts";
 import { TOKEN } from "../../utils/theme.ts";
@@ -185,8 +186,9 @@ function NumberInput({ t, field, label, value, bounds, patch }: NumberInputProps
 
   const commit = (): void => {
     if (draft === null) return;
-    const parsed = Number(draft);
-    if (draft.trim() === "" || !Number.isInteger(parsed) || parsed < bounds.min || parsed > bounds.max) {
+    // 判定（非空 / 整数 / 在边界内）下沉到 settings-options.ts，组件只接线（审查 #7）。
+    const parsed = commitNumberDraft(draft, bounds);
+    if (parsed === undefined) {
       setInvalid(true);
       return;
     }
@@ -223,35 +225,8 @@ function NumberInput({ t, field, label, value, bounds, patch }: NumberInputProps
   );
 }
 
-/** 下拉的一个选项。 */
-interface AiOption { value: string; label: string }
-
-/**
- * provider 下拉的选项：**首个恒为「自动发现」（空串）**，其后是宿主给出的可选 provider。
- *
- * 清单非空、而当前存的 provider 不在里面（模型被撤下 / 换了机器）时补一条，让下拉如实显示现状
- * （否则受控 select 会显示成一个与本插件保存值不符的选项）；清单为空（探测失败 / 宿主无模型）
- * 时不补——那种情形按验收要求**只剩「自动发现」**，现状由旁边那行可读文字说明。
- */
-function providerOptions(list: readonly AiSelectable[], current: string, auto: string): AiOption[] {
-  const options: AiOption[] = [{ value: "", label: auto }];
-  for (const item of list) options.push({ value: item.provider, label: item.name });
-  if (list.length > 0 && current !== "" && !list.some((item) => item.provider === current)) {
-    options.push({ value: current, label: current });
-  }
-  return options;
-}
-
-/** 模型下拉的选项：只列**当前 provider** 的模型，首个同样是「自动发现」（= 让宿主为该 provider 自选）。 */
-function modelOptions(list: readonly AiSelectable[], provider: string, current: string, auto: string): AiOption[] {
-  const models = list.find((item) => item.provider === provider)?.models ?? [];
-  const options: AiOption[] = [{ value: "", label: auto }];
-  for (const item of models) options.push({ value: item.id, label: item.name });
-  if (models.length > 0 && current !== "" && !models.some((item) => item.id === current)) {
-    options.push({ value: current, label: current });
-  }
-  return options;
-}
+// providerOptions / modelOptions 已下沉到 ../../utils/settings-options.ts（审查 #7）：它们原先住在
+// 本文件里，因为 .tsx 无自动化判据（硬约束 15）而对「清单空时补不补当前值」这类边界没有任何断言。
 
 interface AiModelRowProps {
   t: TranslateNS<"prompt-enhancer">;
