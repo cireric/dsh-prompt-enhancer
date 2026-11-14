@@ -14,7 +14,7 @@
 export type AiErrorCode =
   | "no-llm" // 宿主未注入 LLM runtime（未配置模型能力）
   | "route" // 没有任何可用候选路由
-  | "timeout" // 每候选 30s 超时（AbortSignal.timeout 到点 / finish=aborted）
+  | "timeout" // 调用超时或总预算耗尽
   | "empty-output" // 模型调用「成功」但没返回任何文本
   | "parse" // 文本拿到了但不是合法 JSON
   | "schema-mismatch" // JSON 合法但缺必要字段（如 refine 的 body / descriptor 的 name）
@@ -51,7 +51,7 @@ export function attemptFailure(code: AiErrorCode, detail: string): AiFailure {
 export type DiagnosisExpectation = "json" | "text";
 
 /**
- * 失败诊断块（拼进**重试请求**的 user 消息；诚实披露，方便模型自纠）。
+ * 失败诊断块（加入**重试请求**，方便模型自纠）。
  * 只依赖 code、detail 与期望输出形态，不引用任何宿主文案。
  */
 export function failureDiagnosis(failure: AiFailure, expectation: DiagnosisExpectation = "json"): string {
@@ -69,7 +69,7 @@ export function failureDiagnosis(failure: AiFailure, expectation: DiagnosisExpec
  * 诊断注入重试（T3）：包在**整层候选轮询外**，只重试一次。
  *
  * - 首试成功 → 原样返回，绝不发第二次请求；
- * - 首试失败 → 重试一次，重试请求的 user 消息**携带上次失败诊断**（`failureDiagnosis`）；
+ * - 首试失败 → 重试一次，重试请求**携带上次失败诊断**（`failureDiagnosis`）；
  * - 仍失败 → 返回**最终那次**的 code / detail（若重试换了一种失败形态，以重试的为准）。
  *
  * 重试与否由调用方（`ai.ts`）按能力决定：技能描述符有自己的 3 轮循环，不再叠加本重试。

@@ -4,7 +4,7 @@
  * 目标结构：
  *   $DSH_HOME/prompt-enhancer/
  *   ├── db/prompts.db      # 词库主存储（SQLite）
- *   └── log/ai-YYYY-MM-DD.log
+ *   └── log/                 # 开发日志与检查/模板增强诊断
  *
  * ⚠️ 所有函数都是**调用期求值**——不要在模块顶层缓存路径：
  * 测试会在自己的进程里把 `DSH_HOME` 指向临时目录后再 import 本模块，

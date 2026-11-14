@@ -5,6 +5,9 @@ import {
   type PluginSettings,
   type Prompt,
   type PromptCheckResult,
+  type PromptDraftRequest,
+  type PromptDraftResult,
+  type PromptDraftSearchResult,
   type PromptInput,
   type PromptSort,
   type PromptWritablePatch,
@@ -13,6 +16,7 @@ import {
 
 /** 前端 AI 路由超时（120s，用户裁定）；超时由 AbortSignal.timeout 触发，分类见 ai-flow.ts#aiErrorKey。 */
 export const AI_TIMEOUT_MS = 120_000;
+const STRUCTURED_AI_TIMEOUT_MS = 225_000;
 
 /**
  * `/ai/providers` 探测超时（15s）。
@@ -124,14 +128,16 @@ function envelopeMessage(error: unknown, fallback: string): string {
  * `DOMException("TimeoutError")` 换成带标记的 `ApiError`（见下）——探测超时与 AI 调用超时必须在
  * 分类器那里可辨；其余路径的超时**原样上抛**（既有契约，见 tests/api.test.mjs 的负面对照）。
  */
-async function call<T>(method: string, path: string, body?: unknown, timeoutMs?: number, probe = false): Promise<T> {
+async function call<T>(method: string, path: string, body?: unknown, timeoutMs?: number, probe = false, callerSignal?: AbortSignal): Promise<T> {
+  const deadline = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
+  const signal = callerSignal && deadline ? AbortSignal.any([callerSignal, deadline]) : callerSignal ?? deadline;
   let res: Response;
   try {
     res = await fetch(API_PREFIX + path, {
       method,
       headers: body === undefined ? undefined : { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
+      signal,
     });
   } catch (e) {
     /**
@@ -147,6 +153,7 @@ async function call<T>(method: string, path: string, body?: unknown, timeoutMs?:
   try {
     parsed = (await res.json()) as Envelope<T>;
   } catch (e) {
+    if (signal?.aborted) signal.throwIfAborted();
     throw new ApiError(`响应不是合法 JSON（HTTP ${res.status}）：${String(e)}`, res.status);
   }
   if (parsed.data === undefined) {
@@ -204,20 +211,28 @@ export const api = {
    * `keepVariables` **必填**（P5 延期 #9 / T6-A3）：缺省 `true` 会让漏传的调用方静默落回被否决的
    * 常量，改成必填即由编译期拦住漏传。运行期仍按 `!== false` 判定，JS 调用方缺省时的旧行为不变。
    */
-  polishPrompt: (body: string, opts: { keepVariables: boolean }) =>
+  polishPrompt: (body: string, opts: { keepVariables: boolean }, signal?: AbortSignal) =>
     call<{ polished: string; summary?: string }>(
       "POST",
       "/ai/polish",
       { body, keepVariables: opts.keepVariables !== false, withSummary: false },
       AI_TIMEOUT_MS,
+      false,
+      signal,
     ),
-  checkPrompt: (body: string) => call<PromptCheckResult>("POST", "/ai/check", { body }, AI_TIMEOUT_MS),
-  refinePrompt: (body: string) => call<AiRefineResult>("POST", "/ai/refine", { body }, AI_TIMEOUT_MS),
+  checkPrompt: (body: string, signal?: AbortSignal) =>
+    call<PromptCheckResult>("POST", "/ai/check", { body }, STRUCTURED_AI_TIMEOUT_MS, false, signal),
+  draftPrompt: (request: PromptDraftRequest, signal?: AbortSignal) =>
+    call<PromptDraftResult>("POST", "/ai/draft", request, STRUCTURED_AI_TIMEOUT_MS, false, signal),
+  searchDraft: (query: string, signal?: AbortSignal) =>
+    call<PromptDraftSearchResult>("POST", "/ai/draft/search", { query }, AI_PROBE_TIMEOUT_MS, false, signal),
+  refinePrompt: (body: string, signal?: AbortSignal) =>
+    call<AiRefineResult>("POST", "/ai/refine", { body }, STRUCTURED_AI_TIMEOUT_MS, false, signal),
   /**
    * 逐条 AI 补全技能名与描述（`POST /ai/skill-descriptor`；规格 §7.6 的「AI 补全名称与描述」）。
    *
    * `body` 必填（宿主空 body 直接 400「缺少 body」）；`title` / `summary` / `tags` 是上下文，
-   * 宿主原样喂给提示词。走 `AI_TIMEOUT_MS`——它真的在等模型（同 /ai/polish、/ai/refine）；
+   * 宿主原样喂给提示词。走 `AI_TIMEOUT_MS`（同 /ai/polish）；
    * AI 不可用 → 宿主 **503**，经 `call()` 变成带 status 的 ApiError（失败必须可见）。
    */
   aiSkillDescriptor: (input: { body: string; title?: string; summary?: string; tags?: string[] }) =>

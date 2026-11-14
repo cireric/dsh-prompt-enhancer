@@ -253,7 +253,7 @@ if (clientSrc === null) {
 
 // ---------- 2.5) host 行为断言：假 ctx 真跑 apply()（审查 #10-②）----------
 // 为什么必须有：本仓的 host 入口在此前**从未被任何自动化执行过**——smoke 只 import 产物并断言
-// name / typeof apply，于是「路由注册与卸载、两条 ctx.inject、volatile-update 监听、设置面绑定」
+// name / typeof apply，于是「路由注册与卸载、ctx.inject、volatile-update 监听、设置面绑定」
 // 全部无判据（client 侧早有同款账本，host 侧是缺口）。
 // 假 ctx 只实现 apply 真正用到的方法：一旦它开始注册别的东西（比如 systemPrompt section，
 // 硬约束 2 的零 section 承诺），这里会因为调用了不存在的方法而**直接炸**。
@@ -267,9 +267,10 @@ if (hostMod !== null && typeof hostMod.apply === "function") {
   const fakeCtx = {
     inject(deps, callback) {
       calls.push(["inject", deps.join(",")]);
-      // 只给 apply 真正要的服务：llm（可以为空）与 webServer（记录注册的路由）
+      // 给 apply 提供可选服务与记录路由的 webServer。
       const scope = {
         llm: undefined,
+        web: undefined,
         effect(fn, name) {
           calls.push(["effect", name]);
           const dispose = fn();
@@ -307,6 +308,7 @@ if (hostMod !== null && typeof hostMod.apply === "function") {
   // 那条 effect 里注册路由——账本把「谁在谁里面」也一并钉住。
   const wantOrder = [
     "inject:llm",
+    "inject:web",
     "inject:webServer",
     "effect:prompt-enhancer: routes",
     "register:prefix /api/prompt-enhancer",
@@ -314,7 +316,7 @@ if (hostMod !== null && typeof hostMod.apply === "function") {
     "effect:prompt-enhancer: lifecycle",
   ];
   if (!same(kinds, wantOrder)) {
-    fail("host 装配账本不符（应为 inject llm → inject webServer → on volatile-update → effect lifecycle）\n"
+    fail("host 装配账本不符（应为 inject llm → inject web → inject webServer → on volatile-update → effect lifecycle）\n"
       + "      期望 " + JSON.stringify(wantOrder) + "\n      实为 " + JSON.stringify(kinds));
   } else ok("host 装配账本逐条相符 " + JSON.stringify(kinds));
 

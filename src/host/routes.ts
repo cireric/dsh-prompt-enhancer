@@ -22,10 +22,13 @@ import { existsSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, join } from "node:path";
 import * as ai from "./ai.ts";
+import { readDraftRequest } from "./draft.ts";
+import { searchDraftSources } from "./draft-search.ts";
 import * as skills from "./skills.ts";
 import * as store from "./store.ts";
 import { clearRouteCache } from "./ai.ts";
 import { getSettings, isSettingsAvailable, updateSettings } from "./settings.ts";
+import { safeErrorCode, startReviewTrace, type ReviewTrace } from "./review-trace.ts";
 import { readTemplateVariables } from "../template-variables.ts";
 import { API_PREFIX, type PromptSort, type PromptWritablePatch } from "../types.ts";
 
@@ -67,7 +70,9 @@ function failWithCode(
   res: ServerResponse,
   status: number,
   error: { code: string; message?: string },
+  trace?: ReviewTrace,
 ): void {
+  trace?.("request-failed", { code: error.code });
   json(res, status, { ok: false, error });
 }
 
@@ -236,6 +241,8 @@ interface RouteContext {
   seg: string[];
   /** 已解析的请求 URL（查询参数从它取）。 */
   url: URL;
+  trace?: ReviewTrace;
+  signal?: AbortSignal;
 }
 
 /** 段匹配器：逐段比对，`null` = 任意参数段；**段数必须精确相等**。 */
@@ -453,17 +460,17 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     method: "GET",
     pattern: "GET /ai/providers",
     match: shape("ai", "providers"),
-    handle: async ({ res }) => ok(res, await ai.listAiSelectables()),
+    handle: async ({ res, trace }) => ok(res, await ai.listAiSelectables(trace)),
   },
   {
     method: "POST",
     pattern: "POST /ai/polish",
     match: shape("ai", "polish"),
-    handle: async ({ req, res }) => {
+    handle: async ({ req, res, trace, signal }) => {
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
-      const opts = { keepVariables: body.keepVariables !== false };
+      const opts = { keepVariables: body.keepVariables !== false, trace, signal };
       // 成功分支归一为 data 形状（`{polished}`），不把能力层的 `ok:true` 泄进响应体。
       // 此前的 `body.withSummary === true` 变体已删（审查 #9）：唯一发送方 `client/utils/api.ts`
       // 恒传 false，那条分支连同它的 Core 在客户端不可达（死代码）；用途摘要由 `/ai/refine`
@@ -473,7 +480,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
           ? { ok: true as const, data: { polished: core.polished } }
           : { ok: false as const, code: core.code },
       );
-      if (!outcome.ok) return failWithCode(res, 503, { code: outcome.code, message: devMessage(outcome.code) });
+      if (!outcome.ok) return failWithCode(res, 503, { code: outcome.code, message: devMessage(outcome.code) }, trace);
       return ok(res, outcome.data);
     },
   },
@@ -481,26 +488,48 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     method: "POST",
     pattern: "POST /ai/check",
     match: shape("ai", "check"),
-    handle: async ({ req, res }) => {
+    handle: async ({ req, res, trace, signal }) => {
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
-      const checked = await ai.checkPromptCore(text, getSettings());
-      if (!checked.ok) return failWithCode(res, 503, { code: checked.code, message: devMessage(checked.code) });
+      const checked = await ai.checkPromptCore(text, getSettings(), trace, signal);
+      if (!checked.ok) return failWithCode(res, 503, { code: checked.code, message: devMessage(checked.code) }, trace);
       return ok(res, checked.report);
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /ai/draft",
+    match: shape("ai", "draft"),
+    handle: async ({ req, res, trace, signal }) => {
+      const request = readDraftRequest(await readBody(req, res));
+      if (!request) return fail(res, 400, "起草参数格式不正确");
+      const result = await ai.draftPromptCore(request, getSettings(), trace, signal);
+      if (!result.ok) return failWithCode(res, 503, { code: result.code, message: devMessage(result.code) }, trace);
+      return ok(res, result.draft);
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /ai/draft/search",
+    match: shape("ai", "draft", "search"),
+    handle: async ({ req, res, trace, signal }) => {
+      const query = asString((await readBody(req, res)).query)?.trim();
+      if (!query || query.length > 240) return fail(res, 400, "查询词为空或超长");
+      return ok(res, await searchDraftSources(query, trace, signal));
     },
   },
   {
     method: "POST",
     pattern: "POST /ai/refine",
     match: shape("ai", "refine"),
-    handle: async ({ req, res }) => {
+    handle: async ({ req, res, trace, signal }) => {
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const existingTags = store.listTags().map((t) => t.name);
-      const refined = await ai.refinePromptCore(text, getSettings(), existingTags);
-      if (!refined.ok) return failWithCode(res, 503, { code: refined.code, message: devMessage(refined.code) });
+      const refined = await ai.refinePromptCore(text, getSettings(), existingTags, { trace, signal });
+      if (!refined.ok) return failWithCode(res, 503, { code: refined.code, message: devMessage(refined.code) }, trace);
       return ok(res, refined.refined);
     },
   },
@@ -508,7 +537,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     method: "POST",
     pattern: "POST /ai/skill-descriptor",
     match: shape("ai", "skill-descriptor"),
-    handle: async ({ req, res }) => {
+    handle: async ({ req, res, trace, signal }) => {
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
@@ -520,10 +549,13 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
           tags: asStringArray(body.tags),
         },
         getSettings(),
+        undefined,
+        trace,
+        signal,
       );
       return "desc" in result
         ? ok(res, result.desc)
-        : failWithCode(res, 503, { code: result.fail, message: devMessage(result.fail) });
+        : failWithCode(res, 503, { code: result.fail, message: devMessage(result.fail) }, trace);
     },
   },
 
@@ -699,17 +731,39 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     return fail(res, 403, "跨源写入被拒绝（本插件的写接口只接受同源请求）");
   }
 
+  let trace: ReviewTrace | undefined;
+  let requestCancellation: AbortController | undefined;
+  const onClose = () => {
+    if (!res.writableFinished && !requestCancellation?.signal.aborted) {
+      trace?.("request-cancelled");
+      requestCancellation?.abort();
+    }
+  };
   try {
-    const ctx: RouteContext = { req, res, seg, url };
     for (const route of ROUTE_SPECS) {
       if (route.method !== method || !route.match(seg)) continue;
-      return await route.handle(ctx);
+      if (seg[0] === "ai") {
+        trace = startReviewTrace(seg.slice(1).join("/"));
+        trace("request-start");
+      }
+      if (method === "POST" && seg[0] === "ai") {
+        requestCancellation = new AbortController();
+        res.once?.("close", onClose);
+        if (res.destroyed) onClose();
+        requestCancellation.signal.throwIfAborted();
+      }
+      return await route.handle({ req, res, seg, url, trace, signal: requestCancellation?.signal });
     }
     return fail(res, 404, `no route ${method} ${url.pathname}`);
   } catch (e) {
+    if (requestCancellation?.signal.aborted) return;
     if (e instanceof BadRequest) return fail(res, 400, e.message);
-    console.error("[prompt-enhancer] 未预期错误 " + method + " " + url.pathname, e);
+    if (trace) trace("request-threw", { code: safeErrorCode(e) });
+    else console.error("[prompt-enhancer] 未预期错误 " + method + " " + url.pathname, e);
     return fail(res, 500, "internal error");
+  } finally {
+    if (requestCancellation) res.off?.("close", onClose);
+    trace?.("request-end", { httpStatus: res.statusCode, connectionClosed: res.destroyed === true });
   }
 }
 

@@ -111,6 +111,37 @@ test("refinePrompt：{title,tags,summary,body} 原样透传，并带 AbortSignal
   }
 });
 
+test("检查、起草和增强的客户端超时晚于宿主总预算", async (t) => {
+  const { STRUCTURED_AI_TOTAL_BUDGET_MS } = await import("../src/host/ai-budget.ts");
+  const timeout = t.mock.method(AbortSignal, "timeout", () => new AbortController().signal);
+  const s = stubFetch(() => jsonRes({ ok: true, data: {} }));
+  try {
+    await api.checkPrompt("草稿");
+    await api.draftPrompt({ idea: "草稿" });
+    await api.refinePrompt("草稿");
+    const deadlines = timeout.mock.calls.map(({ arguments: [ms] }) => ms);
+    assert.deepEqual(deadlines, [225_000, 225_000, 225_000]);
+    assert.ok(deadlines.every((ms) => ms > STRUCTURED_AI_TOTAL_BUDGET_MS));
+  } finally {
+    s.restore();
+  }
+});
+
+test("取消 AI 调用会中止 fetch", async () => {
+  const controller = new AbortController();
+  const s = stubFetch((_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }));
+  try {
+    const request = api.checkPrompt("草稿", controller.signal);
+    controller.abort();
+    assert.equal(s.calls[0].init.signal.aborted, true);
+    await assert.rejects(request, { name: "AbortError" });
+  } finally {
+    s.restore();
+  }
+});
+
 test("createPrompt：返回 {prompt, evicted}，evicted 不丢", async () => {
   const s = stubFetch(() => jsonRes({ ok: true, data: { prompt: { id: "p1", title: "t" }, evicted: ["p2", "p3"] } }));
   try {
@@ -303,6 +334,8 @@ const ROUTES = [
   { route: "GET /ai/providers", client: "listAiProviders", call: (a) => a.listAiProviders(), method: "GET", url: "/api/prompt-enhancer/ai/providers", data: [] },
   { route: "POST /ai/polish", client: "polishPrompt", call: (a) => a.polishPrompt("草稿", { keepVariables: true }), method: "POST", url: "/api/prompt-enhancer/ai/polish", body: { body: "草稿", keepVariables: true, withSummary: false }, data: { polished: "x" } },
   { route: "POST /ai/check", client: "checkPrompt", call: (a) => a.checkPrompt("草稿"), method: "POST", url: "/api/prompt-enhancer/ai/check", body: { body: "草稿" }, data: { findings: [] } },
+  { route: "POST /ai/draft", client: "draftPrompt", call: (a) => a.draftPrompt({ idea: "查构建慢的原因", answers: [] }), method: "POST", url: "/api/prompt-enhancer/ai/draft", body: { idea: "查构建慢的原因", answers: [] }, data: { kind: "draft", body: "定位构建瓶颈。", assumptions: [] } },
+  { route: "POST /ai/draft/search", client: "searchDraft", call: (a) => a.searchDraft("AirPods 5 Apple"), method: "POST", url: "/api/prompt-enhancer/ai/draft/search", body: { query: "AirPods 5 Apple" }, data: { status: "unavailable" } },
   { route: "POST /ai/refine", client: "refinePrompt", call: (a) => a.refinePrompt("草稿"), method: "POST", url: "/api/prompt-enhancer/ai/refine", body: { body: "草稿" }, data: { title: "t", tags: [], summary: "", body: "b" } },
   { route: "POST /ai/skill-descriptor", client: "aiSkillDescriptor", call: (a) => a.aiSkillDescriptor({ body: "草稿" }), method: "POST", url: "/api/prompt-enhancer/ai/skill-descriptor", body: { body: "草稿" }, data: { name: "weekly-report", description: "把要点整理成周报" } },
   // 设置
@@ -343,7 +376,7 @@ test("路由覆盖：覆盖账本与产物路由清单**双向对齐**（R19；�
     produced,
     "覆盖账本必须与 ROUTE_SPECS 逐条对齐（加路由必须加覆盖行或豁免行）",
   );
-  assert.equal(produced.length, 28, "宿主逻辑路由共 28 条");
+  assert.equal(produced.length, 30, "宿主逻辑路由共 30 条");
 
   // 覆盖行里的 method 也钉一遍：它是手抄表最容易写错的一格，而错了「逐方法」那条用例查不出来
   // （它比对的是真实请求的方法与覆盖行的方法，两边一起错就一起绿）。
@@ -414,7 +447,7 @@ test("api 表面：P6 的 12 个新方法都在，P4/P5 的 11 个不动", () =>
   ]) {
     assert.equal(typeof api[name], "function", name + " 应保留（P4/P5）");
   }
-  assert.equal(COVERED.length, 27, "28 条路由里 27 条有客户端方法");
+  assert.equal(COVERED.length, 29, "30 条路由里 29 条有客户端方法");
 });
 
 // P6-4 裁定：导入不自动淘汰，「确认」与否决定落库还是只预览——客户端只是信封封装，

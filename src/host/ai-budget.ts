@@ -13,7 +13,7 @@
  * 本模块零依赖（不 import 宿主包 / node:*），可被 node --test 直接 import。
  */
 
-/** 单次候选尝试的超时（沿用既有 30s，不随总预算变化）。 */
+/** 默认的单次候选尝试超时。 */
 export const AI_ATTEMPT_TIMEOUT_MS = 30_000;
 
 /**
@@ -21,6 +21,7 @@ export const AI_ATTEMPT_TIMEOUT_MS = 30_000;
  * 该不变量由 `tests/ai-budget.test.mjs` 跨层钉住（它直接 import 客户端的 AI_TIMEOUT_MS）。
  */
 export const AI_TOTAL_BUDGET_MS = 110_000;
+export const STRUCTURED_AI_TOTAL_BUDGET_MS = 215_000;
 
 /** 一次能力的预算：只记截止时刻，不记剩余（避免调用方各自算出不同答案）。 */
 export interface AiBudget {
@@ -43,7 +44,11 @@ export function remainingMs(budget: AiBudget, now: number = Date.now()): number 
  * 返回 **0 = 预算耗尽**，调用方**必须停止**（不得再发请求、不得再等下一个候选）——
  * 0 不是「立刻超时的一次尝试」，把它传给 `AbortSignal.timeout` 只会白打一次调用。
  */
-export function attemptTimeoutMs(budget: AiBudget, now: number = Date.now()): number {
+export function attemptTimeoutMs(
+  budget: AiBudget,
+  now: number = Date.now(),
+  limitMs = AI_ATTEMPT_TIMEOUT_MS,
+): number {
   const left = remainingMs(budget, now);
-  return left <= 0 ? 0 : Math.min(AI_ATTEMPT_TIMEOUT_MS, left);
+  return left <= 0 ? 0 : Math.min(limitMs, left);
 }

@@ -15,6 +15,7 @@
  *
  * 条件装配：
  *   llm        → 注入 LLM；缺失则 AI 能力整体停用（路由返回 503）
+ *   web        → 可选的起草搜索，属于宿主能力
  *   webServer  → 注册单条 prefix 路由 `/api/prompt-enhancer`
  *   lifecycle  → 生命周期日志（仅开发构建）
  *
@@ -24,9 +25,11 @@
 // 对该包悬空，整包 type import 会断 typecheck；运行时 ctx.settings 由 0.2.0 宿主真实提供）。
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import type {} from "@deepseek-ai/dsh-llm";
+import type {} from "@deepseek-ai/dsh-web";
 import type {} from "@deepseek-ai/cordis-plugin-loader";
 import type { Context } from "@deepseek-ai/cordis";
 import { clearRouteCache, registerLlm } from "./host/ai.ts";
+import { registerDraftSearch } from "./host/draft-search.ts";
 import { makeRoutes } from "./host/routes.ts";
 import {
   bindSettingsHost,
@@ -57,6 +60,11 @@ export function apply(ctx: Context, config: PluginRuntimeConfig): void {
   ctx.inject(["llm"], (llmCtx) => {
     registerLlm(llmCtx.llm);
     return () => registerLlm(undefined);
+  });
+
+  ctx.inject(["web"], (webCtx) => {
+    registerDraftSearch(webCtx.web);
+    return () => registerDraftSearch(undefined);
   });
 
   ctx.inject(["webServer"], (httpCtx) => {

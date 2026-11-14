@@ -2,7 +2,8 @@
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { canRender } from "../../overlay-claim.ts";
-import type { Prompt, PromptCheckResult, TemplateVariable } from "../../types.ts";
+import type { Prompt, PromptCheckResult, PromptDraftRequest, TemplateVariable } from "../../types.ts";
+import { PromptDraftForm, type DraftSession } from "./PromptDraftForm.tsx";
 import {
   aiErrorKey,
   canToggle,
@@ -51,6 +52,9 @@ type Status =
   | "done"
   | "checking"
   | "checked"
+  | "draftingPrompt"
+  | "searchingDraft"
+  | "draftPrompt"
   | "error"
   | "refining"
   | "refined"
@@ -58,6 +62,8 @@ type Status =
   | "saved"
   | "saveFailed"
   | "writeBackFailed";
+
+type OptimizeMode = "polish" | "check" | "template";
 
 /** 「已复制」的回退时长（与 P4 notice 同款：自动消失，不打断输入）。 */
 const COPIED_MS = 2000;
@@ -93,10 +99,13 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
    */
   const settings = useSettings();
   const [status, setStatus] = React.useState<Status>("idle");
+  const [mode, setMode] = React.useState<OptimizeMode>("polish");
   /** 点击那一刻的草稿快照（D-P5-5）：「原文」永远是它，润色与完善都用它当输入。 */
   const [original, setOriginal] = React.useState("");
   const [polished, setPolished] = React.useState("");
   const [checkReport, setCheckReport] = React.useState<PromptCheckResult | null>(null);
+  const [draftSession, setDraftSession] = React.useState<DraftSession | null>(null);
+  const [replacement, setReplacement] = React.useState<{ current: string; proposed: string } | null>(null);
   const [resultView, setResultView] = React.useState<"final" | "edit" | "original">("final");
   const showOriginal = resultView === "original";
   /**
@@ -128,6 +137,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   /** 调用闸门：ref 同步生效（state 的 disabled 要等渲染），覆盖「探测 → 润色/完善/存库/切换」整段。 */
   const busyRef = React.useRef(false);
+  const requestRef = React.useRef<{ controller: AbortController; startedAt: number; returnTo: Status } | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
   /** 卸载守卫（P4 惯例）：异步回调不再 setState；重挂载时复位，避免 StrictMode 双挂后永久失活。 */
   const aliveRef = React.useRef(true);
 
@@ -135,8 +146,50 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      const request = requestRef.current;
+      if (request) {
+        requestRef.current = null;
+        busyRef.current = false;
+        request.controller.abort();
+      }
     };
   }, []);
+
+  const waiting = status === "polishing" || status === "checking" || status === "refining" ||
+    status === "draftingPrompt" || status === "searchingDraft";
+  React.useEffect(() => {
+    if (!waiting) return;
+    const id = window.setInterval(() => {
+      const request = requestRef.current;
+      if (request) setElapsedSeconds(Math.floor((performance.now() - request.startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [waiting]);
+
+  const beginRequest = (returnTo: Status): AbortController => {
+    const controller = new AbortController();
+    requestRef.current = { controller, startedAt: performance.now(), returnTo };
+    busyRef.current = true;
+    setElapsedSeconds(0);
+    return controller;
+  };
+
+  const isCurrentRequest = (controller: AbortController): boolean =>
+    aliveRef.current && requestRef.current?.controller === controller;
+
+  const finishRequest = (controller: AbortController): boolean => {
+    if (!isCurrentRequest(controller)) return false;
+    requestRef.current = null;
+    busyRef.current = false;
+    return true;
+  };
+
+  const cancelRequest = (): void => {
+    const request = requestRef.current;
+    if (!request || !finishRequest(request.controller)) return;
+    request.controller.abort();
+    setStatus(request.returnTo);
+  };
 
   const claimed = useOverlayClaim();
   const aiWanted = settings.showAIPolishButton && status !== "idle";
@@ -155,6 +208,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setOriginal("");
     setPolished("");
     setCheckReport(null);
+    setDraftSession(null);
+    setReplacement(null);
     setResultView("final");
     setRefined(null);
     setSaved(null);
@@ -171,7 +226,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   const settled = status === "choose" || status === "done" || status === "checked" || status === "error" ||
     status === "refined" || status === "saved" || status === "saveFailed" || status === "writeBackFailed";
-  useDismissOnOutside(rootRef, aiVisible && settled, close);
+  useDismissOnOutside(rootRef, aiVisible && settled && draftSession === null, close);
 
   // 已复制提示自动消失。
   React.useEffect(() => {
@@ -182,9 +237,10 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     };
   }, [copied]);
 
-  const run = (snapshot: string, mode: "polish" | "check" | "template"): void => {
+  const run = (snapshot: string, mode: OptimizeMode): void => {
     if (busyRef.current || !snapshot.trim()) return;
-    busyRef.current = true;
+    const controller = beginRequest(draftSession ? "draftPrompt" : "choose");
+    setMode(mode);
     // 授权**算一次、两处共用**：这一份发给宿主，下面 done 分支的提示读同一个 state。
     const keepVariables = keepVariablesFor(snapshot);
     setKeepVars(keepVariables);
@@ -204,31 +260,86 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     void (async () => {
       try {
         if (mode === "template") {
-          const result = await api.refinePrompt(snapshot);
-          if (!aliveRef.current) return;
+          const result = await api.refinePrompt(snapshot, controller.signal);
+          if (!isCurrentRequest(controller)) return;
           setRefined(result);
           setStatus("refined");
         } else if (mode === "check") {
-          const report = await api.checkPrompt(snapshot);
-          if (!aliveRef.current) return;
+          const report = await api.checkPrompt(snapshot, controller.signal);
+          if (!isCurrentRequest(controller)) return;
           setCheckReport(report);
+          setDraftSession((session) => session && { ...session, checkedBody: snapshot });
           setStatus("checked");
         } else {
-          const result = await api.polishPrompt(snapshot, { keepVariables });
-          if (!aliveRef.current) return;
+          const result = await api.polishPrompt(snapshot, { keepVariables }, controller.signal);
+          if (!isCurrentRequest(controller)) return;
           setPolished(result.polished);
           setStatus("done");
         }
       } catch (err) {
+        if (!isCurrentRequest(controller)) return;
         console.warn("[prompt-enhancer] AI 优化失败", err);
-        if (!aliveRef.current) return;
         setErrorKey(aiErrorKey(err));
         setStatus("error");
       } finally {
-        // 三条出口（探测失败 / 不可用 / 调用成功或失败）都必须开闸，否则一次失败就再也点不动。
-        busyRef.current = false;
+        finishRequest(controller);
       }
     })();
+  };
+
+  const startDraft = (): void => {
+    setErrorKey(null);
+    setDraftSession({ composer: draft, idea: draft.trim() ? draft : "", questions: [], answers: [], body: "", assumptions: [], step: "idea" });
+    setStatus("draftPrompt");
+  };
+
+  const backToDraft = (): void => {
+    setErrorKey(null);
+    setDraftChanged(false);
+    setReplacement(null);
+    setCopied(false);
+    setCopyFailed(false);
+    setStatus("draftPrompt");
+  };
+
+  const generateDraft = (request: PromptDraftRequest): void => {
+    if (busyRef.current || !request.idea.trim()) return;
+    const controller = beginRequest("draftPrompt");
+    setErrorKey(null);
+    setCopied(false);
+    setCopyFailed(false);
+    setStatus("draftingPrompt");
+    void (async () => {
+      try {
+        const result = await api.draftPrompt(request, controller.signal);
+        if (!isCurrentRequest(controller)) return;
+        setDraftSession((session) => session && (result.kind === "clarify"
+          ? { ...session, step: "questions", questions: result.questions, answers: result.questions.map(() => "") }
+          : { ...session, step: "result", body: result.body, assumptions: result.assumptions, toVerify: result.toVerify, draftSources: request.sources }));
+      } catch (err) {
+        if (!isCurrentRequest(controller)) return;
+        console.warn("[prompt-enhancer] 提示词起草失败", err);
+        setErrorKey(aiErrorKey(err));
+      } finally {
+        if (finishRequest(controller)) setStatus("draftPrompt");
+      }
+    })();
+  };
+
+  const searchDraft = async (query: string): Promise<void> => {
+    if (busyRef.current || !query.trim()) return;
+    const controller = beginRequest("draftPrompt");
+    setStatus("searchingDraft");
+    try {
+      const search = await api.searchDraft(query.trim(), controller.signal);
+      if (isCurrentRequest(controller)) setDraftSession((session) => session && { ...session, search });
+    } catch (err) {
+      if (!isCurrentRequest(controller)) return;
+      console.warn("[prompt-enhancer] 起草搜索失败", err);
+      setDraftSession((session) => session && { ...session, search: { status: "failed" } });
+    } finally {
+      if (finishRequest(controller)) setStatus("draftPrompt");
+    }
   };
 
   /**
@@ -350,12 +461,27 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   /** 草稿仍与发起时一致才允许覆盖。 */
   const apply = (text: string): void => {
-    if (draft !== original) {
+    if (draftSession !== null && draft !== draftSession.composer) {
+      setReplacement({ current: draft, proposed: text });
+      setFillTarget(null);
+      return;
+    }
+    if (draftSession === null && draft !== original) {
       setDraftChanged(true);
       setFillTarget(null);
       return;
     }
     inputActions.setDraft(text);
+    close();
+  };
+
+  const confirmReplacement = (): void => {
+    if (replacement === null) return;
+    if (draft !== replacement.current) {
+      setReplacement({ ...replacement, current: draft });
+      return;
+    }
+    inputActions.setDraft(replacement.proposed);
     close();
   };
 
@@ -373,19 +499,27 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     status === "polishing"
       ? "ai.polishing"
       : status === "checking" ? "ai.checking"
+      : status === "draftingPrompt" ? "ai.draft.generating"
+      : status === "searchingDraft" ? "ai.draft.searching"
       : status === "refining" ? "ai.refining"
       : status === "saving" ? "ai.saving"
       : null;
   const empty = draft.trim() === "";
-  const triggerDisabled = busyKey !== null || (empty && !aiVisible);
-  const hint = busyKey !== null ? t(busyKey) : empty ? t("ai.empty") : t("ai.tip");
+  const triggerDisabled = busyKey !== null;
+  const hint = busyKey !== null ? t(busyKey) : t("ai.tip");
   /** 淘汰提示：写回失败时也必须可见（那时 status 不是 saved，但淘汰已经真实发生）。 */
   const evictedNotice = evicted ? <span style={MUTED}>{t("ai.evicted")}</span> : null;
   const showRefined = status === "refined" || status === "saveFailed";
   const needsFill = needsValues(resultBody);
   const showCheck = status === "checking" || status === "checked";
+  const showDraft = status === "draftPrompt" || status === "draftingPrompt" || status === "searchingDraft";
+  const showMenu = status === "choose" || (status === "error" && !draftSession);
+  const failedHandoffKey = mode === "check" ? "ai.check" : "ai.refine";
+  const checkInput = draftSession?.body ?? draft;
   const dialogLabel =
-    showCheck ? t("ai.check")
+    status === "error" && draftSession ? t(failedHandoffKey)
+    : showDraft ? t("ai.draft.title")
+    : showCheck ? t("ai.check")
     : status === "done"
       ? t("ai.result")
       : showRefined || status === "saving" || status === "writeBackFailed"
@@ -407,7 +541,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
         disabled={triggerDisabled}
         onClick={() => {
           if (aiVisible) close();
-          else if (!empty && status === "idle") setStatus("choose");
+          else if (status === "idle") setStatus("choose");
         }}
       >
         <SparkleIcon />
@@ -428,54 +562,108 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
               onCancel={() => setFillTarget(null)}
             />
           ) : (
-            <div role="dialog" aria-label={dialogLabel} style={showRefined ? TEMPLATE_PANEL : PANEL}>
-              <span style={PANEL_HEADER}>
-                <strong>{t(showCheck ? "ai.check" : showRefined ? "ai.refine" : "ai.button")}</strong>
-                <button type="button" style={PANEL_BUTTON} disabled={busyKey !== null} onClick={close}>
-                  {t("ai.close")}
+            <div
+              role="dialog"
+              aria-label={dialogLabel}
+              style={showRefined || showDraft || replacement ? TEMPLATE_PANEL : status === "checked" ? CHECK_PANEL : showMenu ? MENU_PANEL : PANEL}
+            >
+              <span style={status === "checked" ? { ...PANEL_HEADER, flexShrink: 0 } : PANEL_HEADER}>
+                <strong>{status === "error" && draftSession ? t(failedHandoffKey) : t(showDraft ? "ai.draft.title" : showCheck ? "ai.check" : showRefined ? "ai.refine" : "ai.button")}</strong>
+                <button type="button" style={PANEL_BUTTON} disabled={!waiting && busyKey !== null} onClick={waiting ? cancelRequest : close}>
+                  {t(waiting ? "ai.cancelRequest" : "ai.close")}
                 </button>
               </span>
-              {(status === "choose" || status === "error") && (
-                <span style={ACTIONS}>
-                  <button type="button" style={PRIMARY} disabled={empty} onClick={() => run(draft, "polish")}>{t("ai.lightPolish")}</button>
-                  <button type="button" style={PANEL_BUTTON} disabled={empty} onClick={() => run(draft, "check")}>{t("ai.check")}</button>
-                  <button type="button" style={PANEL_BUTTON} disabled={empty} onClick={() => run(draft, "template")}>{t("ai.refine")}</button>
-                </span>
+              {showMenu && (
+                <>
+                  <div style={MENU_ACTIONS}>
+                    <button type="button" style={empty ? DISABLED_MODE : PRIMARY_MODE} disabled={empty} onClick={() => run(draft, "polish")}>{t("ai.lightPolish")}</button>
+                    <button type="button" style={empty ? DISABLED_MODE : MENU_BUTTON} disabled={empty} onClick={() => run(draft, "check")}>{t("ai.check")}</button>
+                    <button type="button" style={empty ? DISABLED_MODE : MENU_BUTTON} disabled={empty} onClick={() => run(draft, "template")}>{t("ai.refine")}</button>
+                    <button type="button" style={empty ? PRIMARY_MODE : MENU_BUTTON} onClick={startDraft}>{t("ai.draft.title")}</button>
+                  </div>
+                  {empty && <span style={MUTED}>{t("ai.empty")}</span>}
+                </>
+              )}
+              {replacement ? (
+                <>
+                  <div style={RESULT_CONTENT}>
+                    <span role="alert">{t(replacement.current === draft ? "ai.draft.replaceWarning" : "ai.draft.replaceChanged")}</span>
+                    <span style={HEADER}>{t("ai.draft.currentComposer")}</span>
+                    <pre style={PREVIEW}>{draft || "—"}</pre>
+                    <span style={HEADER}>{t("ai.draft.result")}</span>
+                    <pre style={PREVIEW}>{replacement.proposed}</pre>
+                  </div>
+                  <footer style={RESULT_ACTIONS}>
+                    <button type="button" style={PANEL_BUTTON} onClick={() => setReplacement(null)}>{t("ai.draft.keepEditing")}</button>
+                    <button type="button" style={PRIMARY} onClick={confirmReplacement}>
+                      {t(replacement.current === draft ? "ai.draft.replace" : "ai.draft.confirmCurrent")}
+                    </button>
+                  </footer>
+                </>
+              ) : showDraft && draftSession && (
+                <PromptDraftForm
+                  t={t}
+                  session={draftSession}
+                  busy={busyKey !== null}
+                  error={errorKey}
+                  update={setDraftSession}
+                  generate={generateDraft}
+                  onSearch={(query) => void searchDraft(query)}
+                  onBack={() => { setDraftSession(null); setErrorKey(null); setStatus("choose"); }}
+                  onApply={() => apply(draftSession.body)}
+                  onCheck={() => run(draftSession.body, "check")}
+                  onEnhance={() => run(draftSession.body, "template")}
+                  onCopy={() => copy(draftSession.body)}
+                  copyLabel={copyFailed ? "ai.copyFail" : copied ? "ai.copied" : "ai.copy"}
+                />
               )}
               {!showRefined && draftChanged && <span role="alert" style={MUTED}>{t("ai.draftChanged")}</span>}
               {status === "done" && missing.length > 0 && (
                 <span role="alert" style={MUTED}>{t("ai.missingVariables")} {missing.join(", ")}</span>
               )}
               {busyKey !== null && (
-                <span role="status" aria-live="polite" style={MUTED}>
-                  {t(busyKey)}
-                </span>
+                <div style={WAIT_STATUS}>
+                  <span role="status" style={MUTED}>{t(busyKey)}</span>
+                  {waiting && <span style={WAIT_ELAPSED}>{t("ai.elapsed").replace("{seconds}", String(elapsedSeconds))}</span>}
+                </div>
               )}
               {status === "error" && (
-                <span role="alert" style={MUTED}>{t(errorKey ?? "ai.fail")}</span>
+                <>
+                  <span role="alert" style={MUTED}>{t(errorKey ?? "ai.fail")}</span>
+                  {draftSession && (
+                    <div style={ACTIONS}>
+                      <button type="button" style={PANEL_BUTTON} onClick={backToDraft}>{t("ai.draft.backToResult")}</button>
+                      <button type="button" style={PRIMARY} onClick={() => run(draftSession.body, mode)}>{t("ai.retry")}</button>
+                    </div>
+                  )}
+                </>
               )}
               {status === "checked" && checkReport && (
                 <>
-                  {draft !== original && <span role="status" style={MUTED}>{t("ai.checkStale")}</span>}
-                  {checkReport.findings.length === 0 ? (
-                    <span role="status">{t("ai.checkClear")}</span>
-                  ) : (
-                    <ul style={CHECK_FINDINGS}>
-                      {checkReport.findings.map(({ quote, issue, suggestion }, index) => (
-                        <li key={index} style={CHECK_FINDING}>
-                          <strong>{issue}</strong>
-                          <blockquote style={CHECK_QUOTE}>{quote}</blockquote>
-                          <span>{suggestion}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <div style={RESULT_ACTIONS}>
-                    <button type="button" style={PANEL_BUTTON} onClick={() => setStatus("choose")}>{t("ai.backToActions")}</button>
-                    {draft !== original && !empty && (
-                      <button type="button" style={PRIMARY} onClick={() => run(draft, "check")}>{t("ai.checkAgain")}</button>
+                  <div role="region" aria-label={t("ai.checkReport")} tabIndex={0} style={CHECK_CONTENT}>
+                    {checkInput !== original && <span role="status" style={MUTED}>{t("ai.checkStale")}</span>}
+                    {checkReport.findings.length === 0 ? (
+                      <span role="status">{t("ai.checkClear")}</span>
+                    ) : (
+                      <ul style={CHECK_FINDINGS}>
+                        {checkReport.findings.map(({ quote, issue, suggestion }, index) => (
+                          <li key={index} style={index === 0 ? CHECK_FINDING : CHECK_NEXT_FINDING}>
+                            <strong style={CHECK_ISSUE}>{issue}</strong>
+                            <blockquote style={CHECK_QUOTE}>{quote}</blockquote>
+                            <p style={CHECK_SUGGESTION}><strong>{t("ai.checkSuggestion")}</strong> {suggestion}</p>
+                          </li>
+                        ))}
+                      </ul>
                     )}
                   </div>
+                  <footer style={RESULT_ACTIONS}>
+                    <button type="button" style={PANEL_BUTTON} onClick={draftSession ? backToDraft : () => setStatus("choose")}>
+                      {t(draftSession ? "ai.draft.backToResult" : "ai.backToActions")}
+                    </button>
+                    {checkInput !== original && !!checkInput.trim() && (
+                      <button type="button" style={PRIMARY} onClick={() => run(checkInput, "check")}>{t("ai.checkAgain")}</button>
+                    )}
+                  </footer>
                 </>
               )}
               {status === "done" && (
@@ -527,7 +715,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   </span>
                 </>
               )}
-              {showRefined && refined !== null && (
+              {!replacement && showRefined && refined !== null && (
                 <>
                   <div style={PILLS}>
                     <button type="button" style={pill(resultView === "final")} aria-pressed={resultView === "final"} onClick={() => setResultView("final")}>{t("ai.finalTemplate")}</button>
@@ -629,6 +817,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                     )}
                   </div>
                   <footer style={RESULT_ACTIONS}>
+                    {draftSession && (
+                      <button type="button" style={PANEL_BUTTON} onClick={backToDraft}>{t("ai.draft.backToResult")}</button>
+                    )}
                     {resultView === "final" ? (
                       <>
                         <button type="button" style={PANEL_BUTTON} disabled={!refinedBody.trim()} onClick={save}>
@@ -685,6 +876,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   )}
                   <span style={PREVIEW}>{previewText(saved.body)}</span>
                   <span style={ACTIONS}>
+                    {draftSession && (
+                      <button type="button" style={PANEL_BUTTON} onClick={backToDraft}>{t("ai.draft.backToResult")}</button>
+                    )}
                     <button type="button" style={PANEL_BUTTON} onClick={close}>
                       {t("ai.close")}
                     </button>
@@ -748,6 +942,8 @@ const PANEL: React.CSSProperties = {
 const HEADER: React.CSSProperties = { color: TOKEN.muted, fontSize: 11, fontWeight: 600 };
 
 const MUTED: React.CSSProperties = { color: TOKEN.muted, fontSize: 11, overflowWrap: "anywhere" };
+const WAIT_STATUS: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: "2px 8px", flexShrink: 0 };
+const WAIT_ELAPSED: React.CSSProperties = { ...MUTED, fontVariantNumeric: "tabular-nums" };
 
 const ERROR: React.CSSProperties = {
   display: "flex",
@@ -828,10 +1024,27 @@ const PANEL_BUTTON: React.CSSProperties = {
 
 
 const PRIMARY: React.CSSProperties = { ...PANEL_BUTTON, color: TOKEN.accent, borderColor: TOKEN.accent };
+const MENU_PANEL: React.CSSProperties = { ...PANEL, width: "min(260px, calc(100vw - 120px))", gap: 10 };
+const MENU_ACTIONS: React.CSSProperties = { display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 4, flexShrink: 0 };
+const MENU_BUTTON: React.CSSProperties = {
+  ...PANEL_BUTTON, textAlign: "start", padding: "6px 9px", fontSize: 12, borderColor: "transparent", overflowWrap: "anywhere",
+};
+const PRIMARY_MODE: React.CSSProperties = { ...MENU_BUTTON, color: TOKEN.accent, background: TOKEN.hover, fontWeight: 600 };
+const DISABLED_MODE: React.CSSProperties = { ...MENU_BUTTON, opacity: 0.5, cursor: "default" };
 const PANEL_HEADER: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
-const CHECK_FINDINGS: React.CSSProperties = { display: "grid", gap: 10, listStyle: "none", padding: 0, margin: "4px 0" };
-const CHECK_FINDING: React.CSSProperties = { display: "grid", gap: 4, paddingBottom: 8, overflowWrap: "anywhere", borderBottom: `1px solid ${TOKEN.border}` };
-const CHECK_QUOTE: React.CSSProperties = { margin: 0, paddingInlineStart: 8, color: TOKEN.muted, borderInlineStart: `2px solid ${TOKEN.border}`, whiteSpace: "pre-wrap" };
+const CHECK_FINDINGS: React.CSSProperties = { flexShrink: 0, listStyle: "none", padding: 0, margin: 0 };
+const CHECK_FINDING: React.CSSProperties = { display: "grid", gap: 6, paddingBlock: 10 };
+const CHECK_NEXT_FINDING: React.CSSProperties = { ...CHECK_FINDING, borderTop: `1px solid ${TOKEN.border}` };
+const CHECK_ISSUE: React.CSSProperties = { fontWeight: 600 };
+const CHECK_QUOTE: React.CSSProperties = {
+  margin: 0,
+  padding: "4px 8px",
+  color: TOKEN.muted,
+  background: TOKEN.hover,
+  borderInlineStart: `2px solid ${TOKEN.border}`,
+  whiteSpace: "pre-wrap",
+};
+const CHECK_SUGGESTION: React.CSSProperties = { margin: 0, whiteSpace: "pre-wrap" };
 const SUGGESTIONS: React.CSSProperties = { display: "grid", gap: 8, margin: 0, minWidth: 0, border: 0, padding: "4px 0 2px" };
 const SUGGESTION: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 6, overflowWrap: "anywhere", lineHeight: 1.55 };
 
@@ -853,6 +1066,23 @@ const RESULT_CONTENT: React.CSSProperties = {
   flexDirection: "column",
   gap: 6,
   padding: 2,
+};
+
+const CHECK_PANEL: React.CSSProperties = {
+  ...PANEL,
+  width: TEMPLATE_PANEL.width,
+  maxHeight: TEMPLATE_PANEL.height,
+  overflow: "hidden",
+  gap: 8,
+};
+
+const CHECK_CONTENT: React.CSSProperties = {
+  ...RESULT_CONTENT,
+  overscrollBehavior: "contain",
+  paddingInlineEnd: 8,
+  outlineOffset: -2,
+  lineHeight: 1.65,
+  overflowWrap: "anywhere",
 };
 
 const TEMPLATE_EDITOR: React.CSSProperties = {

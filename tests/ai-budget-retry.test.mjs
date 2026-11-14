@@ -133,9 +133,7 @@ test("R1 润色：重试诊断必须是纯文本口径（不得出现 JSON 字�
 });
 
 test("R1 回归：一键完善的诊断仍要求 JSON（不得被润色的口径带跑）", async () => {
-  // 注意：`schema-mismatch`（拿到文本但解析不出字段）**不触发**诊断重试——它发生在
-  // `callLlmWithRetry` 返回之后的解析步；重试只包在「这一次尝试本身失败」（超时 / 空输出 / 抛错）外面。
-  // 故这里用「首试空输出」触发重试，正是 JSON 诊断该出现的那条路径。
+  // 传输层空输出也走 JSON 诊断，与结构校验失败共用同一次重试。
   const cap = capturingRuntime([
     EMPTY,                                    // 首试：空输出 ⇒ 触发诊断重试
     ['{"title":"t","tags":[],"summary":"s","body":"完善稿"}', STOP],
@@ -146,8 +144,10 @@ test("R1 回归：一键完善的诊断仍要求 JSON（不得被润色的口径
   assert.equal(r.ok, true, "重试成功后一键完善必须整体成功");
   assert.equal(r.refined.body, "完善稿");
   assert.equal(cap.messages.length, 2);
-  assert.ok(/JSON/.test(cap.messages[1]), "JSON 能力的诊断必须继续要求 JSON 对象");
-  assert.ok(!/直接输出正文/.test(cap.messages[1]), "JSON 能力不得被纯文本口径带跑");
+  const retry = JSON.parse(cap.messages[1]);
+  assert.equal(retry.body, "草稿");
+  assert.ok(/本次请严格输出一个 JSON 对象/.test(retry.retryDiagnosis), "JSON 能力的诊断必须继续要求 JSON 对象");
+  assert.ok(!/直接输出正文/.test(retry.retryDiagnosis), "JSON 能力不得被纯文本口径带跑");
 });
 
 // ── R3：预算接线的端到端判据 ───────────────────────────────────────────────

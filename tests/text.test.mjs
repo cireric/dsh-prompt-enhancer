@@ -163,6 +163,13 @@ test("parseRefineResult：正文缺失/为空 → undefined（调用方按失败
   assert.equal(refine.parseRefineResult('{"body":123}'), undefined);
 });
 
+test("parseRefineResult：JSON 正文自己的两段代码围栏保持原样", () => {
+  const body = '输出格式参考\n```json\n{"result": "示例"}\n```\n\n再附上\n```text\n{{说明}}\n```';
+  for (const output of [JSON.stringify({ body }), '```json\n' + JSON.stringify({ body }) + '\n```']) {
+    assert.equal(refine.parseRefineResult(output)?.body, body);
+  }
+});
+
 test("parseRefineResult：非 JSON / 坏 JSON → undefined（不得抛）", () => {
   assert.equal(refine.parseRefineResult(""), undefined);
   assert.equal(refine.parseRefineResult("模型今天不想输出 JSON"), undefined);

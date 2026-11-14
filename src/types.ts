@@ -43,6 +43,33 @@ export interface PromptCheckResult {
   findings: PromptCheckFinding[];
 }
 
+export interface PromptDraftQuestion {
+  question: string;
+  options: string[];
+}
+
+export interface PromptDraftRequest {
+  idea: string;
+  /** Absent on the first request. Present to generate after the clarification round. */
+  answers?: Array<{ question: string; answer: string }>;
+  references?: string;
+  sources?: PromptDraftSource[];
+}
+
+export interface PromptDraftSource {
+  url: string;
+  title?: string;
+  snippet?: string;
+}
+
+export type PromptDraftSearchResult =
+  | { status: "found"; sources: PromptDraftSource[] }
+  | { status: "unavailable" | "empty" | "failed" };
+
+export type PromptDraftResult =
+  | { kind: "clarify"; questions: PromptDraftQuestion[] }
+  | { kind: "draft"; body: string; assumptions: string[]; toVerify?: string[] };
+
 /** 一条提示词。 */
 export interface Prompt {
   id: string;

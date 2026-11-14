@@ -17,7 +17,7 @@ Derived from [`master1Sun/dsh-prompt-library`](https://github.com/master1Sun/dsh
 1. **Prompt library**: CRUD (title + body + tags), search, sorting, tag grouping, usage-count statistics; **two entries** — a button beside the composer and an entry at the sidebar foot (next to Settings) — both open the manager panel
 2. **Reuse**: insert (append) / overwrite / insert-and-send; type `#` for a live-filtering overlay
 3. **Template variables**: `{{name}}` placeholders, with a filled preview before inserting and remembered values for library reuse
-4. **AI optimization**: choose Light polish, Check prompt or Enhance as template beside the prompt library. Checking shows findings and quotes from the draft. Template enhancement lets you select optional additions, try values, then apply or save the template
+4. **AI optimization**: choose Light polish, Check prompt, Enhance as template, or Draft from an idea beside the prompt library. Drafting works with an empty composer. You can check the generated prompt, turn it into a template, or apply it to the composer
 5. **Rollback**: the pre-polish body is kept, so you can switch back and forth between "original" and "polished"
 6. **Three capture paths**: create/edit in the manager panel, "save as prompt" from selected text, save the current draft
 7. **Tag management** and a **recycle bin** (soft delete + restore + permanent delete + empty)

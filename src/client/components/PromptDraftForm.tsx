@@ -1,0 +1,194 @@
+import * as React from "react";
+import type { TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
+import type { PromptDraftQuestion, PromptDraftRequest, PromptDraftSearchResult, PromptDraftSource } from "../../types.ts";
+import { actions, button, muted, primaryButton, textArea, textInput } from "../utils/dialog-style.ts";
+import type { PromptEnhancerKey } from "../utils/i18n.ts";
+import { TOKEN } from "../utils/theme.ts";
+
+export interface DraftSession {
+  composer: string;
+  idea: string;
+  questions: PromptDraftQuestion[];
+  answers: string[];
+  body: string;
+  assumptions: string[];
+  step: "idea" | "questions" | "result";
+  checkedBody?: string;
+  toVerify?: string[];
+  query?: string;
+  references?: string;
+  search?: PromptDraftSearchResult;
+  draftSources?: PromptDraftSource[];
+}
+
+interface Props {
+  t: TranslateNS<"prompt-enhancer">;
+  session: DraftSession;
+  busy: boolean;
+  error: PromptEnhancerKey | null;
+  update: (next: DraftSession) => void;
+  generate: (request: PromptDraftRequest) => void;
+  onSearch: (query: string) => void;
+  onBack: () => void;
+  onApply: () => void;
+  onCheck: () => void;
+  onEnhance: () => void;
+  onCopy: () => void;
+  copyLabel: PromptEnhancerKey;
+}
+
+export function PromptDraftForm({
+  t, session, busy, error, update, generate, onSearch, onBack, onApply, onCheck, onEnhance, onCopy, copyLabel,
+}: Props): React.ReactElement {
+  const { idea, questions, answers, body, assumptions, step, checkedBody } = session;
+  const { query = "", search, references = "", toVerify = [], draftSources = [] } = session;
+  const sources = search?.status === "found" ? search.sources : [];
+  const searchNotice = search?.status === "unavailable" ? "ai.draft.searchUnavailable"
+    : search?.status === "empty" ? "ai.draft.searchEmpty"
+    : search?.status === "failed" ? "ai.draft.searchFailed" : undefined;
+  const submit = (answers?: PromptDraftRequest["answers"]): void => {
+    generate({ idea, answers, ...(references.trim() ? { references } : {}), ...(sources.length ? { sources } : {}) });
+  };
+  const setAnswer = (index: number, answer: string): void => {
+    update({ ...session, answers: answers.map((previous, position) => position === index ? answer : previous) });
+  };
+
+  return (
+    <>
+      <div style={CONTENT}>
+        {error && <span role="alert">{t(error)}</span>}
+        {step === "idea" && (
+          <textarea
+            aria-label={t("ai.draft.idea")}
+            placeholder={t("ai.draft.example")}
+            value={idea}
+            autoFocus
+            readOnly={busy}
+            style={EDITOR}
+            onChange={(event) => update({ ...session, idea: event.target.value, questions: [], answers: [] })}
+          />
+        )}
+        {step === "questions" && questions.map(({ question, options }, index) => (
+          <fieldset key={question} style={QUESTION} disabled={busy}>
+            <legend style={LEGEND}>{question}</legend>
+            {options.length > 0 && (
+              <div style={OPTIONS}>
+                {options.map((option) => (
+                  <button key={option} type="button" style={answers[index] === option ? primaryButton : button}
+                    aria-pressed={answers[index] === option} onClick={() => setAnswer(index, option)}>
+                    {option}
+                  </button>
+                ))}
+              </div>
+            )}
+            <textarea aria-label={question} placeholder={t("ai.draft.answer")}
+              value={answers[index] ?? ""} rows={2} style={textArea}
+              onChange={(event) => setAnswer(index, event.target.value)} />
+          </fieldset>
+        ))}
+        {step !== "result" && (
+          <details style={ASSUMPTIONS}>
+            <summary>{t("ai.draft.research")}</summary>
+            <div style={RESEARCH_FIELDS}>
+              <div style={OPTIONS}>
+                <input type="text" aria-label={t("ai.draft.query")} placeholder={t("ai.draft.query")}
+                  maxLength={240} value={query} disabled={busy} style={{ ...textInput, flex: "1 1 150px" }}
+                  onChange={(event) => update({ ...session, query: event.currentTarget.value, search: undefined })} />
+                <button type="button" style={button} disabled={busy || !query.trim()} onClick={() => onSearch(query)}>
+                  {t("ai.draft.search")}
+                </button>
+              </div>
+              <span style={muted}>{t("ai.draft.queryHint")}</span>
+              {searchNotice && <span role="status">{t(searchNotice)}</span>}
+              {sources.length > 0 && <DraftSources t={t} sources={sources} />}
+              <textarea aria-label={t("ai.draft.references")} placeholder={t("ai.draft.references")}
+                value={references} maxLength={4000} rows={2} style={textArea} disabled={busy}
+                onChange={(event) => update({ ...session, references: event.currentTarget.value })} />
+            </div>
+          </details>
+        )}
+        {step === "result" && (
+          <>
+            <textarea aria-label={t("ai.draft.result")} value={body} style={EDITOR}
+              onChange={(event) => update({ ...session, body: event.target.value })} />
+            {assumptions.length > 0 && (
+              <details open style={ASSUMPTIONS}>
+                <summary>{t("ai.draft.assumptions")}</summary>
+                <ul style={ASSUMPTION_LIST}>{assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}</ul>
+              </details>
+            )}
+            {toVerify.length > 0 && (
+              <details open style={ASSUMPTIONS}>
+                <summary>{t("ai.draft.toVerify")}</summary>
+                <ul style={ASSUMPTION_LIST}>{toVerify.map((step) => <li key={step}>{step}</li>)}</ul>
+              </details>
+            )}
+            {draftSources.length > 0 && <DraftSources t={t} sources={draftSources} />}
+            {checkedBody !== undefined && checkedBody !== body && (
+              <span role="status" style={muted}>{t("ai.draft.checkStale")}</span>
+            )}
+          </>
+        )}
+      </div>
+      <footer style={FOOTER}>
+        {step === "idea" && (
+          <>
+            <button type="button" style={button} disabled={busy} onClick={onBack}>{t("ai.backToActions")}</button>
+            {body && <button type="button" style={button} disabled={busy}
+              onClick={() => update({ ...session, step: "result" })}>{t("ai.draft.backToResult")}</button>}
+            <button type="button" style={primaryButton} disabled={busy || !idea.trim()}
+              onClick={() => submit()}>{t("ai.draft.continue")}</button>
+          </>
+        )}
+        {step === "questions" && (
+          <>
+            <button type="button" style={button} disabled={busy}
+              onClick={() => update({ ...session, step: "idea" })}>{t("ai.draft.editIdea")}</button>
+            {body && <button type="button" style={button} disabled={busy}
+              onClick={() => update({ ...session, step: "result" })}>{t("ai.draft.backToResult")}</button>}
+            <button type="button" style={answers.some((answer) => answer.trim()) ? button : primaryButton} disabled={busy}
+              onClick={() => submit(questions.map(({ question }) => ({ question, answer: "" })))}>{t("ai.draft.skip")}</button>
+            <button type="button" style={primaryButton} disabled={busy || !answers.some((answer) => answer.trim())}
+              onClick={() => submit(questions.map(({ question }, index) => ({ question, answer: answers[index] ?? "" })))}>
+              {t("ai.draft.generate")}
+            </button>
+          </>
+        )}
+        {step === "result" && (
+          <>
+            <button type="button" style={button} onClick={() => update({ ...session, step: questions.length ? "questions" : "idea" })}>
+              {t(questions.length ? "ai.draft.editAnswers" : "ai.draft.editIdea")}
+            </button>
+            <button type="button" style={button} disabled={!body.trim()} onClick={onCopy}>{t(copyLabel)}</button>
+            <button type="button" style={button} disabled={!body.trim()} onClick={onCheck}>{t("ai.check")}</button>
+            <button type="button" style={button} disabled={!body.trim()} onClick={onEnhance}>{t("ai.refine")}</button>
+            <button type="button" style={primaryButton} disabled={!body.trim()} onClick={onApply}>{t("ai.apply")}</button>
+          </>
+        )}
+      </footer>
+    </>
+  );
+}
+
+function DraftSources({ t, sources }: Pick<Props, "t"> & { sources: PromptDraftSource[] }): React.ReactElement {
+  return (
+    <details open style={ASSUMPTIONS}>
+      <summary>{t("ai.draft.sources")}</summary>
+      <ul style={ASSUMPTION_LIST}>
+        {sources.map(({ url, title }) => (
+          <li key={url}><a href={url} target="_blank" rel="noopener noreferrer" style={{ color: TOKEN.accent }}>{title || url}</a></li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+const CONTENT: React.CSSProperties = { display: "grid", alignContent: "start", gap: 10, flex: "1 1 auto", minHeight: 0, overflowY: "auto", padding: 2 };
+const EDITOR: React.CSSProperties = { ...textArea, minHeight: "clamp(130px, 35dvh, 280px)", padding: 10, fontSize: 13 };
+const QUESTION: React.CSSProperties = { minWidth: 0, margin: 0, border: 0, padding: "4px 0 8px" };
+const LEGEND: React.CSSProperties = { padding: 0, fontWeight: 600, overflowWrap: "anywhere" };
+const OPTIONS: React.CSSProperties = { display: "flex", gap: 6, flexWrap: "wrap", margin: "2px 0 6px" };
+const ASSUMPTIONS: React.CSSProperties = { color: TOKEN.muted, overflowWrap: "anywhere" };
+const ASSUMPTION_LIST: React.CSSProperties = { margin: "4px 0", paddingInlineStart: 20 };
+const RESEARCH_FIELDS: React.CSSProperties = { display: "grid", gap: 6, marginTop: 6 };
+const FOOTER: React.CSSProperties = { ...actions, borderTop: `1px solid ${TOKEN.border}`, paddingTop: 8 };

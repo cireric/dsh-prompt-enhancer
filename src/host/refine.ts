@@ -22,9 +22,8 @@ export interface AiRefineResult {
  * - 标题/摘要/正文按原样 trim，**不修改正文中的任何 `{{变量}}`**。
  */
 export function parseRefineResult(text: string): AiRefineResult | undefined {
-  let json = text.trim();
-  const fence = json.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fence) json = fence[1]!.trim();
+  // Fenced examples can be part of the JSON body string.
+  const json = text.trim();
   const start = json.indexOf("{");
   const end = json.lastIndexOf("}");
   if (start === -1 || end === -1 || end <= start) return undefined;

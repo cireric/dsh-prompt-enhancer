@@ -17,7 +17,7 @@ DSH（DeepSeek Harness）提示词增强插件：只做**提示词本身**的事
 1. **词库管理**：增删改查（标题 + 正文 + 标签）、搜索、排序、标签分组、使用次数统计；**双入口**——输入框旁按钮 + 左侧下方（设置按钮旁）入口，均可打开管理面板
 2. **复用**：插入（追加）/ 覆盖 / 插入并发送；输入 `#` 触发浮层实时筛选
 3. **模板变量**：`{{变量名}}` 占位，插入前可填参预览，词库复用时记忆上次填值
-4. **AI 优化**：输入框左侧可直接选轻度润色、检查提示词或增强为模板。检查会列出问题并引用原文。增强时可勾选补充建议，试填后应用到草稿或将模板存入词库
+4. **AI 优化**：输入框左侧可选轻度润色、检查提示词、增强为模板或从想法起草。空输入框也可起草，生成后可以直接检查、增强为模板或应用到输入框。增强时可勾选补充建议，试填后应用到草稿或将模板存入词库
 5. **可回滚**：保留 AI 优化前原文，支持「原文 ↔ 优化稿」双向切换
 6. **沉淀三入口**：管理面板新建/编辑、选中文字浮出「存为提示词」、当前草稿存为提示词
 7. **标签管理**、**回收站**（软删除 + 恢复 + 永久删除 + 清空）
@@ -86,6 +86,35 @@ node "$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" plugin --prof
 ```sh
 node "$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile web --dump-config | grep -A2 'dsh-prompt-enhancer'
 ```
+
+### 检查与模板增强持续推理
+
+日志里的 `routing-start` 和首条 `stream-start` 可确认设置中选的模型是否优先调用。`firstReasoningMs` 说明模型已开始推理。若 `textChars: 0`，模型结束时还未生成正文，`finish: "max-tokens"` 表示耗尽输出 token，`deadlineAborted: true` 表示插件计时到期。检查和模板增强会请求宿主支持的 `off` 档位，适配器还需要把该档位转换成网关接受的请求字段。
+
+如果使用 `@deepseek-ai/dsh-llm-pi-ai`，可在 Web profile 的 `cordis.patch.yml` 中，给现有 `config.providers.modelscope.models` 下的对应模型条目补充以下字段，保留条目的其他配置。
+
+```yaml
+- id: deepseek-ai/DeepSeek-V4-Pro-0813
+  compat:
+    thinkingFormat: deepseek
+    supportsDeveloperRole: false
+  reasoningEfforts:
+    off: null
+    high: high
+- id: Qwen/Qwen3.8-Flash-Next
+  compat:
+    thinkingFormat: qwen
+    supportsDeveloperRole: false
+  reasoningEfforts:
+    off: null
+    high: high
+```
+
+DSH 对这两个模型使用 `system` 消息。选择 `off` 时，DeepSeek 请求发送 `{"thinking":{"type":"disabled"}}`，Qwen 请求发送 `{"enable_thinking":false}`。两个模型均已通过 ModelScope 流式请求的检查和模板增强验证。
+
+如果 `config.providers.wb.models` 下的 `deepseek-v4.1-flash` 已有 `reasoningEfforts.off: null`，在该模型条目下补充 `compat.thinkingFormat: deepseek`，与 `reasoningEfforts` 同级。这样 `off` 会序列化为同一个显式关闭参数。
+
+修改后重启 `dsh web`，分别运行检查和模板增强。在 `$DSH_HOME/prompt-enhancer/log/review-*.jsonl` 中，同一请求的首选模型应记录 `reasoningEffort: "off"`，返回正文，并出现 `candidate-accepted`。只看到 `off` 说明插件选择了该档位，实际响应才能确认网关采纳了该参数。
 
 ## 开发
 

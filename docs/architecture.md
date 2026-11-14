@@ -26,7 +26,8 @@ DSH web host
 ├── dsh-prompt-enhancer (host)   src/index.ts（唯一装配点，86 行）
 │   ├── export Config = PromptEnhancerSettingsSchema   ← dsh 0.2.0：设置即插件 Config
 │   ├── ctx.inject(["llm"])        → registerLlm()     缺失 ⇒ AI 路由 503，其余功能不受影响
-│   ├── ctx.inject(["webServer"]) → 单条 prefix 路由 /api/prompt-enhancer（28 条逻辑路由）
+│   ├── ctx.inject(["web"])        → 可选的起草搜索
+│   ├── ctx.inject(["webServer"]) → 单条 prefix 路由 /api/prompt-enhancer（30 条逻辑路由）
 │   ├── ctx.on("loader/volatile-update") → clearRouteCache()（改 provider/model 必须换路由）
 │   └── ctx.effect(lifecycle 日志；卸载时解绑设置面)
 │   ✗ 无 systemPrompt section   ✗ 无 agent/session 监听   ✗ 无 registerUpgrade（无 WS）
@@ -67,7 +68,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 ## 4. 接口面
 
-### 4.1 HTTP（单条 prefix 路由，28 条）
+### 4.1 HTTP（单条 prefix 路由，30 条）
 
 信封统一 `{ ok, data }` / `{ ok:false, error }`；AI 路由的失败信封扩为 `{ ok:false, error:{ code, message } }`（code 跨层传枚举，message 仅开发诊断）。状态码：400 参数 / 403 跨源写入被拒 / 404 未找到 / 409 同名冲突 / 500 未预期 / 503 AI 或设置不可用（`routes.ts` 文件头）。
 
@@ -81,7 +82,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 提示词 | `GET /prompts`（`q`/`tag`/`sort=default\|updated\|used\|created`）· `POST /prompts`（创建后按 `maxPromptCount` 淘汰）· `GET/PUT/DELETE /prompts/:id` · `POST /prompts/:id/use` · `POST /prompts/:id/rollback` |
 | 标签 | `GET /tags` · `POST /tags` · `PUT /tags/:from`（改名）· `DELETE /tags/:name`（在用保护） |
 | 回收站 | `GET /trash` · `POST /trash/:id/restore` · `DELETE /trash/:id` · `DELETE /trash`（回 `{removed, ids}`） |
-| AI | `GET /ai/providers` · `POST /ai/polish` · `POST /ai/check`（`findings` 含原文引用、问题和建议） · `POST /ai/refine`（四个原有字段和可选 `suggestions`） · `POST /ai/skill-descriptor` |
+| AI | `GET /ai/providers` · `POST /ai/polish` · `POST /ai/check`（`findings` 含原文引用、问题和建议） · `POST /ai/draft`（想法、可选回答及资料，返回澄清问题或正文、假设与待核实项） · `POST /ai/draft/search`（用可选宿主搜索查询资料来源） · `POST /ai/refine`（四个原有字段和可选 `suggestions`） · `POST /ai/skill-descriptor` |
 | 设置 | `GET /settings` · `PUT /settings`（写入后清 AI 路由缓存） |
 | 导入导出 | `POST /export/save`（宿主生成文件名 + 目录来自 `workspaces.pickDirectory`）· `POST /import`（`{backup, confirm}`，未确认只回预览） |
 | meta | `GET/PUT/DELETE /meta/:key`（模板变量记忆等客户端键名的通用通道，宿主不认识键名约定） |
@@ -104,13 +105,14 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 面 | 现状 | 出处 |
 |---|---|---|
 | 模型路由 | 设置里的 provider+model 优先（需核验可用）→ 否则遍历 provider、每 provider 取 `/chat\|deepseek/i` 命中的模型，去重成有序候选；30s TTL 缓存 | `ai.ts:186-224` |
-| 调用 | 全局**串行锁**（同时只允许一个 LLM 调用，防并发打爆额度）· 每次尝试超时 = **min(30s, 剩余预算)** · `AI_MAX_TOKENS = 2048` · `temperature 0.4` | `ai.ts#collectText`、`ai-budget.ts` |
-| 总预算 | 一次能力共享一个 `AiBudget`（`AI_TOTAL_BUDGET_MS = 110s`，**严格小于**客户端 120s）；候选轮询与诊断重试都在预算内，耗尽即停手（不再发请求）。预算从能力入口起算 ⇒ 串行锁排队也算在里面 | `ai-budget.ts`、`ai.ts#polishPromptBodyCore` |
+| 调用 | 全局**串行锁**（同时只允许一个 LLM 调用，防并发打爆额度）· 每次尝试超时取单次上限与拿到锁后剩余预算的较小值 · 默认输出 2048 token · `temperature 0.4` | `ai.ts#collectText`、`ai-budget.ts` |
+| 总预算 | 候选轮询、诊断重试和串行锁排队共享一个 `AiBudget`，耗尽后停止发请求。各操作的上限见 D10。 | `ai-budget.ts`、`ai.ts#polishPromptBodyCore` |
 | 失败码 | 7 值枚举 `no-llm` / `route` / `timeout` / `empty-output` / `parse` / `schema-mismatch` / `unknown`，跨层传 code、client 走 i18n 字典（`ai.code.*`） | `ai-errors.ts:14-21` |
-| 重试 | `callLlmWithRetry`：候选轮询；诊断重试**只重试一次**（把失败原因 + 上次输出问题摘要拼进重试 prompt），**文案按能力分形**——润色是纯文本口径（"直接输出正文"，不得出现 JSON 字样），完善/摘要/技能描述符仍要求 JSON 对象。**重试不许叠加**（Issue #6 收口：技能描述符 3 轮 = 恰 3 次调用） | `ai.ts#callLlmWithRetry`、`ai-errors.ts#failureDiagnosis` |
+| 重试 | `callLlmWithRetry` 轮询候选，允许一轮诊断重试。检查和模板增强在候选阶段校验响应，格式异常会进入同一重试流程。JSON 请求通过同一对象内的 `retryDiagnosis` 字段携带诊断，正文保持原样。技能描述符使用单独的三轮尝试。 | `ai.ts#callLlmWithRetry`、`ai-errors.ts#failureDiagnosis` |
 | 结果缓存 | 读穿式 LRU + TTL：键 = hash(system + user + route)，TTL 30 分钟、上限 50 条、重启即清；失败不入缓存 | `ai-cache.ts:13-14,48-56` |
-| 输出后处理 | 剥套话（整体代码围栏 + 首尾套话行）**并把被剥的行写进诊断日志** | `text.ts:71-123` |
-| 客户端超时 | AI 路由 120s（用户裁定）· 探测 15s · 清键 15s；`TimeoutError` 按名字判定，探测超时带 `probe` 标记以区分文案 | `api.ts:11-35,141` |
+| 输出后处理 | 润色剥离整体围栏和首尾套话，日志记录删去的行数及处理后的正文长度 | `text.ts:71-123` |
+| 客户端超时 | 模型生成请求的上限见 D10。探测和清键为 15s。`TimeoutError` 按名字判定，探测超时带 `probe` 标记。 | `api.ts` |
+| AI 请求诊断 | 正式构建也写 `$DSH_HOME/prompt-enhancer/log/review-YYYY-MM-DD.jsonl`（UTC 日期）。所有 `/ai/` 路由按 `id` 关联模型枚举、来源搜索、路由选择、缓存、排队、流式调用、校验及最终 HTTP 状态。模型请求只记录参数和长度，失败记录结束类型、错误码和可用的 HTTP 状态。 | `review-trace.ts`、`ai.ts#collectText` |
 
 **已识别的质量缺口**（见 `docs/proposals/2026-10-03-…md` B1/B2）：润色的产出**没有任何事实/长度校验**——system prompt 里只有祈使句（`ai.ts:279-280`）。
 
@@ -138,7 +140,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | dsh 0.2.0 迁移 | 设置从 `settingsScope` → `configForms` + `Config`；`ctx.settings.update(entryId, patch)` 取代 `register`（旧写法启动即抛，是设置页保存 503 的根因） | `src/index.ts:4-14` |
 | 首包（已交付） | 统一 AI 错误码 + 诊断注入重试 · AI 结果缓存 · 推荐相关性重排（usage ×0.15 封顶 + 草稿词硬门槛） | issues #1–#6（全 CLOSED） |
 | D9 | **跨源写入闸**：写方法只接受同源请求（403 且不读体）；宿主 webServer 无 origin/token/CSRF 守卫，故闸门落在插件路由层 | 本文 §4.1、`routes.ts#isCrossSiteWrite` |
-| D10 | **AI 总预算**：一次能力共享 110s 墙钟预算（< 客户端 120s），每次尝试 = min(30s, 剩余)，耗尽即停手；诊断文案按能力分形（润色=纯文本） | 本文 §5、`ai-budget.ts`、`ai-errors.ts` |
+| D10 | 默认单次尝试上限为 30s，宿主总预算为 110s，客户端超时为 120s。检查、模板增强和起草对所有候选使用 180s 的单次上限，宿主总预算为 215s，客户端超时为 225s。实际等待时间取单次上限和剩余总预算的较小值。 | 本文 §5、`ai-budget.ts`、`ai.ts#attemptAllCandidates` |
 | D11 | **超限响应先于关连接**：5 MB 闸不得先 `req.destroy()`（会连 socket 一起拆，客户端只见 EPIPE）；改为停止读取 + `Connection: close`，让 400 正常写出 | 本文 §4.1、`routes.ts#readBody` |
 | D12 | **产物源码指纹**：`build` 把 `src/**` 的 hash 写进 `.build-meta.json`，`smoke` 比对当前 src 并红——「改完 src 不重建就提交」是本仓唯一能骗过其它所有门的失效模式（`npm test` 测 src、`smoke` 测 lib） | 本文 §7、`scripts/source-hash.mjs` |
 | D13 | **路由清单单一真源**：`ROUTE_SPECS` 驱动 `dispatch`，测试的覆盖账本按 `pattern` 与它双向对齐（此前 dispatch 是手写 if 链、测试另有一份手抄副本） | 本文 §4.1、`routes.ts#ROUTE_SPECS` |
@@ -146,6 +148,11 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D15 | 变量说明与默认值可在 AI 结果的「条目信息」或管理器编辑页配置。AI 试填使用当前配置，最终正文与变量配置一同写入词库。配置与正文同存，随回收站和 JSON 备份往返。默认值跟随模板。显式记住的填值以模板 ID 单独保存，恢复默认值后确认插入会清除该模板的填值记忆。旧的共享填值不会自动带入。 | `TemplateVariablesDialog.tsx`、`store.ts` |
 | D16 | 选择器空查询时优先列出最近插入的条目。方向键聚焦结果，Enter 打开预览，Esc 返回列表。最终模板在同一份文本里标记新增变量与勾选建议，缺少原变量时可直接返回编辑。 | `PromptLibraryButton.tsx`、`AIPolishButton.tsx` |
 | D17 | AI 菜单默认高亮轻度润色。检查提示词基于发起时的草稿快照，展示实质问题、逐字引用和建议。检查结果只读，草稿变化后允许检查新版。 | `AIPolishButton.tsx`、`ai.ts`、`check.ts` |
+| D18 | Composer 为空时仍可开启 AI 菜单，仅启用并高亮「从想法起草」。起草最多一轮澄清，可跳过。编辑后的结果可直接交给检查与模板增强，返回时保留起草状态。应用时以进入起草前的 Composer 为对照，变化时要求显式确认替换。 | `AIPolishButton.tsx`、`PromptDraftForm.tsx`、`draft.ts` |
+| D19 | 起草将影响结论的外部事实写成正文中的核实步骤，追问聚焦用户偏好。用户可主动通过宿主 `ctx.web.search()` 查询来源，发送范围限于独立填写的关键词。搜索不可用时可自行补充链接或摘录并继续起草。 | `draft-search.ts`、`draft.ts`、`PromptDraftForm.tsx` |
+| D20 | AI 请求的最终错误码只描述用户收到的结果。请求日志保留每轮候选的结束状态、插件计时器是否触发和校验结果，供定位更早的故障。 | 本文 §5、`review-trace.ts` |
+| D21 | 检查、模板增强和起草优先使用候选模型声明的 `off` 推理档位。关闭推理的模型获分配 2048 个检查输出 token 或 4096 个增强／起草输出 token。模型未声明该档位时使用 8192 输出 token，为共用预算的推理和 JSON 正文留出空间。起草在接受候选前校验完整结果，截断或结构错误可继续尝试下一候选或诊断重试。 | `ai.ts#collectText`、`ai.ts#draftPromptCore` |
+| D22 | AI 面板等待时显示已用时长。取消请求返回操作菜单或起草面板，保留用户输入。HTTP 连接提前关闭时，宿主向当前模型调用或来源搜索传递取消信号，并停止后续候选和诊断重试。 | `AIPolishButton.tsx`、`routes.ts#dispatch`、`ai.ts#attemptAllCandidates` |
 
 ---
 
