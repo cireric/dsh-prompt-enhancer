@@ -84,7 +84,7 @@ test("classifyImportResult：applied 不是严格 true（false / 缺失 / 字符
 //
 // 根因链：宿主 `importPrompts` 是 INSERT OR REPLACE（连 `body`/`sourceBody` 一起换）、备份格式
 // **不含 meta**、导入也**不清 meta** ⇒ 恢复旧备份后「原文／优化稿」标注会自信地反相，且切换修不回来。
-// 故：对「被本次导入**覆盖**（同 id 已存在）的 id」清那两把 per-prompt 键。
+// 故：对「被本次导入**覆盖**（同 id 已存在）的 id」清那三把 per-prompt 键。
 //
 // **变异靶**：把 `clearOverwrittenMeta` 里的 `await clear(overwritten)` 去掉（或让 overwritten 恒为空）
 // ⇒ 下面第一条必红。
@@ -117,7 +117,7 @@ test("B：导入覆盖同 id ⇒ 只对被覆盖的 id 发清键调用；导入�
   assert.deepEqual(cleared, ["a"]);
 });
 
-test("B：清键走**既有**入口 deletePrompts ⇒ 每个被覆盖 id 恰好两把键（方向 + 技能 descriptor）", async () => {
+test("B：清键走**既有**入口 deletePrompts ⇒ 每个被覆盖 id 恰好三把键（方向 + 技能 descriptor + 模板记忆）", async () => {
   const backup = { version: 1, prompts: [{ id: "p1" }, { id: "p2" }], tags: [] };
   const keys = [];
   const overwritten = await clearOverwrittenMeta(backup, ["p1", "p2", "left-alone"], (ids) =>
@@ -135,8 +135,8 @@ test("B：清键走**既有**入口 deletePrompts ⇒ 每个被覆盖 id 恰好�
   assert.deepEqual(overwritten, ["p1", "p2"], "left-alone 不在备份里 ⇒ 不进清算名单");
   assert.deepEqual(
     keys,
-    ["pl:refined-dir:p1", "pl:skill-descriptor:p1", "pl:refined-dir:p2", "pl:skill-descriptor:p2"],
-    "每个被覆盖 id 各清两把键（键名取自各自主模块，不另抄一份）",
+    ["pl:refined-dir:p1", "pl:skill-descriptor:p1", "pl:template-var-memory:p1", "pl:refined-dir:p2", "pl:skill-descriptor:p2", "pl:template-var-memory:p2"],
+    "每个被覆盖 id 各清三把键（键名取自各自主模块，不另抄一份）",
   );
 });
 

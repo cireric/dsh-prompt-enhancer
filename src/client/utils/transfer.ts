@@ -82,7 +82,7 @@ export function classifyImportResult(result: ImportResult): ImportVerdict {
  * 标注自信地反相，且切换修不回来**（翻转的是那条本就错的记录）。同一根因的次生后果：备份里的
  * `skillName` 可能与 meta 里的旧 `descriptor.name` 不一致 ⇒ 徽标重导改指向。
  *
- * 故：**被本次导入覆盖的 id**（备份 ∩ 导入前的现库）清掉那两把 per-prompt 键
+ * 故：**被本次导入覆盖的 id**（备份 ∩ 导入前的现库）清掉那三把 per-prompt 键
  * （`pl:refined-dir:<id>` / `pl:skill-descriptor:<id>`，键名与其清法归 `prompt-meta.ts` 的既有入口）。
  * 语义：方向回到「不知道」⇒ 中性标注（不撒谎）；descriptor 回到「不知道」⇒ 徽标重导重走一次命名
  * （**这是正确的**：备份里的 `skillName` 才是权威，meta 里的旧 descriptor 不再可信）。

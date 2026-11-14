@@ -12,8 +12,7 @@
  *  · 写一律 `updateSettings({ [字段]: 值 })`——**单字段一次写**，不做批量 mutate（D-P8-7）；
  *    唯一的数组形式服务 provider→model 联动（切 provider 时旧 model 可能已不属于它），仍逐字段写；
  *  · 每行控件在写入期 `disabled` + `aria-busy`；失败**可见**（行内 `role="alert"` + `console.warn`）；
- *  · 行序与覆盖关系由 `SETTINGS_KEYS` 逐键派发（switch 穷尽到 `never`：漏一个键即编译期报错）
- *    ⇒ 13 键 = 11 行（AI 模型行覆盖 provider+model，面板尺寸行覆盖宽+高）；
+ *  · 13 个宿主字段由分组控件呈现，入口显隐和图标样式共用一个控件；
  *  · 零 DOM 写入、零 keydown|keyup|keypress 监听（硬约束 3）：数值框用 `onChange`（记草稿）+
  *    `onBlur`（提交），不抢键事件。
  */
@@ -21,7 +20,7 @@ import * as React from "react";
 import type { PropsLocale, PropsRuntime, TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
 // type-only：拉入 ui-settings 的 SlotMap 合并（'settings.section' 座位与 SettingsSectionOwnerProps）
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
-import { MAX_PROMPT_COUNT_BOUNDS, PANEL_SIZE_BOUNDS, SETTINGS_KEYS } from "../../../settings-shape.ts";
+import { MAX_PROMPT_COUNT_BOUNDS, PANEL_SIZE_BOUNDS } from "../../../settings-shape.ts";
 import type { PluginSettings } from "../../../types.ts";
 import { type AiSelectable, api } from "../../utils/api.ts";
 import { commitNumberDraft, modelOptions, providerOptions } from "../../utils/settings-options.ts";
@@ -90,17 +89,17 @@ const ROW: React.CSSProperties = {
   flexWrap: "wrap",
   alignItems: "center",
   gap: 8,
-  padding: "7px 0",
-  borderTop: `1px solid ${TOKEN.border}`,
+  padding: "6px 0",
 };
-/** 行首标签：固定栏宽，11 行的控件左缘对齐。 */
-const ROW_LABEL: React.CSSProperties = { color: TOKEN.fg, fontSize: 12, flex: "0 0 168px" };
+/** 标签占可用空间，让控件在宽屏对齐右侧。 */
+const ROW_LABEL: React.CSSProperties = { color: TOKEN.fg, fontSize: 12, flex: "1 1 135px" };
 const ROW_CONTROL: React.CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   alignItems: "center",
   gap: 6,
-  flex: "1 1 220px",
+  justifyContent: "flex-end",
+  flex: "0 1 auto",
   minWidth: 0,
 };
 /** 错误块独占一行（`1 1 100%` 在 wrap 容器里换行），不挤控件。 */
@@ -295,7 +294,7 @@ function AiModelRow({ t, provider, model }: AiModelRowProps): React.ReactElement
   };
 
   return (
-    <Row label={t("settings.ai.title")}>
+    <Row label={t("settings.ai.optimizationModel")}>
       <select
         aria-label={t("settings.ai.provider")}
         aria-busy={pending}
@@ -344,164 +343,93 @@ function AiModelRow({ t, provider, model }: AiModelRowProps): React.ReactElement
 export type SettingsSectionProps =
   PropsRuntime<"settings.section"> & PropsLocale<"prompt-enhancer">;
 
-/**
- * 逐键派发行：**行序 = `SETTINGS_KEYS`**——13 个键按规范序各走一次，多键行只在其**首键**上渲染，
- * 次键返回 null（AI 模型行覆盖 aiProvider+aiModel，面板尺寸行覆盖 panelWidth+panelHeight）。
- *
- * switch 穷尽到 `never`：`SETTINGS_KEYS` 增删一个键这里就编译不过 ⇒「13 键全覆盖、无遗漏、
- * 无多余第 14 行」是编译期判据，不靠人眼比对。每个 case 的 `patch` 都逐字写出**唯一那个键**
- * （单字段一次写的可读证据）。
- */
-function renderRow(
-  key: (typeof SETTINGS_KEYS)[number],
-  settings: PluginSettings,
-  t: TranslateNS<"prompt-enhancer">,
-): React.ReactElement | null {
-  switch (key) {
-    case "aiProvider":
-      return <AiModelRow key={key} t={t} provider={settings.aiProvider} model={settings.aiModel} />;
-    case "aiModel":
-      return null;
-    case "panelWidth":
-      return (
-        <Row key={key} label={t("settings.panelSize")}>
-          <NumberInput
-            t={t}
-            field="panelWidth"
-            label={t("settings.panelWidth")}
-            value={settings.panelWidth}
-            bounds={PANEL_SIZE_BOUNDS}
-            patch={(next) => ({ panelWidth: next })}
-          />
-          <span aria-hidden="true" style={SEPARATOR}>×</span>
-          <NumberInput
-            t={t}
-            field="panelHeight"
-            label={t("settings.panelHeight")}
-            value={settings.panelHeight}
-            bounds={PANEL_SIZE_BOUNDS}
-            patch={(next) => ({ panelHeight: next })}
-          />
-        </Row>
-      );
-    case "panelHeight":
-      return null;
-    case "showComposerButton":
-      return (
-        <BoolRow
-          key={key}
-          t={t}
-          field={key}
-          label={t("settings.showComposerButton")}
-          checked={settings.showComposerButton}
-          patch={(next) => ({ showComposerButton: next })}
-        />
-      );
-    case "composerButtonIconOnly":
-      return (
-        <BoolRow
-          key={key}
-          t={t}
-          field={key}
-          label={t("settings.composerButtonIconOnly")}
-          checked={settings.composerButtonIconOnly}
-          patch={(next) => ({ composerButtonIconOnly: next })}
-        />
-      );
-    case "showAIPolishButton":
-      return (
-        <BoolRow
-          key={key}
-          t={t}
-          field={key}
-          label={t("settings.showAIPolishButton")}
-          checked={settings.showAIPolishButton}
-          patch={(next) => ({ showAIPolishButton: next })}
-        />
-      );
-    case "aiPolishButtonIconOnly":
-      return (
-        <BoolRow
-          key={key}
-          t={t}
-          field={key}
-          label={t("settings.aiPolishButtonIconOnly")}
-          checked={settings.aiPolishButtonIconOnly}
-          patch={(next) => ({ aiPolishButtonIconOnly: next })}
-        />
-      );
-    case "hashTriggerEnabled":
-      return (
-        <BoolRow
-          key={key}
-          t={t}
-          field={key}
-          label={t("settings.hashTriggerEnabled")}
-          checked={settings.hashTriggerEnabled}
-          patch={(next) => ({ hashTriggerEnabled: next })}
-        />
-      );
-    case "contextRecommendEnabled":
-      return (
-        <BoolRow
-          key={key}
-          t={t}
-          field={key}
-          label={t("settings.contextRecommendEnabled")}
-          checked={settings.contextRecommendEnabled}
-          patch={(next) => ({ contextRecommendEnabled: next })}
-        />
-      );
-    case "selectionAddEnabled":
-      return (
-        <BoolRow
-          key={key}
-          t={t}
-          field={key}
-          label={t("settings.selectionAddEnabled")}
-          checked={settings.selectionAddEnabled}
-          patch={(next) => ({ selectionAddEnabled: next })}
-        />
-      );
-    case "showSidebarButton":
-      return (
-        <BoolRow
-          key={key}
-          t={t}
-          field={key}
-          label={t("settings.showSidebarButton")}
-          checked={settings.showSidebarButton}
-          patch={(next) => ({ showSidebarButton: next })}
-        />
-      );
-    case "maxPromptCount":
-      return (
-        <Row key={key} label={t("settings.maxPromptCount")}>
-          <NumberInput
-            t={t}
-            field={key}
-            label={t("settings.maxPromptCount")}
-            value={settings.maxPromptCount}
-            bounds={MAX_PROMPT_COUNT_BOUNDS}
-            patch={(next) => ({ maxPromptCount: next })}
-          />
-        </Row>
-      );
-    default: {
-      // 穷尽性锚：13 键全覆盖时这里 key 的类型收窄为 never；SETTINGS_KEYS 多一个键即编译报错。
-      const uncovered: never = key;
-      return uncovered;
-    }
-  }
+type VisibilityKey = "showComposerButton" | "showAIPolishButton";
+type IconKey = "composerButtonIconOnly" | "aiPolishButtonIconOnly";
+
+function AppearanceRow({ t, settings, visibleKey, iconKey, label }: {
+  t: TranslateNS<"prompt-enhancer">;
+  settings: PluginSettings;
+  visibleKey: VisibilityKey;
+  iconKey: IconKey;
+  label: string;
+}): React.ReactElement {
+  const { pending, failure, writeSequence } = useWrite(t);
+  const value = settings[visibleKey] ? (settings[iconKey] ? "icon" : "label") : "off";
+  return (
+    <Row label={label}>
+      <select
+        aria-label={label}
+        style={select}
+        value={value}
+        disabled={pending}
+        aria-busy={pending}
+        onChange={(event) => {
+          const next = event.currentTarget.value;
+          const patches: Partial<PluginSettings>[] = [];
+          if (next !== "off" && settings[iconKey] !== (next === "icon")) {
+            patches.push({ [iconKey]: next === "icon" });
+          }
+          if (settings[visibleKey] !== (next !== "off")) patches.push({ [visibleKey]: next !== "off" });
+          writeSequence(patches, visibleKey);
+        }}
+      >
+        <option value="label">{t("settings.appearanceLabel")}</option>
+        <option value="icon">{t("settings.appearanceIcon")}</option>
+        <option value="off">{t("settings.appearanceHidden")}</option>
+      </select>
+      <WriteError failure={failure} />
+    </Row>
+  );
 }
 
-/** 设置页内容：13 个字段的当前值**只**从这里来（订阅式单一真源，D-P8-2）。 */
+const GROUP = { marginTop: 12 };
+const GROUP_TITLE: React.CSSProperties = {
+  fontSize: 12, fontWeight: 600, paddingBottom: 5, margin: 0, borderBottom: `1px solid ${TOKEN.border}`,
+};
+
+const SHORTCUT_LABELS = {
+  hashTriggerEnabled: "settings.hashTriggerEnabled",
+  contextRecommendEnabled: "settings.contextRecommendEnabled",
+  selectionAddEnabled: "settings.selectionAddEnabled",
+  showSidebarButton: "settings.showSidebarButton",
+} as const satisfies Partial<Record<keyof PluginSettings, string>>;
+
 export function SettingsSection({ t }: SettingsSectionProps): React.ReactElement {
   const settings = useSettings();
+  const shortcuts = Object.keys(SHORTCUT_LABELS) as Array<keyof typeof SHORTCUT_LABELS>;
   return (
     <div style={SECTION}>
-      <div style={SECTION_TITLE}>{t("settings.title")}</div>
-      {SETTINGS_KEYS.map((key) => renderRow(key, settings, t))}
+      <h2 style={SECTION_TITLE}>{t("settings.title")}</h2>
+      <section style={GROUP}>
+        <h3 style={GROUP_TITLE}>{t("settings.ai.title")}</h3>
+        <AiModelRow t={t} provider={settings.aiProvider} model={settings.aiModel} />
+      </section>
+      <section style={GROUP}>
+        <h3 style={GROUP_TITLE}>{t("settings.shortcuts")}</h3>
+        <AppearanceRow t={t} settings={settings} visibleKey="showComposerButton" iconKey="composerButtonIconOnly" label={t("settings.showComposerButton")} />
+        <AppearanceRow t={t} settings={settings} visibleKey="showAIPolishButton" iconKey="aiPolishButtonIconOnly" label={t("settings.showAIPolishButton")} />
+        {shortcuts.map((key) => (
+          <BoolRow key={key} t={t} field={key} label={t(SHORTCUT_LABELS[key])}
+            checked={settings[key]} patch={(next) => ({ [key]: next })} />
+        ))}
+      </section>
+      <section style={GROUP}>
+        <h3 style={GROUP_TITLE}>{t("settings.storage")}</h3>
+        <Row label={t("settings.maxPromptCount")}>
+          <NumberInput t={t} field="maxPromptCount" label={t("settings.maxPromptCount")} value={settings.maxPromptCount}
+            bounds={MAX_PROMPT_COUNT_BOUNDS} patch={(next) => ({ maxPromptCount: next })} />
+        </Row>
+        <details>
+          <summary style={{ cursor: "pointer" }}>{t("settings.advanced")}</summary>
+          <Row label={t("settings.panelSize")}>
+            <NumberInput t={t} field="panelWidth" label={t("settings.panelWidth")} value={settings.panelWidth}
+              bounds={PANEL_SIZE_BOUNDS} patch={(next) => ({ panelWidth: next })} />
+            <span aria-hidden="true" style={SEPARATOR}>×</span>
+            <NumberInput t={t} field="panelHeight" label={t("settings.panelHeight")} value={settings.panelHeight}
+              bounds={PANEL_SIZE_BOUNDS} patch={(next) => ({ panelHeight: next })} />
+          </Row>
+        </details>
+      </section>
     </div>
   );
 }

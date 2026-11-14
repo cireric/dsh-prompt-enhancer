@@ -244,16 +244,17 @@ test("出口 2 超限：弹确认，detail 逐字等于预演出的受害者标�
     assert.deepEqual(outcome.prompt, created, "返回宿主实际创建的那一条");
     assert.deepEqual(outcome.evicted, [prompts[0].id], "淘汰名单以宿主响应里的 evicted（被删 id）为准");
     assert.equal(s.calls.filter(isCreate).length, 1, "确认后恰好创建一次");
-    // 淘汰者的两把键就该被清（T7 ① 正是补在这里：被淘汰者不进回收站 ⇒ 没有第二个清理点）。
+    // 淘汰者的三把键就该被清（T7 ① 正是补在这里：被淘汰者不进回收站 ⇒ 没有第二个清理点）。
     // C（重要-4）后清键**不再压着保存反馈**（后台）⇒ 断言请求形状前先等它落地。
-    assert.ok(await until(() => s.calls.filter(isMetaDelete).length === 2), "清键必须最终发出（非阻塞 ≠ 不做）");
+    assert.ok(await until(() => s.calls.filter(isMetaDelete).length === 3), "清键必须最终发出（非阻塞 ≠ 不做）");
     assert.deepEqual(
       s.calls.filter(isMetaDelete).map((c) => c.url),
       [
         API_PREFIX + "/meta/" + encodeURIComponent("pl:refined-dir:" + prompts[0].id),
         API_PREFIX + "/meta/" + encodeURIComponent("pl:skill-descriptor:" + prompts[0].id),
+        API_PREFIX + "/meta/" + encodeURIComponent("pl:template-var-memory:" + prompts[0].id),
       ],
-      "被淘汰的那条各清两把键",
+      "被淘汰的那条各清三把键",
     );
   } finally {
     resolveConfirm(false); // 断言中途失败时不留挂在途请求
@@ -355,7 +356,7 @@ test("出口 4 create 抛错：原样上抛（同一对象）、不转成 cancel
   }
 });
 
-test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清两把**——被淘汰者不进回收站，故这是唯一清理点", async () => {
+test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清三把**——被淘汰者不进回收站，故这是唯一清理点", async () => {
   // 宿主一次淘汰多条（预检只看得见插入前的集合，真正的受害者名单由宿主事务定）⇒ 回执里的 id 全都要清。
   const { prompts, settings } = overLimitFixture();
   installSettings(settings);
@@ -375,14 +376,15 @@ test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清两把**
       expected.push(
         API_PREFIX + "/meta/" + encodeURIComponent("pl:refined-dir:" + id),
         API_PREFIX + "/meta/" + encodeURIComponent("pl:skill-descriptor:" + id),
+        API_PREFIX + "/meta/" + encodeURIComponent("pl:template-var-memory:" + id),
       );
     }
-    // C（重要-4）：清键是**后台**的（`capture.ts` 不再 await）⇒ 先等 4 条请求都发出，再逐条断言形状。
+    // C（重要-4）：清键是**后台**的（`capture.ts` 不再 await）⇒ 先等 6 条请求都发出，再逐条断言形状。
     assert.ok(
       await until(() => s.calls.filter(isMetaDelete).length === expected.length),
       "清键必须最终发出（非阻塞 ≠ 不做）",
     );
-    assert.deepEqual(s.calls.filter(isMetaDelete).map((c) => c.url), expected, "每个被淘汰的 id 各清两把键");
+    assert.deepEqual(s.calls.filter(isMetaDelete).map((c) => c.url), expected, "每个被淘汰的 id 各清三把键");
     for (const call of s.calls.filter(isMetaDelete)) {
       assert.equal(call.init.method, "DELETE", "清键走 DELETE（无请求体）");
       assert.equal(call.init.body, undefined);
@@ -395,7 +397,7 @@ test("出口 5（T7 ① 真遗留）：淘汰者的 meta 键**逐 id 清两把**
 
 // ── C（重要-4 / 批一必修）：清键**不得压在保存反馈上** ─────────────────────────
 //
-// 缺陷形态：`capture.ts` 原来 `await deletePrompts(...)` ⇒ 「已保存」的反馈被压在 2×N 条
+// 缺陷形态：`capture.ts` 原来 `await deletePrompts(...)` ⇒ 「已保存」的反馈被压在 3×N 条
 // `DELETE /meta` 上，而 N 由**上限配置**决定（上限 300 → 50 之后一次新建会淘汰 ~250 条 ⇒ ~500 次
 // 串行 HTTP）。下面两条分别钉住「不阻塞」与「并发」，都做过变异验证。
 
@@ -426,7 +428,7 @@ test("出口 6（重要-4）：一条 DELETE 永远挂着，保存反馈照样�
     );
     assert.equal(outcome.ok, true, "清键一条都没回来，创建仍必须如实回成功");
     assert.deepEqual(outcome.evicted, [prompts[0].id], "淘汰名单照旧如实带回调用方");
-    assert.equal(s.calls.filter(isMetaDelete).length, 2, "清键请求照发（不阻塞 ≠ 不做）");
+    assert.equal(s.calls.filter(isMetaDelete).length, 3, "清键请求照发（不阻塞 ≠ 不做）");
   } finally {
     resolveConfirm(false);
     s.restore();
@@ -502,7 +504,7 @@ test("出口 6b（重要-4）：多条清键**并发在途**（串行 await ⇒ 
   const { prompts, settings } = overLimitFixture();
   installSettings(settings);
   const created = mk("new", "新的一条");
-  const evicted = [prompts[0].id, prompts[1].id]; // 2 个 id × 2 把键 = 4 条清键请求
+  const evicted = [prompts[0].id, prompts[1].id]; // 2 个 id × 2 把键 = 6 条清键请求
   let inFlight = 0;
   let maxInFlight = 0;
   let releaseGate = () => {};
@@ -534,10 +536,10 @@ test("出口 6b（重要-4）：多条清键**并发在途**（串行 await ⇒ 
     const outcome = await raceTimeout(pending, 2000, "保存必须落地（不阻塞）");
     assert.deepEqual(outcome.evicted, evicted);
     assert.ok(
-      await until(() => maxInFlight === 4),
-      "4 条清键必须**同时**在途（实测 maxInFlight=" + maxInFlight + "；串行 await 时恒为 1）",
+      await until(() => maxInFlight === 6),
+      "6 条清键必须**同时**在途（实测 maxInFlight=" + maxInFlight + "；串行 await 时恒为 1）",
     );
-    assert.equal(maxInFlight, 4);
+    assert.equal(maxInFlight, 6);
   } finally {
     releaseGate();
     resolveConfirm(false);

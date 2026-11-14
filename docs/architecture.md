@@ -11,7 +11,7 @@
 
 一个 DSH Web 插件：把提示词本身管起来——**管理 → AI 优化 → 沉淀 → 复用**的闭环。基于上游 `master1Sun/dsh-prompt-library` v0.16.0（MIT）移植并重写，剔除人格（SOUL）、插件市场、公告、成就、看板等模块，只保留提示词相关能力。
 
-**能力面**（12 项，均有代码与验收）：词库 CRUD/搜索/排序/标签/使用统计（双入口）· 复用（插入 / 覆盖 / 插入并发送 + `#` 浮层实时筛选）· 模板变量（`{{变量}}` 填充弹窗 + 记住上次填值）· AI 润色（可选保留变量）· 一键完善（标题/标签/摘要/正文）· 用途摘要 · 原文↔优化稿回滚 · 沉淀三入口（面板新建/编辑、选中文字、当前草稿）· 标签管理 · 回收站（软删/恢复/永久删/清空）· 导入导出（预览+确认）· 上下文推荐 · 设置页 · 技能导出（单向 + 过期徽标 + 一键重导）
+**能力面**（12 项，均有代码与验收）：词库 CRUD/搜索/排序/标签/使用统计（双入口）· 复用（插入 / 覆盖 / 插入并发送 + `#` 浮层实时筛选）· 模板变量（`{{变量}}` 填充弹窗 + 记住上次填值）· AI 轻度润色 · 增强为模板（标题/标签/摘要/正文、可选补充建议） · 原文↔优化稿回滚 · 沉淀三入口（面板新建/编辑、选中文字、当前草稿）· 标签管理 · 回收站（软删/恢复/永久删/清空）· 导入导出（预览+确认）· 上下文推荐 · 设置页 · 技能导出（单向 + 过期徽标 + 一键重导）
 
 **产品承诺**：`systemPrompt` section 数 **恒为 0**（`src/index.ts:21`）。任何提示词文本都只经用户显式触发的插入进入 composer，绝不注入系统提示词。
 
@@ -26,7 +26,7 @@ DSH web host
 ├── dsh-prompt-enhancer (host)   src/index.ts（唯一装配点，86 行）
 │   ├── export Config = PromptEnhancerSettingsSchema   ← dsh 0.2.0：设置即插件 Config
 │   ├── ctx.inject(["llm"])        → registerLlm()     缺失 ⇒ AI 路由 503，其余功能不受影响
-│   ├── ctx.inject(["webServer"]) → 单条 prefix 路由 /api/prompt-enhancer（27 条逻辑路由）
+│   ├── ctx.inject(["webServer"]) → 单条 prefix 路由 /api/prompt-enhancer（28 条逻辑路由）
 │   ├── ctx.on("loader/volatile-update") → clearRouteCache()（改 provider/model 必须换路由）
 │   └── ctx.effect(lifecycle 日志；卸载时解绑设置面)
 │   ✗ 无 systemPrompt section   ✗ 无 agent/session 监听   ✗ 无 registerUpgrade（无 WS）
@@ -53,11 +53,11 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 | 不变量 | 内容 | 出处 |
 |---|---|---|
-| schema 演进 | `SCHEMA_VERSION = 2` + `MIGRATIONS` 数组，迁移**幂等**（先探测再 ALTER，不允许「失败就吞」） | `src/types.ts:15`、`src/host/store.ts:76` |
+| schema 演进 | `SCHEMA_VERSION = 3` + `MIGRATIONS` 数组，迁移**幂等**（先探测再 ALTER，不允许「失败就吞」） | `src/types.ts:15`、`src/host/store.ts:76` |
 | 存储层解耦 | `store.ts` **不 import 任何宿主能力**（cordis/服务），故可脱离 `dsh` 单测 | 硬约束 12 |
 | 测试隔离 | 靠环境变量把 `DSH_HOME` 指向临时目录，**不加 test-only API**；`paths.ts` 全部调用期求值 | 硬约束 13 |
 | 回滚语义 | `sourceBody` 存 AI 优化前原文，`POST /prompts/:id/rollback` 执行 **swap(body, sourceBody)**，可反复点 | `store.ts:560-568` |
-| 写回缝唯一 | 三 AI 字段（`sourceBody`/`aiRefined`/`aiRefinedAt`）**唯一写入者**是 `updatePrompt(…, { aiWriteBack: true })` 的内部派生；补丁类型收窄到 6 键，客户端传不进来 | `types.ts:79-89`、`store.ts:497-502`、spec §13.13 |
+| 写回缝唯一 | 三 AI 字段（`sourceBody`/`aiRefined`/`aiRefinedAt`）**唯一写入者**是 `updatePrompt(…, { aiWriteBack: true })` 的内部派生；补丁类型按路由白名单收窄，客户端传不进来 | `types.ts:79-89`、`store.ts:497-502`、spec §13.13 |
 | 淘汰键序 | `(aiRefined asc, lastUsedAt asc, createdAt asc, id asc)` 的**唯一实现**在 `src/eviction-order.ts`，宿主真实淘汰与客户端预检共用，防两端漂移（D-1 的土壤） | `eviction-order.ts:33` |
 | 淘汰豁免 | 刚创建的条目 `exceptId` 豁免——否则新项（`aiRefined=false, lastUsedAt=0`）是候选最小元，会被自己的创建请求删掉 | `routes.ts:168`、`store.ts:863` |
 | 方向不猜 | 「当前 body 是哪一侧」只从 meta `pl:refined-dir:<id>` 读；**无记录 ⇒ 中性且不落库**（`aiRefined` 不参与推断——它只说明「发生过一次写回」） | `refined-direction.ts:44-96`、spec §13.11-二 |
@@ -67,7 +67,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 ## 4. 接口面
 
-### 4.1 HTTP（单条 prefix 路由，27 条）
+### 4.1 HTTP（单条 prefix 路由，28 条）
 
 信封统一 `{ ok, data }` / `{ ok:false, error }`；AI 路由的失败信封扩为 `{ ok:false, error:{ code, message } }`（code 跨层传枚举，message 仅开发诊断）。状态码：400 参数 / 403 跨源写入被拒 / 404 未找到 / 409 同名冲突 / 500 未预期 / 503 AI 或设置不可用（`routes.ts` 文件头）。
 
@@ -81,7 +81,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 提示词 | `GET /prompts`（`q`/`tag`/`sort=default\|updated\|used\|created`）· `POST /prompts`（创建后按 `maxPromptCount` 淘汰）· `GET/PUT/DELETE /prompts/:id` · `POST /prompts/:id/use` · `POST /prompts/:id/rollback` |
 | 标签 | `GET /tags` · `POST /tags` · `PUT /tags/:from`（改名）· `DELETE /tags/:name`（在用保护） |
 | 回收站 | `GET /trash` · `POST /trash/:id/restore` · `DELETE /trash/:id` · `DELETE /trash`（回 `{removed, ids}`） |
-| AI | `GET /ai/providers` · `POST /ai/polish` · `POST /ai/refine` · `POST /ai/skill-descriptor` |
+| AI | `GET /ai/providers` · `POST /ai/polish` · `POST /ai/check`（`findings` 含原文引用、问题和建议） · `POST /ai/refine`（四个原有字段和可选 `suggestions`） · `POST /ai/skill-descriptor` |
 | 设置 | `GET /settings` · `PUT /settings`（写入后清 AI 路由缓存） |
 | 导入导出 | `POST /export/save`（宿主生成文件名 + 目录来自 `workspaces.pickDirectory`）· `POST /import`（`{backup, confirm}`，未确认只回预览） |
 | meta | `GET/PUT/DELETE /meta/:key`（模板变量记忆等客户端键名的通用通道，宿主不认识键名约定） |
@@ -142,6 +142,10 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D11 | **超限响应先于关连接**：5 MB 闸不得先 `req.destroy()`（会连 socket 一起拆，客户端只见 EPIPE）；改为停止读取 + `Connection: close`，让 400 正常写出 | 本文 §4.1、`routes.ts#readBody` |
 | D12 | **产物源码指纹**：`build` 把 `src/**` 的 hash 写进 `.build-meta.json`，`smoke` 比对当前 src 并红——「改完 src 不重建就提交」是本仓唯一能骗过其它所有门的失效模式（`npm test` 测 src、`smoke` 测 lib） | 本文 §7、`scripts/source-hash.mjs` |
 | D13 | **路由清单单一真源**：`ROUTE_SPECS` 驱动 `dispatch`，测试的覆盖账本按 `pattern` 与它双向对齐（此前 dispatch 是手写 if 链、测试另有一份手抄副本） | 本文 §4.1、`routes.ts#ROUTE_SPECS` |
+| D14 | Composer 左侧并排显示选择器与 AI 优化。选择器点条目后进入独立预览，可返回搜索结果。AI 优化可直接选轻度润色或增强为模板。最终模板实时合并正文与勾选建议，复制、入库与试填共用同一份结果。AI 试填未填完时须显式选择保留占位符，应用时保护已变化的草稿。 | `PromptLibraryButton.tsx`、`AIPolishButton.tsx`、`ai-flow.ts` |
+| D15 | 变量说明与默认值可在 AI 结果的「条目信息」或管理器编辑页配置。AI 试填使用当前配置，最终正文与变量配置一同写入词库。配置与正文同存，随回收站和 JSON 备份往返。默认值跟随模板。显式记住的填值以模板 ID 单独保存，恢复默认值后确认插入会清除该模板的填值记忆。旧的共享填值不会自动带入。 | `TemplateVariablesDialog.tsx`、`store.ts` |
+| D16 | 选择器空查询时优先列出最近插入的条目。方向键聚焦结果，Enter 打开预览，Esc 返回列表。最终模板在同一份文本里标记新增变量与勾选建议，缺少原变量时可直接返回编辑。 | `PromptLibraryButton.tsx`、`AIPolishButton.tsx` |
+| D17 | AI 菜单默认高亮轻度润色。检查提示词基于发起时的草稿快照，展示实质问题、逐字引用和建议。检查结果只读，草稿变化后允许检查新版。 | `AIPolishButton.tsx`、`ai.ts`、`check.ts` |
 
 ---
 

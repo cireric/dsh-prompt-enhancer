@@ -43,9 +43,6 @@ import {
   dialogTitle,
   errorDetail,
   errorText,
-  fieldLabel,
-  fieldRow,
-  listRow,
   muted,
   primaryButton,
   rowMeta,
@@ -76,6 +73,9 @@ import type { CapturePayload, ManagerPanel } from "../utils/ui-state.ts";
 import { closeManager, openManager, takeCapture, useCapture } from "../utils/ui-state.ts";
 import { ImportExportModal } from "./ImportExportModal.tsx";
 import { RecycleManagePanel } from "./RecycleManagePanel.tsx";
+import { TemplateVariableFields } from "./TemplateVariableFields.tsx";
+import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
+import { needsValues, parseVariables, updateTemplateVariable } from "../utils/template.ts";
 import { SkillBadge } from "./SkillBadge.tsx";
 import { SkillExportModal } from "./SkillExportModal.tsx";
 import { TagManagePanel } from "./TagManagePanel.tsx";
@@ -152,6 +152,7 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
    * 因此即时生效——设置页改完不重开面板，这里就按新尺寸重渲染。无 scope 时 store 给默认值。
    */
   const settings = useSettings();
+  const [skillPromptId, setSkillPromptId] = React.useState<string>();
   const [target, setTarget] = React.useState<EditTarget | null>(null);
   /** 沉淀载荷快照（ui-state 的 store）：非 null 说明入口 B/C 刚推进来一段正文。 */
   const capture = useCapture();
@@ -215,6 +216,12 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
    */
   const startCreate = (): void => setTarget({ kind: "create", prefill: takeCapture() });
 
+  const openSkill = (promptId?: string): void => {
+    setTarget(null);
+    setSkillPromptId(promptId);
+    onPanelValue("skill");
+  };
+
   return (
     <div
       // T7 活体探针的锚点（修复轮 1 评审要求 6）：挂在**管理面板自己的对话框元素**上——
@@ -264,22 +271,14 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
             type="button"
             data-prompt-enhancer-skill-open=""
             style={{ ...button, marginLeft: "auto" }}
-            onClick={() => {
-              /**
-               * 要求 5（返回落点与文案一致）：进技能页与**换页签**同款——先离开详情页（`setTarget(null)`），
-               * 于是「返回管理面板」的落点**确定**：一律回到当前页签的内容区（列表 / 标签 / 回收站 / 导入导出），
-               * 不会是「刚才那张没保存的详情页」。丢弃未保存详情的代价与既有「点页签换页」逐字相同
-               * （P6 起的既有交互模型，不是本轮新引入的差异）。
-               */
-              setTarget(null);
-              onPanelValue("skill");
-            }}
+            onClick={() => openSkill()}
           >
             {t("manager.skill.open")}
           </button>
         </div>
       </div>
       <div
+        key={target?.kind ?? "browse"}
         role="tabpanel"
         // 要求 4：标签与**实际内容**一致——技能页在场时报技能页的名字，不报当前页签名。
         aria-label={showingSkill ? t("manager.skill.title") : t(PANEL_LABEL[panel])}
@@ -287,11 +286,12 @@ export function PromptManagerModal({ t, panel, panelValue, onPanelValue }: Promp
       >
         {showingSkill ? (
           /* 技能导出页（规格 §7.6）：管理面板栈里的一页，与详情页同级（都在本卡片的内容区）。 */
-          <SkillExportModal t={t} onBack={() => onPanelValue(null)} />
+          <SkillExportModal t={t} initialPromptId={skillPromptId} onBack={() => onPanelValue(null)} />
         ) : (
           <>
             {panel === "list" && target === null && (
-              <PromptList t={t} onCreate={startCreate} onEdit={(prompt) => setTarget({ kind: "edit", prompt })} />
+              <PromptList t={t} onCreate={startCreate} onSkill={(prompt) => openSkill(prompt.id)}
+                panelWidth={settings.panelWidth} onEdit={(prompt) => setTarget({ kind: "edit", prompt })} />
             )}
             {panel === "list" && target !== null && (
               <PromptDetail
@@ -343,17 +343,52 @@ const LIST_TOOLBAR: React.CSSProperties = {
   marginBottom: -8,
 };
 
+const LIST_LAYOUT: React.CSSProperties = {
+  display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 230px), 1fr))",
+  alignItems: "start", gap: 12,
+};
+
+const LIST_ENTRY: React.CSSProperties = {
+  ...rowText, width: "100%", padding: "8px", border: 0, borderRadius: 6,
+  textAlign: "left", font: "inherit", cursor: "pointer",
+};
+
+const LIST_DETAIL: React.CSSProperties = { display: "flex", flexDirection: "column", minWidth: 0, gap: 8 };
+const DETAIL_BODY: React.CSSProperties = {
+  ...compareBody,
+  margin: 0,
+  minHeight: "min(180px, 30dvh)",
+  maxHeight: "min(420px, 48dvh)",
+  padding: 12,
+  fontFamily: "inherit",
+  fontSize: 13,
+  lineHeight: 1.65,
+};
+
 interface PromptListProps {
   t: ManagerTranslate;
   onCreate: () => void;
   onEdit: (prompt: Prompt) => void;
+  onSkill: (prompt: Prompt) => void;
+  panelWidth: number;
 }
 
 /**
  * 列表页（简报步骤 3 / R25）：搜索（防抖）+ 排序 + 标签过滤 + **可滚动容器**（不做分页），
- * 每行标题 / 摘要 / 标签 / 用量 + 行内动作（编辑 → 详情页；删除 → 软删除进回收站）。
+ * 列表行打开所选条目的详情，编辑、试填、删除和技能导出从详情发起。
  */
-function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElement {
+function PromptList({ t, onCreate, onEdit, onSkill, panelWidth }: PromptListProps): React.ReactElement {
+  const [hasRoom, setHasRoom] = React.useState(false);
+  React.useEffect(() => {
+    const media = window.matchMedia("(min-width: 660px)");
+    const update = (): void => setHasRoom(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  const wide = hasRoom && panelWidth >= 620;
+  const [selectedId, setSelectedId] = React.useState<string>();
+  const [trial, setTrial] = React.useState(false);
   const [query, setQuery] = React.useState("");
   /** 防抖后的查询：真正发给宿主的是它，不是 `query`。 */
   const [applied, setApplied] = React.useState("");
@@ -453,6 +488,8 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
     );
   };
 
+  const selected = prompts?.find((prompt) => prompt.id === selectedId);
+
   return (
     <>
       <div style={LIST_TOOLBAR}>
@@ -464,28 +501,23 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
           onChange={(ev) => setQuery(ev.target.value)}
           style={{ ...textInput, flex: "1 1 160px" }}
         />
-        <label style={muted}>
-          {t("manager.list.sort")}
-          <select
+        <select
             aria-label={t("manager.list.sort")}
             value={sort}
             onChange={(ev) => setSort(ev.target.value as PromptSort)}
-            style={{ ...select, marginLeft: 4 }}
+            style={select}
           >
             {SORTS.map(({ value, label }) => (
               <option key={value} value={value}>
                 {t(label)}
               </option>
             ))}
-          </select>
-        </label>
-        <label style={muted}>
-          {t("manager.list.tagFilter")}
-          <select
+        </select>
+        <select
             aria-label={t("manager.list.tagFilter")}
             value={tag}
             onChange={(ev) => setTag(ev.target.value)}
-            style={{ ...select, marginLeft: 4 }}
+            style={select}
           >
             <option value="">{t("manager.list.allTags")}</option>
             {(tags ?? []).map((item) => (
@@ -493,8 +525,7 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
                 {item.name} ({item.count})
               </option>
             ))}
-          </select>
-        </label>
+        </select>
         <button type="button" style={primaryButton} onClick={onCreate}>
           {t("manager.list.new")}
         </button>
@@ -525,49 +556,60 @@ function PromptList({ t, onCreate, onEdit }: PromptListProps): React.ReactElemen
         <span style={muted}>{t("list.empty")}</span>
       )}
       {loadError === null && prompts !== null && prompts.length > 0 && (
-        <div role="list">
-          {prompts.map((prompt) => (
-            <div key={prompt.id} role="listitem" aria-label={prompt.title} style={listRow}>
-              <span style={rowText}>
-                <span style={rowTitle}>{prompt.title}</span>
-                <span style={muted}>{promptSummary(prompt)}</span>
-                <span style={rowMeta}>
-                  {(prompt.tags ?? []).map((item) => (
-                    <span key={item} style={tagChip}>
-                      {item}
-                    </span>
-                  ))}
-                  <span style={muted}>
-                    {t("manager.list.usage")} {prompt.usageCount}
-                  </span>
-                  {/* 规格 §7.6：列表行也标注技能状态（未导出时不渲染；过期时带「重新导出」）。 */}
-                  <SkillBadge t={t} prompt={prompt} />
-                </span>
-                {deleteError !== null && deleteError.id === prompt.id && (
-                  <span role="alert" style={errorText}>
-                    <span>{t("error.delete")}</span>
-                    <span style={errorDetail} title={deleteError.detail}>
-                      {deleteError.detail}
-                    </span>
-                  </span>
-                )}
-              </span>
-              <span style={actions}>
-                <button type="button" style={button} onClick={() => onEdit(prompt)}>
-                  {t("manager.list.edit")}
-                </button>
+        <div style={wide ? LIST_LAYOUT : undefined}>
+          <div role="list" hidden={!wide && selected !== undefined}>
+            {prompts.map((prompt) => (
+              <div key={prompt.id} role="listitem">
                 <button
                   type="button"
-                  style={{ ...button, opacity: busyId === null ? 1 : 0.6 }}
-                  aria-busy={busyId === prompt.id}
-                  disabled={busyId !== null}
-                  onClick={() => remove(prompt)}
+                  style={{ ...LIST_ENTRY, background: prompt.id === selectedId ? TOKEN.hover : "transparent" }}
+                  aria-pressed={prompt.id === selectedId}
+                  onClick={() => { setTrial(false); setSelectedId(prompt.id); }}
                 >
-                  {t("manager.list.delete")}
+                  <span style={rowTitle}>{prompt.title}</span>
+                  <span style={muted}>{promptSummary(prompt)}</span>
+                  <span style={rowMeta}>
+                    {(prompt.tags ?? []).map((item) => <span key={item} style={tagChip}>{item}</span>)}
+                    <span style={muted}>{t("manager.list.usage")} {prompt.usageCount}</span>
+                  </span>
                 </button>
-              </span>
-            </div>
-          ))}
+              </div>
+            ))}
+          </div>
+          {selected && (
+            <section style={LIST_DETAIL} aria-label={selected.title}>
+              <div style={toolbar}>
+                <button type="button" style={button} onClick={() => { setSelectedId(undefined); setTrial(false); }}>
+                  {t("manager.edit.back")}
+                </button>
+                <strong style={{ ...dialogTitle, minWidth: 0 }}>{selected.title}</strong>
+              </div>
+              {trial ? (
+                <TemplateVariablesDialog key={selected.id} t={t} body={selected.body} variables={selected.variables} onCancel={() => setTrial(false)} />
+              ) : (
+                <>
+                  {selected.summary && <span style={muted}>{selected.summary}</span>}
+                  <pre style={DETAIL_BODY} tabIndex={0}>{selected.body}</pre>
+                  <SkillBadge t={t} prompt={selected} />
+                  <div style={toolbar}>
+                    <button type="button" style={primaryButton} onClick={() => onEdit(selected)}>{t("manager.list.edit")}</button>
+                    {needsValues(selected.body) && (
+                      <button type="button" style={button} onClick={() => setTrial(true)}>{t("ai.tryTemplate")}</button>
+                    )}
+                    <button type="button" style={button} onClick={() => onSkill(selected)}>{t("manager.skill.open")}</button>
+                    <button type="button" style={button} aria-busy={busyId === selected.id}
+                      disabled={busyId !== null} onClick={() => remove(selected)}>{t("manager.list.delete")}</button>
+                  </div>
+                </>
+              )}
+              {deleteError?.id === selected.id && (
+                <span role="alert" style={errorText}>
+                  <span>{t("error.delete")}</span>
+                  <span style={errorDetail}>{deleteError.detail}</span>
+                </span>
+              )}
+            </section>
+          )}
         </div>
       )}
     </>
@@ -606,6 +648,8 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
   const [body, setBody] = React.useState(initial ? initial.body : (prefill?.body ?? ""));
   const [tagsText, setTagsText] = React.useState(initial ? (initial.tags ?? []).join(", ") : "");
   const [summary, setSummary] = React.useState(initial ? (initial.summary ?? "") : "");
+  const [variables, setVariables] = React.useState(() => initial?.variables ?? []);
+  const variableNames = parseVariables(body);
   /** 本页挂着的库记录：编辑态是宿主返回值，新建态在 create 成功后落库（之前为 null）。 */
   const [current, setCurrent] = React.useState<Prompt | null>(initial);
   const [busy, setBusy] = React.useState<"idle" | "saving" | "toggling">("idle");
@@ -664,12 +708,15 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
   const save = (): void => {
     if (busy !== "idle" || blankBody) return;
     const editing = current;
+    const sourceNames = parseVariables(editing?.sourceBody ?? "");
     // 白名单字段（PromptWritablePatch）：标题走 clampTitle + 首行兜底，标签按逗号切分。
     const input: PromptWriteInput = {
       title: clampTitle(title.trim() || firstNonEmptyLine(body)),
       body,
       tags: parseTagList(tagsText),
       summary: summary.trim(),
+      variables: variables.filter(({ name }) =>
+        variableNames.includes(name) || sourceNames.includes(name)),
     };
     setBusy("saving");
     setFailure(null);
@@ -693,6 +740,7 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
           setBody(updated.body);
           setTagsText((updated.tags ?? []).join(", "));
           setSummary(updated.summary ?? "");
+          setVariables(updated.variables ?? []);
           setNotice(t("manager.edit.saved"));
           // 编辑路径直连 PUT，广播由本组件负责（创建路径的广播在 createFromCapture 内）。
           notifyDataChanged();
@@ -788,47 +836,37 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
       <span style={dialogTitle}>
         {t(target.kind === "create" ? "manager.edit.newTitle" : "manager.edit.editTitle")}
       </span>
-      <div style={fieldRow}>
-        <span style={fieldLabel}>{t("manager.edit.title")}</span>
-        <input
-          type="text"
-          aria-label={t("manager.edit.title")}
-          value={title}
-          onChange={(ev) => setTitle(ev.target.value)}
-          style={{ ...textInput, flex: "1 1 auto" }}
-        />
+      <label style={EDITOR_FIELD}>
+        <span style={EDITOR_LABEL}>{t("manager.edit.title")}</span>
+        <input type="text" value={title} onChange={(ev) => setTitle(ev.target.value)} style={EDITOR_INPUT} />
+      </label>
+      <label style={EDITOR_BODY_FIELD}>
+        <span style={EDITOR_LABEL}>{t("manager.edit.body")}</span>
+        <textarea value={body} onChange={(ev) => setBody(ev.target.value)} style={EDITOR_BODY} />
+      </label>
+      <div style={EDITOR_METADATA}>
+        <label style={EDITOR_FIELD}>
+          <span style={EDITOR_LABEL}>{t("manager.edit.tags")}</span>
+          <input
+            type="text"
+            placeholder={t("manager.edit.tagsPlaceholder")}
+            value={tagsText}
+            onChange={(ev) => setTagsText(ev.target.value)}
+            style={EDITOR_INPUT}
+          />
+        </label>
+        <label style={EDITOR_FIELD}>
+          <span style={EDITOR_LABEL}>{t("manager.edit.summary")}</span>
+          <input type="text" value={summary} onChange={(ev) => setSummary(ev.target.value)} style={EDITOR_INPUT} />
+        </label>
       </div>
-      <div style={fieldRow}>
-        <span style={fieldLabel}>{t("manager.edit.body")}</span>
-        <textarea
-          aria-label={t("manager.edit.body")}
-          value={body}
-          rows={8}
-          onChange={(ev) => setBody(ev.target.value)}
-          style={textArea}
-        />
-      </div>
-      <div style={fieldRow}>
-        <span style={fieldLabel}>{t("manager.edit.tags")}</span>
-        <input
-          type="text"
-          aria-label={t("manager.edit.tags")}
-          placeholder={t("manager.edit.tagsPlaceholder")}
-          value={tagsText}
-          onChange={(ev) => setTagsText(ev.target.value)}
-          style={{ ...textInput, flex: "1 1 auto" }}
-        />
-      </div>
-      <div style={fieldRow}>
-        <span style={fieldLabel}>{t("manager.edit.summary")}</span>
-        <input
-          type="text"
-          aria-label={t("manager.edit.summary")}
-          value={summary}
-          onChange={(ev) => setSummary(ev.target.value)}
-          style={{ ...textInput, flex: "1 1 auto" }}
-        />
-      </div>
+      {variableNames.length > 0 && (
+        <details style={VARIABLES_DETAILS}>
+          <summary>{t("vars.settings")}</summary>
+          <TemplateVariableFields names={variableNames} variables={variables} t={t}
+            onChange={(name, field, value) => setVariables((previous) => updateTemplateVariable(previous, name, field, value))} />
+        </details>
+      )}
       {blankBody && <span style={muted}>{t("manager.edit.bodyRequired")}</span>}
       {notice !== null && (
         <span role="status" aria-live="polite" style={muted}>
@@ -906,3 +944,30 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
     </>
   );
 }
+
+
+const EDITOR_FIELD: React.CSSProperties = {
+  display: "flex", flexDirection: "column", gap: 4, minWidth: 0,
+};
+
+const EDITOR_LABEL: React.CSSProperties = { color: TOKEN.muted, fontSize: 12 };
+
+const EDITOR_INPUT: React.CSSProperties = { ...textInput, fontSize: 13, padding: "7px 9px" };
+
+const EDITOR_BODY_FIELD: React.CSSProperties = { ...EDITOR_FIELD, flex: "1 0 auto" };
+
+const EDITOR_BODY: React.CSSProperties = {
+  ...textArea,
+  flex: "1 0 auto",
+  minHeight: "clamp(160px, 38dvh, 320px)",
+  fontSize: 14,
+  lineHeight: 1.65,
+  padding: 12,
+};
+
+const EDITOR_METADATA: React.CSSProperties = {
+  display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 8,
+};
+
+
+const VARIABLES_DETAILS: React.CSSProperties = { padding: "6px 0", flex: "0 0 auto" };

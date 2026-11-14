@@ -152,6 +152,8 @@ export function ContextRecommendations({
         <div style={DIALOG_ANCHOR}>
           <TemplateVariablesDialog
             body={pending.body}
+            variables={pending.variables}
+            promptId={pending.id}
             t={t}
             onCancel={() => setPending(null)}
             onFilled={(filled) => apply(pending, filled)}

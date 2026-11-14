@@ -69,7 +69,7 @@ export const dialogHeaderBottom: CSSProperties = {
   flexWrap: "wrap",
 };
 
-export const dialogTitle: CSSProperties = { color: TOKEN.fg, fontSize: 13, fontWeight: 600, flex: "0 0 auto" };
+export const dialogTitle: CSSProperties = { color: TOKEN.fg, fontSize: 14, fontWeight: 600, overflowWrap: "anywhere" };
 
 /** 页签行：**可换行**（去掉 `overflowX: "auto"`）——这是「页签不再被裁切」的关键。 */
 export const dialogTabs: CSSProperties = {
@@ -86,10 +86,11 @@ export function dialogTab(active: boolean): CSSProperties {
     padding: "2px 10px",
     fontSize: 11,
     lineHeight: "18px",
-    color: active ? TOKEN.accent : TOKEN.muted,
+    color: active ? TOKEN.fg : TOKEN.muted,
     background: active ? TOKEN.hover : "transparent",
-    border: `1px solid ${active ? TOKEN.accent : TOKEN.border}`,
-    borderRadius: 999,
+    border: 0,
+    borderRadius: 6,
+    fontWeight: active ? 600 : 400,
     cursor: "pointer",
     whiteSpace: "nowrap",
     flex: "0 0 auto",
@@ -126,7 +127,6 @@ export const textInput: CSSProperties = {
   borderRadius: 6,
   fontSize: 12,
   fontFamily: "inherit",
-  outline: "none",
 };
 
 export const textArea: CSSProperties = {
@@ -163,7 +163,7 @@ export const button: CSSProperties = {
 export const primaryButton: CSSProperties = { ...button, borderColor: TOKEN.accent, color: TOKEN.accent };
 
 /** 动作行：右对齐。 */
-export const actions: CSSProperties = { display: "flex", gap: 6, justifyContent: "flex-end", flex: "0 0 auto" };
+export const actions: CSSProperties = { display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", flex: "0 0 auto" };
 
 export const muted: CSSProperties = { color: TOKEN.muted, fontSize: 11, overflowWrap: "anywhere" };
 

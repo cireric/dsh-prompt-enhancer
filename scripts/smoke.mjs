@@ -191,9 +191,7 @@ if (clientSrc === null) {
             ok("每条 register 的组件均为 function、locale = " + NS);
           }
 
-          // 3) 接线成对：**按注册顺序**逐条配对。本插件有两处同名座位
-          //    （conversation.input.left × 2），用「该 name 出现在某条 inject 里」这种集合判定
-          //    会让第二处座位接到哪条 inject 上不受检查（评审已用变异实测到该漏网）。
+          // 3) 按注册顺序逐条核对注入与注册的座位名。
           const injects = records.filter((rec) => rec[0] === "inject").map((rec) => rec[1]);
           const registeredNames = register.map((rec) => rec[1].name);
           if (injects.length !== registeredNames.length) {

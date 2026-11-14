@@ -17,8 +17,8 @@ import { showsLabel } from "../utils/icon-only.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { filterPrompts } from "../utils/hash-token.ts";
-import { composeDraft, promptSummary, type InsertMode } from "../utils/insert.ts";
-import { needsValues } from "../utils/template.ts";
+import { composeDraft, promptSummary, recentPrompts, type InsertMode } from "../utils/insert.ts";
+import { needsValues, parseVariables } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 import {
   claimOverlay,
@@ -43,12 +43,13 @@ interface PendingUse {
   mode: InsertMode;
 }
 
-/** 每行三个动作（顺序即按钮顺序）。 */
-const ACTIONS: ReadonlyArray<{ mode: InsertMode; label: PromptEnhancerKey }> = [
-  { mode: "insert", label: "action.insert" },
-  { mode: "overwrite", label: "action.overwrite" },
-  { mode: "insert-send", label: "action.send" },
-];
+/** 三种插入模式的动作文案。 */
+const ACTION_LABELS: Record<InsertMode, PromptEnhancerKey> = {
+  insert: "action.insert",
+  overwrite: "action.overwrite",
+  "insert-send": "action.send",
+};
+const SECONDARY_MODES = ["overwrite", "insert-send"] as const;
 
 /** 「该提示词已不存在」的停留时长（自动消失，不打断输入）。 */
 const NOTICE_MS = 4000;
@@ -117,7 +118,11 @@ export function PromptLibraryButton({
    * 不记忆是刻意的：记住上次的词会让下次打开看到一份「被筛过的库」，看起来像东西丢了。
    */
   const [query, setQuery] = React.useState("");
-  const rootRef = React.useRef<HTMLSpanElement | null>(null);
+  const [usageRevision, setUsageRevision] = React.useState(0);
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const rows = React.useRef<Array<HTMLButtonElement | null>>([]);
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
 
   /**
    * 共享 claim（T1 的接线）：`claimed` 是**当前占屏的那个面**，与另外两面读同一帧的同一个值。
@@ -146,12 +151,12 @@ export function PromptLibraryButton({
   React.useEffect(() => {
     if (open && settings.showComposerButton) return;
     setQuery("");
+    setSelectedId(null);
   }, [open, settings.showComposerButton]);
 
   // 每次打开都重新拉取（列表可能在管理面板里被改过）。
-  // 依赖全部写在 loadPrompts 的 useCallback 里（空数组）：失败文案的本地化由渲染期的 t 负责，
-  // 「t 身份不稳定」的实现变成重拉循环。
-  const loadPrompts = React.useCallback(() => api.listPrompts({ sort: "default" }), []);
+  // 用量写入成功后也刷新，覆盖用户在请求返回前就重开选择器的情况。
+  const loadPrompts = React.useCallback(() => api.listPrompts({ sort: "default" }), [usageRevision]);
   const { items: prompts, error: loadError, setItems: setPrompts } = useAsyncList(loadPrompts, {
     label: "提示词列表加载失败",
     active: open,
@@ -246,7 +251,7 @@ export function PromptLibraryButton({
     inputActions.setDraft(next.draft);
     if (next.send) inputActions.submit();
     close();
-    void api.recordUsage(prompt.id).catch((err: unknown) => {
+    void api.recordUsage(prompt.id).then(() => setUsageRevision((revision) => revision + 1)).catch((err: unknown) => {
       console.warn("[prompt-enhancer] " + t("error.use"), err);
       // 宿主 `POST /prompts/:id/use` 对已删除的提示词回 404；按 status 分类（不匹配 message 文本，
       // 宿主文案可改）——与 api.ts / ai-flow.ts 的既定纪律同口径。
@@ -280,12 +285,55 @@ export function PromptLibraryButton({
    * 面板关着也在每次按键对整库 filter + sort——一条与列表毫无关系的热路径。
    */
   const matched = panelOpen ? filterPrompts(prompts ?? [], query, Number.MAX_SAFE_INTEGER) : [];
-  const shown = matched.slice(0, QUICK_LIST_LIMIT);
-  const hiddenCount = matched.length - shown.length;
+  const recent = query.trim() ? [] : recentPrompts(matched);
+  const recentIds = new Set(recent.map((prompt) => prompt.id));
+  const shown = matched.filter((prompt) => !recentIds.has(prompt.id)).slice(0, QUICK_LIST_LIMIT - recent.length);
+  const visible = [...recent, ...shown];
+  const selected = visible.find((prompt) => prompt.id === selectedId);
+  const variables = selected ? parseVariables(selected.body) : [];
+  const hiddenCount = matched.length - visible.length;
+
+  const navigateRows = (event: React.KeyboardEvent, index: number): void => {
+    if (event.nativeEvent.isComposing || !visible.length) return;
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const offset = event.key === "ArrowDown" ? 1 : -1;
+    const next = index === -1 && offset < 0 ? visible.length - 1 : index + offset;
+    rows.current[Math.max(0, Math.min(next, visible.length - 1))]?.focus();
+  };
+
+  const renderRows = (items: Prompt[], offset: number): React.ReactElement => (
+    <span role="list" style={LIST}>
+      {items.map((prompt, index) => (
+        <span key={prompt.id} role="listitem">
+          <button
+            ref={(node) => { rows.current[offset + index] = node; }}
+            type="button"
+            style={ROW}
+            onKeyDown={(event) => navigateRows(event, offset + index)}
+            onClick={() => setSelectedId(prompt.id)}
+          >
+            <span style={ROW_TITLE}>{prompt.title}</span>
+            <span style={ROW_SUMMARY}>{promptSummary(prompt, 72)}</span>
+          </button>
+        </span>
+      ))}
+    </span>
+  );
 
   return (
-    <span
+    <div
       ref={rootRef}
+      onKeyDown={(event) => {
+        if (!panelOpen || event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        if (event.target instanceof HTMLInputElement && event.target.type === "search" && query) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (pending) setPending(null);
+        else if (selected) setSelectedId(null);
+        else { close(); triggerRef.current?.focus(); }
+      }}
       style={WRAP}
       // T5 活体验收的**单源读数**（T1 的判定表判据）：本行是 composer 工具行里常驻的根节点，
       // 逐帧读它即可知道「此刻谁占屏」，不必从三处几何反推。照 P6 的 data-prompt-enhancer-manager /
@@ -293,6 +341,7 @@ export function PromptLibraryButton({
       data-prompt-enhancer-claim={claimed}
     >
       <button
+        ref={triggerRef}
         type="button"
         style={BUTTON}
         title={t("button.tip")}
@@ -355,18 +404,21 @@ export function PromptLibraryButton({
         </span>
       )}
       {panelOpen && pending !== null && (
-        <span style={ANCHOR}>
+        <div style={ANCHOR}>
           <TemplateVariablesDialog
             body={pending.prompt.body}
+            variables={pending.prompt.variables}
+            promptId={pending.prompt.id}
             t={t}
+            confirmLabel={t(ACTION_LABELS[pending.mode])}
             onCancel={() => setPending(null)}
             onFilled={(filled) => apply(pending.prompt, filled, pending.mode)}
           />
-        </span>
+        </div>
       )}
       {panelOpen && pending === null && (
-        <span style={ANCHOR}>
-          <span role="dialog" aria-label={t("list.title")} style={PANEL}>
+        <div style={ANCHOR}>
+          <div role="dialog" aria-label={t("list.title")} style={PANEL}>
             <span style={PANEL_HEADER}>
               <span style={HEADER}>{t("list.title")}</span>
               <span style={PANEL_ACTIONS}>
@@ -407,87 +459,104 @@ export function PromptLibraryButton({
              * autoFocus 是 React 的声明式属性，不是 DOM 注入（硬约束 3 禁的是 MutationObserver /
              * querySelector 那类旁路）。
              */}
-            <input
-              type="search"
-              autoFocus
-              aria-label={t("list.filter")}
-              placeholder={t("list.filterPlaceholder")}
-              value={query}
-              onChange={(ev) => setQuery(ev.target.value)}
-              style={FILTER}
-            />
-            <span style={PANEL_BODY}>
-              {loadError !== null && (
-                <span role="alert" style={ERROR}>
-                  <span>{t("error.load")}</span>
-                  <span style={ERROR_DETAIL} title={loadError}>
-                    {loadError}
-                  </span>
-                </span>
-              )}
-              {loadError === null && prompts === null && <span style={MUTED}>{t("list.loading")}</span>}
-              {loadError === null && prompts !== null && prompts.length === 0 && (
-                <span style={MUTED}>{t("list.empty")}</span>
-              )}
-              {/* 有内容但筛不出结果：与管理面板的「搜索无结果」同一种说法（复用 `hash.empty`）。 */}
-              {loadError === null && prompts !== null && prompts.length > 0 && matched.length === 0 && (
-                <span style={MUTED}>{t("hash.empty")}</span>
-              )}
-              {loadError === null && shown.length > 0 && (
-                <span role="list" style={LIST}>
-                  {shown.map((prompt) => (
-                    <span key={prompt.id} role="listitem" aria-label={prompt.title} style={ROW}>
-                      <span style={ROW_TEXT}>
-                        <span style={ROW_TITLE}>{prompt.title}</span>
-                        <span style={ROW_SUMMARY}>{promptSummary(prompt)}</span>
-                        {/* 标签不再被「有摘要」门住（审查 #9）：有标签没摘要的条目此前整块不显示标签，
-                            而管理面板列表是无条件渲染标签的——同一份数据两处口径不一致。 */}
-                        {(prompt.tags ?? []).length > 0 && (
-                          <span style={TAGS}>
-                            {(prompt.tags ?? []).map((tag) => (
-                              <span key={tag} style={TAG}>
-                                {tag}
-                              </span>
-                            ))}
-                          </span>
-                        )}
-                      </span>
-                      <span style={ROW_ACTIONS}>
-                        {ACTIONS.map(({ mode, label }) => (
-                          <button
-                            key={mode}
-                            type="button"
-                            style={ACTION_BUTTON}
-                            title={`${t(label)} ${prompt.title}`}
-                            aria-label={`${t(label)} ${prompt.title}`}
-                            onClick={() => choose(prompt, mode)}
-                          >
-                            {t(label)}
-                          </button>
-                        ))}
+            {!selected && (
+              <>
+                <input
+                  type="search"
+                  autoFocus
+                  aria-label={t("list.filter")}
+                  placeholder={t("list.filterPlaceholder")}
+                  value={query}
+                  onChange={(ev) => setQuery(ev.target.value)}
+                  onKeyDown={(event) => {
+                    navigateRows(event, -1);
+                    if (event.key === "Enter" && !event.nativeEvent.isComposing && visible[0] && !loadError) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setSelectedId(visible[0].id);
+                    }
+                  }}
+                  style={FILTER}
+                />
+                <span style={PANEL_BODY}>
+                  {loadError !== null && (
+                    <span role="alert" style={ERROR}>
+                      <span>{t("error.load")}</span>
+                      <span style={ERROR_DETAIL} title={loadError}>
+                        {loadError}
                       </span>
                     </span>
-                  ))}
+                  )}
+                  {loadError === null && prompts === null && <span style={MUTED}>{t("list.loading")}</span>}
+                  {loadError === null && prompts !== null && prompts.length === 0 && (
+                    <span style={MUTED}>{t("list.empty")}</span>
+                  )}
+                  {/* 有内容但筛不出结果：与管理面板的「搜索无结果」同一种说法（复用 `hash.empty`）。 */}
+                  {loadError === null && prompts !== null && prompts.length > 0 && matched.length === 0 && (
+                    <span style={MUTED}>{t("hash.empty")}</span>
+                  )}
+                  {loadError === null && recent.length > 0 && (
+                    <div role="group" aria-label={t("list.recent")}>
+                      <div style={MUTED}>{t("list.recent")}</div>
+                      {renderRows(recent, 0)}
+                    </div>
+                  )}
+                  {loadError === null && shown.length > 0 && renderRows(shown, recent.length)}
+                  {/* 渲染上限的越界提示：整行可点，直接把用户送到真正能搜全库的地方。 */}
+                  {loadError === null && hiddenCount > 0 && (
+                    <button
+                      type="button"
+                      style={MORE}
+                      onClick={() => {
+                        close();
+                        openManager();
+                      }}
+                    >
+                      {hiddenCount}{t("list.overflow")}
+                    </button>
+                  )}
                 </span>
-              )}
-              {/* 渲染上限的越界提示：整行可点，直接把用户送到真正能搜全库的地方。 */}
-              {loadError === null && hiddenCount > 0 && (
-                <button
-                  type="button"
-                  style={MORE}
-                  onClick={() => {
-                    close();
-                    openManager();
-                  }}
-                >
-                  {hiddenCount}{t("list.overflow")}
-                </button>
-              )}
-            </span>
-          </span>
-        </span>
+              </>
+            )}
+            {loadError === null && selected && (
+              <section style={PREVIEW} aria-label={t("list.preview")}>
+                <header style={PANEL_HEADER}>
+                  <h3 style={PREVIEW_TITLE}>{selected.title}</h3>
+                  <button type="button" autoFocus style={ACTION_BUTTON} onClick={() => setSelectedId(null)}>
+                    {t("manager.edit.back")}
+                  </button>
+                </header>
+                {selected.summary && <span style={ROW_SUMMARY}>{selected.summary}</span>}
+                {(selected.tags?.length || variables.length) > 0 && (
+                  <div style={TAGS}>
+                    {(selected.tags ?? []).map((tag) => <span key={`tag:${tag}`} style={TAG}>{tag}</span>)}
+                    {variables.map((name) => <span key={name} style={TAG}>{`{{${name}}}`}</span>)}
+                  </div>
+                )}
+                <pre key={selected.id} style={PREVIEW_BODY} tabIndex={0} aria-label={t("manager.edit.body")}>
+                  {selected.body}
+                </pre>
+                <span style={PANEL_ACTIONS}>
+                  <button type="button" style={PRIMARY} onClick={() => choose(selected, "insert")}>
+                    {t(variables.length ? "list.fillInsert" : "action.insert")}
+                  </button>
+                  <details key={selected.id}>
+                    <summary style={ACTION_BUTTON}>{t("list.moreActions")}</summary>
+                    <span style={PANEL_ACTIONS}>
+                      {SECONDARY_MODES.map((mode) => (
+                        <button key={mode} type="button" style={ACTION_BUTTON} onClick={() => choose(selected, mode)}>
+                          {t(ACTION_LABELS[mode])}
+                        </button>
+                      ))}
+                    </span>
+                  </details>
+                </span>
+              </section>
+            )}
+          </div>
+        </div>
       )}
-    </span>
+    </div>
   );
 }
 
@@ -552,22 +621,18 @@ const ANCHOR: React.CSSProperties = {
 };
 
 /**
- * 面板骨架：头部（标题 / 存为提示词 / 管理）与过滤框**钉在卡内**，只有下面的 PANEL_BODY 滚动。
- *
- * 这条分工就是不变式本身：把 overflowY: auto 留在卡上 ⇒ 整卡滚动，长列表会把头部与筛选框
- * 一起滚出视野（用户反馈：滚到列表后半段就看不见筛选框了）。
+ * 搜索和预览共用面板尺寸。各自的正文区滚动，头部与插入动作留在视野内。
  */
 const PANEL: React.CSSProperties = {
   ...overlayBase,
   display: "flex",
   flexDirection: "column",
   gap: 6,
-  width: 320,
-  // 高度上限 320 → 420（用户反馈：一屏只装得下四五条）。同时留一道视口护栏——卡是向上弹的
-  // （ANCHOR 贴输入框上沿），窗口矮时不许顶出屏幕。
-  maxHeight: "min(420px, calc(100vh - 120px))",
+  width: "min(540px, calc(100vw - 96px))",
+  height: "min(490px, calc(100dvh - 132px))",
+  boxSizing: "border-box",
   overflow: "hidden",
-  padding: 8,
+  padding: 12,
   fontSize: 12,
 };
 
@@ -598,10 +663,10 @@ const PANEL_ACTIONS: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 4,
-  flex: "0 0 auto",
+  flexWrap: "wrap",
 };
 
-const HEADER: React.CSSProperties = { color: TOKEN.muted, fontSize: 11, fontWeight: 600 };
+const HEADER: React.CSSProperties = { color: TOKEN.fg, fontSize: 13, fontWeight: 600 };
 
 const MUTED: React.CSSProperties = { color: TOKEN.muted, fontSize: 11 };
 
@@ -618,19 +683,9 @@ const ERROR_DETAIL: React.CSSProperties = { color: TOKEN.muted, overflowWrap: "a
 const LIST: React.CSSProperties = { display: "flex", flexDirection: "column" };
 
 const ROW: React.CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  gap: 8,
-  padding: "6px 2px",
-  borderTop: `1px solid ${TOKEN.border}`,
-};
-
-const ROW_TEXT: React.CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 2,
-  flex: "1 1 auto",
-  minWidth: 0,
+  display: "flex", flexDirection: "column", gap: 2, textAlign: "left",
+  width: "100%", padding: "6px 8px", border: 0, borderRadius: 6,
+  cursor: "pointer", font: "inherit", background: "transparent",
 };
 
 const ROW_TITLE: React.CSSProperties = {
@@ -654,13 +709,6 @@ const TAG: React.CSSProperties = {
   fontSize: 10,
 };
 
-const ROW_ACTIONS: React.CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  flex: "0 0 auto",
-  gap: 4,
-};
-
 const ACTION_BUTTON: React.CSSProperties = {
   padding: "1px 6px",
   fontSize: 11,
@@ -670,4 +718,18 @@ const ACTION_BUTTON: React.CSSProperties = {
   border: `1px solid ${TOKEN.border}`,
   borderRadius: 6,
   cursor: "pointer",
+};
+
+
+const PRIMARY: React.CSSProperties = { ...ACTION_BUTTON, color: TOKEN.accent, borderColor: TOKEN.accent };
+const PREVIEW: React.CSSProperties = {
+  display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, gap: 8,
+};
+const PREVIEW_TITLE: React.CSSProperties = {
+  fontSize: 15, fontWeight: 600, margin: 0, overflowWrap: "anywhere",
+};
+const PREVIEW_BODY: React.CSSProperties = {
+  flex: "1 1 0", minHeight: 0, margin: 0, padding: 12, borderRadius: 6,
+  color: TOKEN.fg, background: TOKEN.hover, font: "inherit", fontSize: 13, lineHeight: 1.65,
+  whiteSpace: "pre-wrap", overflowWrap: "anywhere", overflowY: "auto",
 };

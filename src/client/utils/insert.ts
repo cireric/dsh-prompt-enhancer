@@ -14,3 +14,10 @@ export function promptSummary(p: Prompt, max = 60): string {
   const source = p.summary?.trim() || p.body.replace(/\s+/g, " ").trim();
   return source.length > max ? `${source.slice(0, max)}…` : source;
 }
+
+/** Recently inserted entries, ordered by the last use rather than frequency. */
+export function recentPrompts(prompts: readonly Prompt[], limit = 5): Prompt[] {
+  return prompts.filter((prompt) => prompt.lastUsedAt > 0)
+    .sort((a, b) => b.lastUsedAt - a.lastUsedAt)
+    .slice(0, limit);
+}

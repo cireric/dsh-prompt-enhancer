@@ -50,3 +50,21 @@ export function resolveDescription(prompt: DescriptionCarrier, descriptor?: Desc
   }
   return undefined;
 }
+
+/** YAML 双引号标量：JSON 字符串转义与 YAML 双引号风格兼容，能安全承载冒号/引号/换行。 */
+function yamlQuote(value: string): string {
+  return JSON.stringify(value);
+}
+
+/** 渲染 SKILL.md：frontmatter + 正文原样。 */
+export function renderSkillFile(input: {
+  name: string;
+  description: string;
+  whenToUse?: string;
+  body: string;
+}): string {
+  const front = ["---", `name: ${input.name}`, `description: ${yamlQuote(input.description)}`];
+  if (input.whenToUse?.trim()) front.push(`whenToUse: ${yamlQuote(input.whenToUse.trim())}`);
+  front.push("---", "");
+  return front.join("\n") + "\n" + input.body.trim() + "\n";
+}

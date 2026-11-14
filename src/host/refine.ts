@@ -11,6 +11,7 @@ export interface AiRefineResult {
   tags: string[];
   summary: string;
   body: string;
+  suggestions?: string[];
 }
 
 /**
@@ -34,7 +35,13 @@ export function parseRefineResult(text: string): AiRefineResult | undefined {
     const tags = Array.isArray(parsed.tags)
       ? parsed.tags.filter((t): t is string => typeof t === "string" && !!t.trim()).map((t) => t.trim())
       : [];
+    const suggestions = Array.isArray(parsed.suggestions)
+      ? [...new Set(parsed.suggestions.flatMap((item) =>
+        typeof item === "string" && item.trim() ? [item.trim()] : [],
+      ))].slice(0, 3)
+      : [];
     return {
+      ...(suggestions.length ? { suggestions } : {}),
       title: typeof parsed.title === "string" ? parsed.title.trim() : "",
       // 词库只支持单个标签，这里直接归一为单个，避免调用方各自处理
       tags: tags.slice(0, 1),

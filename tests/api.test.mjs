@@ -261,9 +261,9 @@ test("api 表面：P4 的 5 个方法与 P5 新增的 6 个方法都在，且 AI
 // 此前 api.updatePrompt 的类型宽于白名单，sourceBody / aiRefined / aiRefinedAt 被编译期放行、
 // 运行期被宿主静默丢弃且仍回 200，注释宣称的「防拼错字段」不成立。这里断言白名单本身
 // （不扫描 routes.ts 源码——那种断言会因排版变化而假阳性/假阴性）。
-test("PROMPT_WRITABLE_KEYS：恰好是宿主 PUT 白名单的 6 个键，且不含 sourceBody/aiRefined/aiRefinedAt", async () => {
+test("PROMPT_WRITABLE_KEYS：恰好是宿主 PUT 白名单的 7 个键，且不含 sourceBody/aiRefined/aiRefinedAt", async () => {
   const { PROMPT_WRITABLE_KEYS } = await import("../src/types.ts");
-  assert.deepEqual([...PROMPT_WRITABLE_KEYS], ["title", "body", "tags", "summary", "skillName", "skillExportedAt"]);
+  assert.deepEqual([...PROMPT_WRITABLE_KEYS], ["title", "body", "tags", "summary", "variables", "skillName", "skillExportedAt"]);
   for (const key of ["sourceBody", "aiRefined", "aiRefinedAt"]) {
     assert.ok(!PROMPT_WRITABLE_KEYS.includes(key), key + " 不可经 PUT 写入，不得进 api.updatePrompt 的补丁类型");
   }
@@ -271,7 +271,7 @@ test("PROMPT_WRITABLE_KEYS：恰好是宿主 PUT 白名单的 6 个键，且不�
 
 // ── P6 客户端 HTTP 面：路由覆盖（R19）─────────────────────────────────────
 //
-// 宿主共 27 条逻辑路由（事实源 src/host/routes.ts 的分发表）。这里逐条对照：
+// 宿主路由由 src/host/routes.ts 的分发表定义。这里逐条对照：
 //   · 有对应客户端方法的 → 逐条断言「HTTP 方法 + 路径」（打桩 fetch 看真实请求的行为断言；
 //     不做源码文本解析——P5 已把 smoke 从文本扫描升级为行为断言，倒退不可接受）
 //   · 没有对应方法的 → 必须逐条进下面的豁免清单，且每条写明理由
@@ -302,6 +302,7 @@ const ROUTES = [
   // AI
   { route: "GET /ai/providers", client: "listAiProviders", call: (a) => a.listAiProviders(), method: "GET", url: "/api/prompt-enhancer/ai/providers", data: [] },
   { route: "POST /ai/polish", client: "polishPrompt", call: (a) => a.polishPrompt("草稿", { keepVariables: true }), method: "POST", url: "/api/prompt-enhancer/ai/polish", body: { body: "草稿", keepVariables: true, withSummary: false }, data: { polished: "x" } },
+  { route: "POST /ai/check", client: "checkPrompt", call: (a) => a.checkPrompt("草稿"), method: "POST", url: "/api/prompt-enhancer/ai/check", body: { body: "草稿" }, data: { findings: [] } },
   { route: "POST /ai/refine", client: "refinePrompt", call: (a) => a.refinePrompt("草稿"), method: "POST", url: "/api/prompt-enhancer/ai/refine", body: { body: "草稿" }, data: { title: "t", tags: [], summary: "", body: "b" } },
   { route: "POST /ai/skill-descriptor", client: "aiSkillDescriptor", call: (a) => a.aiSkillDescriptor({ body: "草稿" }), method: "POST", url: "/api/prompt-enhancer/ai/skill-descriptor", body: { body: "草稿" }, data: { name: "weekly-report", description: "把要点整理成周报" } },
   // 设置
@@ -342,7 +343,7 @@ test("路由覆盖：覆盖账本与产物路由清单**双向对齐**（R19；�
     produced,
     "覆盖账本必须与 ROUTE_SPECS 逐条对齐（加路由必须加覆盖行或豁免行）",
   );
-  assert.equal(produced.length, 27, "宿主逻辑路由共 27 条");
+  assert.equal(produced.length, 28, "宿主逻辑路由共 28 条");
 
   // 覆盖行里的 method 也钉一遍：它是手抄表最容易写错的一格，而错了「逐方法」那条用例查不出来
   // （它比对的是真实请求的方法与覆盖行的方法，两边一起错就一起绿）。
@@ -413,7 +414,7 @@ test("api 表面：P6 的 12 个新方法都在，P4/P5 的 11 个不动", () =>
   ]) {
     assert.equal(typeof api[name], "function", name + " 应保留（P4/P5）");
   }
-  assert.equal(COVERED.length, 26, "27 条路由里 26 条有客户端方法");
+  assert.equal(COVERED.length, 27, "28 条路由里 27 条有客户端方法");
 });
 
 // P6-4 裁定：导入不自动淘汰，「确认」与否决定落库还是只预览——客户端只是信封封装，

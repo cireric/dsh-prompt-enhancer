@@ -1,8 +1,11 @@
+import type { AiRefineResult } from "../../host/refine.ts";
 import {
   API_PREFIX,
   type ImportResult,
   type PluginSettings,
   type Prompt,
+  type PromptCheckResult,
+  type PromptInput,
   type PromptSort,
   type PromptWritablePatch,
   type TrashItem,
@@ -67,8 +70,7 @@ export class ApiError extends Error {
 /** `/ai/providers` 返回的可选清单（宿主按已配置的 provider 给出模型）。 */
 export interface AiSelectable { provider: string; name: string; models: Array<{ id: string; name: string }> }
 
-/** `/ai/refine` 的返回：小标题、标签（最多 1 个）、摘要、正文。 */
-export interface AiRefineResult { title: string; tags: string[]; summary: string; body: string }
+export type { AiRefineResult } from "../../host/refine.ts";
 
 /**
  * `POST /ai/skill-descriptor` 的返回：AI 生成的技能名 / 描述（`whenToUse` 可选）。
@@ -168,8 +170,8 @@ export const api = {
   /** 写设置（降级路径：无 `configForms` 时用；有 form 时写走宿主 ConfigForm.set）。 */
   updateSettings: (patch: Partial<PluginSettings>) => call<PluginSettings>("PUT", "/settings", patch),
   getMeta: (key: string) => call<{ key: string; value: string }>("GET", `/meta/${encodeURIComponent(key)}`).then((r) => r.value),
-  setMeta: (key: string, value: string) =>
-    call<{ key: string; value: string }>("PUT", `/meta/${encodeURIComponent(key)}`, { value }),
+  setMeta: (key: string, value: string, timeoutMs?: number) =>
+    call<{ key: string; value: string }>("PUT", `/meta/${encodeURIComponent(key)}`, { value }, timeoutMs),
   /**
    * 删一条 meta KV（`DELETE /meta/:key`，T6 / O-1）。**幂等**：键不存在时宿主同样回 ok
    * （`deleted: false` 只说明「这次没删到行」，不是失败）。**通用通道**：键名约定（`pl:...`）
@@ -182,12 +184,12 @@ export const api = {
   deleteMeta: (key: string) =>
     call<{ key: string; deleted: boolean }>("DELETE", `/meta/${encodeURIComponent(key)}`, undefined, CLEAR_TIMEOUT_MS),
 
-  createPrompt: (input: { title: string; body: string; tags?: string[]; summary?: string }) =>
+  createPrompt: (input: PromptInput) =>
     call<{ prompt: Prompt; evicted: string[] }>("POST", "/prompts", input),
   /**
    * 宿主 PUT 只认白名单字段（事实见 `src/host/routes.ts` 的 PUT 分发：title | body | tags |
-   * summary | skillName | skillExportedAt），其余字段被静默丢弃且仍回 200。故补丁类型取
-   * `PromptWritablePatch`（types.ts 已导出，由 `PROMPT_WRITABLE_KEYS` 派生的 6 键 Pick），
+   * summary | variables | skillName | skillExportedAt），其余字段被静默丢弃且仍回 200。故补丁类型取
+   * `PromptWritablePatch`（types.ts 已导出，由 `PROMPT_WRITABLE_KEYS` 派生的字段 Pick），
    * 把 `sourceBody` / `aiRefined` / `aiRefinedAt` 这类「可读不可写」字段挡在编译期。
    * `aiWriteBack` 是写回 `sourceBody` 的唯一路径（§4.4），它不是记录字段（store.updatePrompt
    * 的选项目志），用交叉类型补上。
@@ -209,6 +211,7 @@ export const api = {
       { body, keepVariables: opts.keepVariables !== false, withSummary: false },
       AI_TIMEOUT_MS,
     ),
+  checkPrompt: (body: string) => call<PromptCheckResult>("POST", "/ai/check", { body }, AI_TIMEOUT_MS),
   refinePrompt: (body: string) => call<AiRefineResult>("POST", "/ai/refine", { body }, AI_TIMEOUT_MS),
   /**
    * 逐条 AI 补全技能名与描述（`POST /ai/skill-descriptor`；规格 §7.6 的「AI 补全名称与描述」）。

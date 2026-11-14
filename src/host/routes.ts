@@ -1,5 +1,5 @@
 /**
- * Host HTTP API：单条 prefix 路由 + **分发表驱动**（规格 §5，共 27 条逻辑路由）。
+ * Host HTTP API：单条 prefix 路由 + **分发表驱动**。
  *
  * 路由清单（`ROUTE_SPECS`）是**单一真源**（审查 #10-③）：`dispatch` 按它匹配与分发，
  * `tests/api.test.mjs` 的覆盖账本按 `pattern` 与它**双向对齐**——加一条路由必须同时加一条覆盖行
@@ -26,6 +26,7 @@ import * as skills from "./skills.ts";
 import * as store from "./store.ts";
 import { clearRouteCache } from "./ai.ts";
 import { getSettings, isSettingsAvailable, updateSettings } from "./settings.ts";
+import { readTemplateVariables } from "../template-variables.ts";
 import { API_PREFIX, type PromptSort, type PromptWritablePatch } from "../types.ts";
 
 /** 路由注册对象（与 `@deepseek-ai/dsh-host-webserver` 的 `WebRoute` 对齐）。 */
@@ -37,6 +38,13 @@ export interface PromptEnhancerRoute {
 
 /** 请求体不是合法 JSON / 参数缺失时抛出，由分发层映射成 400。 */
 class BadRequest extends Error {}
+
+function requestVariables(value: unknown) {
+  if (value === undefined) return undefined;
+  const variables = readTemplateVariables(value);
+  if (!variables) throw new BadRequest("变量配置无效");
+  return variables;
+}
 
 // ── 信封与工具 ─────────────────────────────────────────────────────────────
 
@@ -252,7 +260,7 @@ interface RouteSpec {
 }
 
 /**
- * 全部逻辑路由（27 条）。**顺序无关**：没有两条 route 的方法 + 段形状重叠——三条
+ * 全部逻辑路由。**顺序无关**：没有两条 route 的方法 + 段形状重叠——三条
  * `GET/PUT/DELETE /prompts/:id` 靠方法区分，`/trash` 与 `/trash/:id` 靠段数区分，
  * 三条 `/meta/:key` 同样靠方法区分。
  */
@@ -288,6 +296,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
         body: text,
         tags: asStringArray(body.tags),
         summary: asString(body.summary),
+        variables: requestVariables(body.variables),
       });
       // 超限淘汰按设置里的上限（上限不在 store 内读取：store 保持纯模块）。
       // R45：把刚创建的那条豁免出去——落库次序是「先 createPrompt 再淘汰」，新项的键
@@ -325,6 +334,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       }
       if (body.tags !== undefined) patch.tags = asStringArray(body.tags) ?? [];
       if (body.summary !== undefined) patch.summary = asString(body.summary) ?? "";
+      if (body.variables !== undefined) patch.variables = requestVariables(body.variables);
       if (body.skillName !== undefined) patch.skillName = asString(body.skillName);
       if (body.skillExportedAt !== undefined) {
         const at = asFiniteNumber(body.skillExportedAt);
@@ -465,6 +475,19 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       );
       if (!outcome.ok) return failWithCode(res, 503, { code: outcome.code, message: devMessage(outcome.code) });
       return ok(res, outcome.data);
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /ai/check",
+    match: shape("ai", "check"),
+    handle: async ({ req, res }) => {
+      const body = await readBody(req, res);
+      const text = asString(body.body);
+      if (!text?.trim()) return fail(res, 400, "缺少 body");
+      const checked = await ai.checkPromptCore(text, getSettings());
+      if (!checked.ok) return failWithCode(res, 503, { code: checked.code, message: devMessage(checked.code) });
+      return ok(res, checked.report);
     },
   },
   {

@@ -15,18 +15,18 @@
  */
 import { api } from "./api.ts";
 import { refinedDirectionMetaKey } from "./refined-direction.ts";
+import { templateMemoryKey } from "./template.ts";
 import { skillDescriptorMetaKey } from "./skill-export.ts";
 
 /** 删一条 meta KV（真实现 = `api.deleteMeta`；幂等，键不存在也算成功）。 */
 export type MetaDeleter = (key: string) => Promise<unknown>;
 
 /**
- * 某条提示词在 meta 里的两把「AI 派生」键：方向（`pl:refined-dir:<id>`）与技能 descriptor
- * （`pl:skill-descriptor:<id>`）。**键的形态归各自的主模块**（`refined-direction.ts` /
+ * 某条提示词的方向、技能 descriptor 和模板填值记忆。**键的形态归各自的主模块**（`refined-direction.ts` /
  * `skill-export.ts`），这里只做枚举——不另抄一份键名字符串，否则约定就有了第二处真源。
  */
 export function perPromptMetaKeys(promptId: string): string[] {
-  return [refinedDirectionMetaKey(promptId), skillDescriptorMetaKey(promptId)];
+  return [refinedDirectionMetaKey(promptId), skillDescriptorMetaKey(promptId), templateMemoryKey(promptId)];
 }
 
 /** `deletePrompts` 的入参。 */
@@ -81,8 +81,8 @@ export interface DeletePromptsResult {
  *     这条专治「清空回收站」的竞态——面板列出的 items 是打开那一刻的快照，窗口内新增的行同样被删，
  *     却不在快照里；按回执清键之后，`ids` 只用来决定「要不要清」的语义（软删除仍然一把都不清），
  *     而**删了谁**只有宿主说了算。`irreversible` 仍是「清键」这件事的**唯一决策点**。
- *  5. **并发清**（重要-4 / 批一必修）：`2×N` 条 `DELETE /meta` **一次性发出**（`Promise.allSettled`），
- *     不再串行等待——串行会把 `2×N` 次往返的耗时压在调用方的反馈上（见 `capture.ts` 第 ⑥ 条）。
+ *  5. **并发清**（重要-4 / 批一必修）：`3×N` 条 `DELETE /meta` **一次性发出**（`Promise.allSettled`），
+ *     不再串行等待——串行会把 `3×N` 次往返的耗时压在调用方的反馈上（见 `capture.ts` 第 ⑥ 条）。
  *     前四条语义一条都不受影响：仍先 `await input.remove()`（主删先行）、`irreversible` 仍是唯一
  *     决策点、失败仍只 warn + 计入 `failed`；发起次序仍是「逐 id、逐键」的既有次序。
  */
@@ -92,7 +92,7 @@ export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePr
   // ⑦：清**回执说的那些** id（`{ ids }`，清空回收站的竞态窗口），回执说不出才退回调用方给的 ids。
   const ids = receiptIds(receipt) ?? input.ids;
   const deleteMeta = input.deleteMeta ?? ((key: string) => api.deleteMeta(key));
-  // 5. **并发清**（重要-4）：淘汰条数由上限配置决定（上限 300 → 50 时一次新建会淘汰 ~250 条 ⇒ 2×N
+  // 5. **并发清**（重要-4）：淘汰条数由上限配置决定（上限 300 → 50 时一次新建会淘汰 ~250 条 ⇒ 3×N
   //    把请求**一次性发出去**（顺序仍是「逐 id、逐键」的既有次序），再 allSettled 收结果。
   //    T7-5①（P7 §10.4-5）：map 的同步抛出现在被逐键兜住——每个调用推迟到一个微任务里发起，
   //    于是一次**同步抛出**变成「被拒绝的 promise」，交给下面的 allSettled 逐键收下（记 failed + warn）。

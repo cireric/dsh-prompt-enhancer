@@ -71,6 +71,32 @@ after(() => {
   else process.env.DSH_HOME = HOME_BEFORE;
 });
 
+test("检查提示词：只回审查报告，接受原文引用，也允许没有发现", async () => {
+  const body = "只审查，不改文件。发现问题直接修复。";
+  const finding = { quote: "发现问题直接修复。", issue: "修复和只审查冲突", suggestion: "确认是否允许修改文件" };
+  ai.registerLlm(fakeRuntime([
+    [JSON.stringify({ findings: [finding], body: "替代草稿" }), { type: "finish", reason: { kind: "stop" } }],
+    ["{\"findings\":[]}", { type: "finish", reason: { kind: "stop" } }],
+  ]));
+  const report = await dispatch("POST", "/ai/check", { body });
+  assert.equal(report.status, 200);
+  assert.deepEqual(report.envelope, { ok: true, data: { findings: [finding] } });
+
+  const clear = await dispatch("POST", "/ai/check", { body: "列出当前目录下的 Markdown 文件。" });
+  assert.equal(clear.status, 200);
+  assert.deepEqual(clear.envelope, { ok: true, data: { findings: [] } });
+});
+
+test("检查提示词：拒绝无原文依据的报告", async () => {
+  const response = JSON.stringify({
+    findings: [{ quote: "这是草稿里没有的原句", issue: "缺少权限", suggestion: "补充权限" }],
+  });
+  ai.registerLlm(fakeRuntime([[response, { type: "finish", reason: { kind: "stop" } }]]));
+  const report = await dispatch("POST", "/ai/check", { body: "只审查，不改文件。" });
+  assert.equal(report.status, 503);
+  assert.equal(report.envelope.error.code, "schema-mismatch");
+});
+
 // ── 失败形态 → code 映射（真流归因）────────────────────────────────────────
 
 test("归因 timeout：finish=aborted（30s 超时到点）→ 信封 error.code === 'timeout'", async () => {
@@ -188,4 +214,16 @@ test("信封 error.message：普通 node --test 进程（非 dev 构建）不下
   assert.equal(out.envelope.error.code, "no-llm");
   assert.equal(out.envelope.error.message, undefined, "__DEV__ 为 false 时 message 必须缺省（宿主零文案）");
   assert.deepEqual(Object.keys(out.envelope.error).sort(), ["code"]);
+});
+
+test("增强模板从路由返回独立建议，忽略无效条目并去重", async () => {
+  const body = "检查 {{提交范围}}。等我确认后才提交。";
+  ai.registerLlm(fakeRuntime([[
+    JSON.stringify({ body, suggestions: [" 回报提交哈希。 ", null, "", "回报提交哈希。"] }),
+    { type: "finish", reason: { kind: "stop" } },
+  ]]));
+  const result = await dispatch("POST", "/ai/refine", { body: "检查 Git 改动，等待确认后提交。" });
+  assert.equal(result.status, 200);
+  assert.equal(result.envelope.data.body, body);
+  assert.deepEqual(result.envelope.data.suggestions, ["回报提交哈希。"]);
 });

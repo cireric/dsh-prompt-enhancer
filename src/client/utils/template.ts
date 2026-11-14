@@ -1,3 +1,5 @@
+import type { TemplateVariable } from "../../types.ts";
+
 /** 语义与 host 侧 `text.ts#extractVariables` 一致：trim 去空、保序；此处额外去重。 */
 export function parseVariables(body: string): string[] {
   const out: string[] = [];
@@ -8,11 +10,18 @@ export function parseVariables(body: string): string[] {
   return out;
 }
 
+function templateValue(values: Record<string, string>, name: string): string | undefined {
+  const value = Object.hasOwn(values, name) ? values[name] : undefined;
+  return value?.trim() ? value : undefined;
+}
+
+export function unfilledVariables(names: readonly string[], values: Record<string, string>): string[] {
+  return names.filter((name) => templateValue(values, name) === undefined);
+}
+
 export function fillTemplate(body: string, values: Record<string, string>): string {
   return body.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (whole, raw: string) => {
-    const name = raw.trim();
-    const value = values[name];
-    return value !== undefined && value !== "" ? value : whole;
+    return templateValue(values, raw.trim()) ?? whole;
   });
 }
 
@@ -20,36 +29,53 @@ export function needsValues(body: string): boolean {
   return parseVariables(body).length > 0;
 }
 
-/** 模板变量记忆的 meta 键（与上游客户端一致）。 */
-export const memoryKey = "pl:template-var-memory";
+export function templateMemoryKey(promptId: string): string {
+  return `pl:template-var-memory:${promptId}`;
+}
 
-/**
- * 容错读取变量记忆：空值即「没有记忆」，非法 JSON 按空对象并留 console 痕迹。
- *
- * 下移自 `TemplateVariablesDialog`（P5 任务 4）：只搬位置，行为与文案逐字不变，
- * 目的是让这条容错链能被单测钉住（`tests/template.test.mjs`）。
- */
+/** Read only string values from stored template memory. */
 export function parseMemory(raw: string): Record<string, string> {
   if (raw.trim() === "") return {};
   try {
     const parsed: unknown = JSON.parse(raw);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, string> = {};
-    for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === "string") out[name] = value;
-    }
-    return out;
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === "string"));
   } catch (err) {
-    console.warn("[prompt-enhancer] " + memoryKey + " 不是合法 JSON，本次按无记忆处理", err);
+    console.warn("[prompt-enhancer] 模板变量记忆不是合法 JSON", err);
     return {};
   }
 }
 
 export function pickRemembered(body: string, memory: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
+  return Object.fromEntries(parseVariables(body).flatMap((name) => {
+    const value = templateValue(memory, name);
+    return value === undefined ? [] : [[name, value]];
+  }));
+}
+
+/** Only defaults of variables present in the displayed body are prefilled. */
+export function initialTemplateValues(
+  body: string,
+  variables: readonly TemplateVariable[],
+): Record<string, string> {
+  const configured = new Map(variables.map((variable) => [variable.name, variable]));
+  const entries: Array<[string, string]> = [];
   for (const name of parseVariables(body)) {
-    const value = memory[name];
-    if (typeof value === "string" && value !== "") out[name] = value;
+    const value = configured.get(name)?.defaultValue;
+    if (value !== undefined) entries.push([name, value]);
   }
-  return out;
+  return Object.fromEntries(entries);
+}
+
+
+export function updateTemplateVariable(
+  variables: readonly TemplateVariable[],
+  name: string,
+  field: "description" | "defaultValue",
+  value: string,
+): TemplateVariable[] {
+  return [
+    ...variables.filter((item) => item.name !== name),
+    { ...variables.find((item) => item.name === name), name, [field]: value },
+  ];
 }

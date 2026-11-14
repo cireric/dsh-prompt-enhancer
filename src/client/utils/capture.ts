@@ -19,7 +19,7 @@
  * 淘汰结果以宿主响应里的 `evicted` 为准（客户端预检只是「事先问一次」，
  * 真正的受害者名单由 `store.enforceMaxCount` 决定）。
  */
-import { clampTitle, type Prompt } from "../../types.ts";
+import { clampTitle, type Prompt, type PromptInput } from "../../types.ts";
 import { firstNonEmptyLine } from "../../first-line.ts";
 import { deletePrompts } from "./prompt-meta.ts";
 import { api } from "./api.ts";
@@ -29,12 +29,7 @@ import { previewEvictions } from "./eviction.ts";
 import { getSettingsSnapshot, isSettingsReady } from "./settings-store.ts";
 
 /** 沉淀载荷：标题可省（B/C 两个入口只有正文），正文必填。 */
-export interface CaptureInput {
-  title?: string;
-  body: string;
-  tags?: string[];
-  summary?: string;
-}
+export type CaptureInput = Omit<PromptInput, "title"> & { title?: string };
 
 /**
  * 落库结果：`ok: false` 只表示「用户在淘汰二次确认里取消」——
@@ -89,6 +84,7 @@ export async function createFromCapture(input: CaptureInput): Promise<CaptureOut
     body: input.body,
     tags: input.tags,
     summary: input.summary,
+    variables: input.variables,
   });
   notifyDataChanged();
 
@@ -106,7 +102,7 @@ export async function createFromCapture(input: CaptureInput): Promise<CaptureOut
   //    不可能再发一次删除。清键失败只 warn（`deletePrompts` 内部），**绝不影响**这次创建的结局。
   //
   //    ⑥ **不阻塞保存反馈**（重要-4 / 批一必修）：**不 await**。淘汰条数由**上限配置**决定、不由用户这一
-  //    次操作决定（上限 300 → 50 之后，一次新建会淘汰 ~250 条 ⇒ 2×N = ~500 次 `DELETE /meta`），而
+  //    次操作决定（上限 300 → 50 之后，一次新建会淘汰 ~250 条 ⇒ 3×N = ~750 次 `DELETE /meta`），而
   //    `AIPolishButton` / `PromptManagerModal` 都 await 本次落库的结果——把它们压在清键 HTTP 上，就是
   //    把「已保存」的反馈交给一次**与本次操作无关**的批量清理。本项目在 `refined-direction.ts` 里已
   //    明确避免「把 UI 等在一次库写上」（`done` 不 await），这里与那条口径对齐：**清键照跑，只是不等它**。

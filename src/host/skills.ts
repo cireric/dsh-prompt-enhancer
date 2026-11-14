@@ -37,9 +37,9 @@ export { isSkillStale } from "../skill-badge.ts";
 // 同款理由：本模块顶部有 `node:fs`，客户端 bundle 引不了它（客户端侧此前有一份靠逐格对照表维持同值的
 // 副本，本次已收敛为一份实现）。这里只 import + 原样 re-export——**既有导出面逐字不变**
 // （tests/skills.test.mjs、tests/skill-badge.test.mjs 的导出面清单与 routes.ts 无需改）。
-import { resolveDescription } from "../skill-description.ts";
+import { renderSkillFile, resolveDescription } from "../skill-description.ts";
 
-export { resolveDescription } from "../skill-description.ts";
+export { renderSkillFile, resolveDescription } from "../skill-description.ts";
 
 /** 技能目录：`$DSH_HOME/skills/<name>/`。 */
 export function skillDir(name: string): string {
@@ -58,24 +58,6 @@ export interface SkillPromptLike {
   body: string;
   summary?: string;
   tags?: string[];
-}
-
-/** YAML 双引号标量：JSON 字符串转义与 YAML 双引号风格兼容，能安全承载冒号/引号/换行。 */
-function yamlQuote(value: string): string {
-  return JSON.stringify(value);
-}
-
-/** 渲染 SKILL.md：frontmatter + 正文原样。 */
-export function renderSkillFile(input: {
-  name: string;
-  description: string;
-  whenToUse?: string;
-  body: string;
-}): string {
-  const front = ["---", `name: ${input.name}`, `description: ${yamlQuote(input.description)}`];
-  if (input.whenToUse?.trim()) front.push(`whenToUse: ${yamlQuote(input.whenToUse.trim())}`);
-  front.push("---", "");
-  return front.join("\n") + "\n" + input.body.trim() + "\n";
 }
 
 /** 目标目录是否已存在（同名冲突判定用）。 */

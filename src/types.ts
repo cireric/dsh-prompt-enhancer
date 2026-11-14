@@ -11,8 +11,8 @@ export const TITLE_MAX_LEN = 25;
 /** 提示词最大存储数量（超出时按规格 §4.4 的淘汰策略清理）。 */
 export const DEFAULT_MAX_PROMPT_COUNT = 300;
 
-/** 数据库 schema 版本，写入 meta 表。v2：回收站补 `skillName` / `skillExportedAt`（规格 §13.5）。 */
-export const SCHEMA_VERSION = 2;
+/** 数据库 schema 版本，写入 meta 表。v3：提示词和回收站增加变量配置。 */
+export const SCHEMA_VERSION = 3;
 
 /** 导入导出信封的版本号（与参考项目同构，见规格 §4.3）。 */
 export const BACKUP_VERSION = 1;
@@ -25,6 +25,24 @@ export function clampTitle(title: string): string {
   return title.slice(0, TITLE_MAX_LEN);
 }
 
+/** 一条模板变量的人工配置。 */
+export interface TemplateVariable {
+  name: string;
+  description?: string;
+  defaultValue?: string;
+}
+
+/** A read-only finding about the text of a draft. */
+export interface PromptCheckFinding {
+  quote: string;
+  issue: string;
+  suggestion: string;
+}
+
+export interface PromptCheckResult {
+  findings: PromptCheckFinding[];
+}
+
 /** 一条提示词。 */
 export interface Prompt {
   id: string;
@@ -32,6 +50,7 @@ export interface Prompt {
   body: string;
   tags: string[];
   summary?: string;
+  variables?: TemplateVariable[];
   /** AI 优化前原文；非空即可在「原文 ↔ 优化稿」之间双向切换（规格 §4.4）。 */
   sourceBody?: string;
   aiRefined: boolean;
@@ -57,6 +76,7 @@ export interface PromptInput {
   body: string;
   tags?: string[];
   summary?: string;
+  variables?: TemplateVariable[];
 }
 
 /** 更新提示词的补丁（仅传入的字段生效）。 */
@@ -65,6 +85,7 @@ export interface PromptPatch {
   body?: string;
   tags?: string[];
   summary?: string;
+  variables?: TemplateVariable[];
   sourceBody?: string;
   aiRefined?: boolean;
   aiRefinedAt?: number;
@@ -76,7 +97,7 @@ export interface PromptPatch {
  * 宿主 PUT `/prompts/:id` 实际接收的字段白名单（事实在 `src/host/routes.ts` 的 PUT 分发处）：
  * 其余补丁字段一律被静默丢弃且仍回 200，故客户端补丁类型必须收窄到这份清单。
  */
-export const PROMPT_WRITABLE_KEYS = ["title", "body", "tags", "summary", "skillName", "skillExportedAt"] as const;
+export const PROMPT_WRITABLE_KEYS = ["title", "body", "tags", "summary", "variables", "skillName", "skillExportedAt"] as const;
 
 /** 客户端可经 PUT 写入的补丁子集（不含 `sourceBody` / `aiRefined` / `aiRefinedAt`）。 */
 export type PromptWritablePatch = Pick<PromptPatch, (typeof PROMPT_WRITABLE_KEYS)[number]>;

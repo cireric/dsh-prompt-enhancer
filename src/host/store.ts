@@ -6,7 +6,7 @@
  * - **全部函数同步**：`node:sqlite` 本身就是同步 API（P2-D11）。
  * - **路径调用期求值**：db 路径每次经 `paths.dbPath()` 解析，测试用自己的进程 + 临时
  *   `DSH_HOME` 隔离，生产代码不含任何 test-only API（P2-D1）。
- * - **无迁移**：v1 的 DDL 即终态；`MIGRATIONS` 是 v2 的接缝，顺序固定为
+ * - 迁移经 `MIGRATIONS` 同步执行，顺序固定为
  *   「建表 → 索引 → 迁移 → 标签同步 → 播种」，全部同步完成（P2-D5）。
  * - 错误处理：可恢复的数据异常走 `console.warn`（可见），不可恢复的写失败**重抛**。
  */
@@ -15,6 +15,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { createDatabase } from "./node-sqlite.ts";
+import { readTemplateVariables } from "../template-variables.ts";
 import { dbPath } from "./paths.ts";
 import { compareEvictionOrder } from "../eviction-order.ts";
 import { matchRank, normalizeQuery } from "../search-match.ts";
@@ -43,6 +44,7 @@ interface PromptRow {
   body: string;
   tags: string | null;
   summary: string | null;
+  variables: string | null;
   sourceBody: string | null;
   aiRefined: number;
   aiRefinedAt: number;
@@ -74,7 +76,7 @@ let db: DatabaseSync | undefined;
  * 因此上游那个「迁移 fire-and-forget + 播种在前」的顺序缺陷在本项目结构上不可能发生。
  * v2 起承担真实迁移：见 `migrateTrashSkillColumns`。
  */
-const MIGRATIONS: Array<(cur: DatabaseSync) => void> = [migrateTrashSkillColumns];
+const MIGRATIONS: Array<(cur: DatabaseSync) => void> = [migrateTrashSkillColumns, migrateTemplateVariables];
 
 /**
  * v1 → v2：回收站补 `skillName` / `skillExportedAt` 两列。
@@ -93,6 +95,16 @@ function migrateTrashSkillColumns(cur: DatabaseSync): void {
   if (!existing.has("skillName")) cur.exec("ALTER TABLE trash ADD COLUMN skillName TEXT;");
   if (!existing.has("skillExportedAt")) {
     cur.exec("ALTER TABLE trash ADD COLUMN skillExportedAt INTEGER NOT NULL DEFAULT 0;");
+  }
+}
+
+/** v3：配置随正文一起存储，软删除和恢复使用相同列。 */
+function migrateTemplateVariables(cur: DatabaseSync): void {
+  for (const table of ["prompts", "trash"]) {
+    const columns = cur.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some((column) => column.name === "variables")) {
+      cur.exec(`ALTER TABLE ${table} ADD COLUMN variables TEXT`);
+    }
   }
 }
 
@@ -163,10 +175,11 @@ function initDb(cur: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_trash_deleted    ON trash(deletedAt DESC);
   `);
 
-  cur.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-    .run("schemaVersion", String(SCHEMA_VERSION));
-
-  for (const migrate of MIGRATIONS) migrate(cur);
+  inTransaction(cur, () => {
+    for (const migrate of MIGRATIONS) migrate(cur);
+    cur.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run("schemaVersion", String(SCHEMA_VERSION));
+  });
 
   syncTagsFromPrompts(cur);
   seedDefaultPromptIfEmpty(cur);
@@ -187,6 +200,7 @@ function rowToPrompt(row: PromptRow): Prompt {
     body: r.body,
     tags: parseTags(r.tags),
     summary: r.summary ?? undefined,
+    ...(r.variables ? { variables: decodeTemplateVariables(r.variables) } : {}),
     sourceBody: r.sourceBody ?? undefined,
     aiRefined: r.aiRefined === 1,
     aiRefinedAt: r.aiRefinedAt ?? 0,
@@ -197,6 +211,12 @@ function rowToPrompt(row: PromptRow): Prompt {
     skillName: r.skillName ?? undefined,
     skillExportedAt: r.skillExportedAt ?? 0,
   };
+}
+
+function decodeTemplateVariables(raw: string): NonNullable<Prompt["variables"]> {
+  const variables = readTemplateVariables(JSON.parse(raw));
+  if (!variables) throw new Error("数据库中的模板变量配置无效");
+  return variables;
 }
 
 function rowToTrash(row: TrashRow): TrashItem {
@@ -299,7 +319,7 @@ function seedDefaultPromptIfEmpty(cur: DatabaseSync): void {
 
 // ── 行读写（内部）──────────────────────────────────────────────────────────
 
-const PROMPT_COLUMNS = "id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, skillName, skillExportedAt";
+const PROMPT_COLUMNS = "id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, skillName, skillExportedAt, variables";
 
 function selectAllPrompts(): PromptRow[] {
   return getDb().prepare(`SELECT ${PROMPT_COLUMNS} FROM prompts`).all() as unknown as PromptRow[];
@@ -318,14 +338,14 @@ function bindPrompt(p: Prompt): SqlValue[] {
     p.title, p.body, tagsToJson(p.tags), p.summary ?? null, p.sourceBody ?? null,
     p.aiRefined ? 1 : 0, p.aiRefinedAt, p.createdAt, p.updatedAt,
     p.usageCount, p.lastUsedAt, p.skillName ?? null, p.skillExportedAt,
+    p.variables?.length ? JSON.stringify(p.variables) : null,
   ];
 }
 
 function insertPrompt(cur: DatabaseSync, p: Prompt): void {
   cur.prepare(
-    `INSERT OR REPLACE INTO prompts
-       (id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, skillName, skillExportedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO prompts (${PROMPT_COLUMNS})
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(p.id, ...bindPrompt(p));
 }
 
@@ -334,7 +354,7 @@ function writePrompt(cur: DatabaseSync, p: Prompt): void {
     `UPDATE prompts SET
        title = ?, body = ?, tags = ?, summary = ?, sourceBody = ?,
        aiRefined = ?, aiRefinedAt = ?, createdAt = ?, updatedAt = ?,
-       usageCount = ?, lastUsedAt = ?, skillName = ?, skillExportedAt = ?
+       usageCount = ?, lastUsedAt = ?, skillName = ?, skillExportedAt = ?, variables = ?
      WHERE id = ?`,
   ).run(...bindPrompt(p), p.id);
 }
@@ -445,6 +465,7 @@ export function createPrompt(input: PromptInput): Prompt {
     body: input.body ?? "",
     tags,
     summary: input.summary,
+    ...(input.variables?.length ? { variables: input.variables } : {}),
     aiRefined: false,
     aiRefinedAt: 0,
     createdAt: now,
@@ -497,6 +518,7 @@ export function updatePrompt(
     next.summary = patch.summary;
     contentChanged = true;
   }
+  if (patch.variables !== undefined) next.variables = patch.variables.length ? patch.variables : undefined;
   // AI 三字段（sourceBody/aiRefined/aiRefinedAt）不在此接受：唯一写入者是
   // aiWriteBack:true 的内部派生（上方 503-507 行），§13.8-决定四 / §13.13。
   if (patch.skillName !== undefined) next.skillName = patch.skillName;
@@ -528,16 +550,9 @@ export function deletePrompt(id: string): boolean {
 
   inTransaction(cur, () => {
     cur.prepare(
-      `INSERT OR REPLACE INTO trash
-         (id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, skillName, skillExportedAt, deletedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      existing.id, existing.title, existing.body, tagsToJson(existing.tags),
-      existing.summary ?? null, existing.sourceBody ?? null,
-      existing.aiRefined ? 1 : 0, existing.aiRefinedAt,
-      existing.createdAt, existing.updatedAt, existing.usageCount, existing.lastUsedAt,
-      existing.skillName ?? null, existing.skillExportedAt, deletedAt,
-    );
+      `INSERT OR REPLACE INTO trash (${PROMPT_COLUMNS}, deletedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(existing.id, ...bindPrompt(existing), deletedAt);
     cur.prepare("DELETE FROM prompts WHERE id = ?").run(id);
   });
   return true;
@@ -623,7 +638,7 @@ export function deleteTag(name: string): { deleted: boolean; inUse: number } {
 export function listTrash(): TrashItem[] {
   const rows = getDb()
     .prepare(
-      `SELECT id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, skillName, skillExportedAt, deletedAt
+      `SELECT ${PROMPT_COLUMNS}, deletedAt
          FROM trash ORDER BY deletedAt DESC`,
     )
     .all() as unknown as TrashRow[];
@@ -721,6 +736,10 @@ function validateBackup(input: unknown): { ok: true; value: ValidatedBackup } | 
     const e = item as Record<string, unknown>;
     if (typeof e.id !== "string" || !e.id) return { ok: false, error: `第 ${index + 1} 条缺少 id` };
     if (typeof e.body !== "string") return { ok: false, error: `第 ${index + 1} 条缺少 body` };
+    const variables = readTemplateVariables(e.variables);
+    if (e.variables !== undefined && !variables) {
+      return { ok: false, error: `第 ${index + 1} 条变量配置无效` };
+    }
     const updatedAt = numberOr(e.updatedAt, 0);
     const createdAt = numberOr(e.createdAt, updatedAt);
     prompts.push({
@@ -729,6 +748,7 @@ function validateBackup(input: unknown): { ok: true; value: ValidatedBackup } | 
       body: e.body,
       tags: Array.isArray(e.tags) ? normalizeTags(e.tags.filter((t): t is string => typeof t === "string")) : [],
       summary: typeof e.summary === "string" ? e.summary : undefined,
+      ...(variables?.length ? { variables } : {}),
       sourceBody: typeof e.sourceBody === "string" ? e.sourceBody : undefined,
       aiRefined: e.aiRefined === true || e.aiRefined === 1,
       aiRefinedAt: numberOr(e.aiRefinedAt, 0),

@@ -34,8 +34,27 @@ test("parseMemory：空串/非法 JSON/非对象/非字符串值一律按无记�
     assert.deepEqual(t.parseMemory('"str"'), {}, "字符串不是记忆对象");
     assert.deepEqual(t.parseMemory("{bad"), {}, "非法 JSON → 空对象");
     assert.equal(warns.length, 1, "只有非法 JSON 那一次留痕（合法输入不得 warn）");
-    assert.match(String(warns[0][0]), /pl:template-var-memory/, "warn 文案带 memoryKey 前缀");
+    assert.match(String(warns[0][0]), /模板变量记忆/, "warn 说明解析失败的内容");
   } finally {
     console.warn = original;
   }
+});
+
+test("填参预览和未填清单使用相同判定，空白值保留占位符", () => {
+  const body = "{{范围}} / {{ 格式 }} / {{constructor}}";
+  const values = { 范围: "  插件源码  ", 格式: "  " };
+  assert.deepEqual(t.unfilledVariables(t.parseVariables(body), values), ["格式", "constructor"]);
+  assert.equal(t.fillTemplate(body, values), "  插件源码   / {{ 格式 }} / {{constructor}}");
+});
+
+test("同名变量使用各自模板的默认值，只预填正文出现的变量", () => {
+  const body = "检查 {{范围}} 和 {{格式}}";
+  assert.deepEqual(t.initialTemplateValues(body, [
+    { name: "范围", defaultValue: "插件源码" },
+    { name: "格式", description: "填报告格式" },
+    { name: "旧字段", defaultValue: "已删除" },
+  ]), { 范围: "插件源码" });
+  assert.deepEqual(t.initialTemplateValues(body, [
+    { name: "范围", defaultValue: "本次验收" },
+  ]), { 范围: "本次验收" });
 });

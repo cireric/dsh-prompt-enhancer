@@ -10,13 +10,13 @@
  * 其余 HTTP 一律由调用方注入（见 `WriteBackInput.update`）。
  * 错误分类按「HTTP status / err.name」判定，不匹配 message 文本（宿主文案可改）。
  */
-import type { Prompt, PromptWritablePatch } from "../../types.ts";
+import type { Prompt, PromptWritablePatch, TemplateVariable } from "../../types.ts";
 import type { PromptEnhancerKey } from "./i18n.ts";
 import type { AiRefineResult } from "./api.ts";
 import { ApiError } from "./api.ts";
 import { clampTitle } from "../../types.ts";
 import { firstNonEmptyLine } from "../../first-line.ts";
-import { needsValues } from "./template.ts";
+import { needsValues, parseVariables } from "./template.ts";
 
 /** keepVariables 开关口径：草稿含 `{{变量}}` 才勾选；`{{}}` / `{{   }}` 不算（复用 parseVariables 口径）。 */
 export function keepVariablesFor(draft: string): boolean {
@@ -58,6 +58,7 @@ export interface WriteBackInput {
   promptId: string;
   /** 写回的正文（= AI 优化稿）。 */
   body: string;
+  variables?: TemplateVariable[];
   /** 第一步：宿主的 `store.updatePrompt` 在此回填 `sourceBody = 旧 body` 并置 `aiRefined`。 */
   update: PromptUpdater;
   /**
@@ -78,7 +79,11 @@ export interface WriteBackInput {
  * 不存在，此时种一条方向记录就是凭空造事实。第一步抛错照旧抛给调用方（面内 `ai.writeBackFail`）。
  */
 export async function writeBackRefined(input: WriteBackInput): Promise<Prompt> {
-  const updated = await input.update(input.promptId, { body: input.body, aiWriteBack: true });
+  const updated = await input.update(input.promptId, {
+    body: input.body,
+    aiWriteBack: true,
+    ...(input.variables?.length ? { variables: input.variables } : {}),
+  });
   try {
     await input.seed(input.promptId);
   } catch (err) {
@@ -153,4 +158,31 @@ export function aiErrorKey(err: unknown): PromptEnhancerKey {
   if (isLocalTimeout(err)) return "ai.timeout";
   if (statusOf(err) === 503) return "ai.unavailable";
   return "ai.fail";
+}
+
+/** Keep the exact text and source of each section in the final preview. */
+export function refinedBodySections(body: string, suggestions: readonly string[], selected: readonly number[]) {
+  const additions = suggestions.filter((_, index) => selected.includes(index));
+  return [
+    { text: additions.length ? body.trimEnd() : body, addition: false },
+    ...additions.map((text) => ({ text: "\n\n" + text, addition: true })),
+  ];
+}
+
+export function composeRefinedBody(body: string, suggestions: readonly string[], selected: readonly number[]): string {
+  return refinedBodySections(body, suggestions, selected).map(({ text }) => text).join("");
+}
+
+export function missingVariables(original: string, result: string): string[] {
+  const present = new Set(parseVariables(result));
+  return parseVariables(original).filter((name) => !present.has(name));
+}
+
+/** Split without modifying whitespace so selecting preview text yields the same template. */
+export function markAddedVariables(body: string, original: string) {
+  const existing = new Set(parseVariables(original));
+  return body.split(/(\{\{[^{}]+\}\})/g).map((text, index) => {
+    const name = index % 2 === 1 ? parseVariables(text)[0] : undefined;
+    return { text, name, added: name !== undefined && !existing.has(name) };
+  });
 }

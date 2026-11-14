@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const { deletePrompts, perPromptMetaKeys } = await import("../src/client/utils/prompt-meta.ts");
+const { templateMemoryKey } = await import("../src/client/utils/template.ts");
 const { refinedDirectionMetaKey } = await import("../src/client/utils/refined-direction.ts");
 const { skillDescriptorMetaKey } = await import("../src/client/utils/skill-export.ts");
 
@@ -64,22 +65,22 @@ async function withWarns(fn) {
 
 // ── 键名：约定只有一处真源 ───────────────────────────────────────────────────
 
-test("perPromptMetaKeys：恰好两把键 = 方向 + 技能 descriptor（键名取自各自主模块，不另抄一份）", () => {
+test("perPromptMetaKeys：恰好三把键 = 方向 + 技能 descriptor + 模板记忆（键名取自各自主模块，不另抄一份）", () => {
   const keys = perPromptMetaKeys("p1");
-  assert.deepEqual(keys, ["pl:refined-dir:p1", "pl:skill-descriptor:p1"]);
-  assert.deepEqual(keys, [refinedDirectionMetaKey("p1"), skillDescriptorMetaKey("p1")], "与主模块的键构造器逐字相同");
+  assert.deepEqual(keys, ["pl:refined-dir:p1", "pl:skill-descriptor:p1", "pl:template-var-memory:p1"]);
+  assert.deepEqual(keys, [refinedDirectionMetaKey("p1"), skillDescriptorMetaKey("p1"), templateMemoryKey("p1")], "与主模块的键构造器逐字相同");
 });
 
 // ── 不可逆删除点：逐条清 ─────────────────────────────────────────────────────
 
-test("O-1：单条永久删除 ⇒ 主删除之后为该 id 清两把键（先删、后清）", async () => {
+test("O-1：单条永久删除 ⇒ 主删除之后为该 id 清三把键（先删、后清）", async () => {
   const h = harness();
   const result = await deletePrompts({ ids: ["p1"], irreversible: true, remove: h.remove, deleteMeta: h.deleteMeta });
-  assert.deepEqual(h.events, ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1"]);
-  assert.deepEqual(result, { succeeded: 2, failed: 0 });
+  assert.deepEqual(h.events, ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1", "meta:pl:template-var-memory:p1"]);
+  assert.deepEqual(result, { succeeded: 3, failed: 0 });
 });
 
-test("O-1：清空回收站 ⇒ 对**每条**被删 id 清两把键（批量编排，主删除仍是一次）", async () => {
+test("O-1：清空回收站 ⇒ 对**每条**被删 id 清三把键（批量编排，主删除仍是一次）", async () => {
   const h = harness();
   const result = await deletePrompts({
     ids: ["a", "b", "c"],
@@ -91,12 +92,15 @@ test("O-1：清空回收站 ⇒ 对**每条**被删 id 清两把键（批量编�
     "remove",
     "meta:pl:refined-dir:a",
     "meta:pl:skill-descriptor:a",
+    "meta:pl:template-var-memory:a",
     "meta:pl:refined-dir:b",
     "meta:pl:skill-descriptor:b",
+    "meta:pl:template-var-memory:b",
     "meta:pl:refined-dir:c",
     "meta:pl:skill-descriptor:c",
+    "meta:pl:template-var-memory:c",
   ]);
-  assert.deepEqual(result, { succeeded: 6, failed: 0 });
+  assert.deepEqual(result, { succeeded: 9, failed: 0 });
 });
 
 // ── 反面对照：软删除一次都不发 ───────────────────────────────────────────────
@@ -130,7 +134,7 @@ test("O-1：清键失败**不得静默、也不得反噬**——warn + 计入 fa
   const { out, warns } = await withWarns(() =>
     deletePrompts({ ids: ["a", "b"], irreversible: true, remove: h.remove, deleteMeta: h.deleteMeta }),
   );
-  assert.deepEqual(out, { succeeded: 3, failed: 1 }, "删除本身成功；只有清键有失败计数");
+  assert.deepEqual(out, { succeeded: 5, failed: 1 }, "删除本身成功；只有清键有失败计数");
   assert.equal(warns.length, 1, "至少一条 warn（错误必须可见）");
   assert.match(warns[0], /pl:refined-dir:a/, "warn 里带出残键名");
   assert.deepEqual(
@@ -138,8 +142,10 @@ test("O-1：清键失败**不得静默、也不得反噬**——warn + 计入 fa
     [
       "meta:pl:refined-dir:a",
       "meta:pl:skill-descriptor:a",
+      "meta:pl:template-var-memory:a",
       "meta:pl:refined-dir:b",
       "meta:pl:skill-descriptor:b",
+      "meta:pl:template-var-memory:b",
     ],
     "一个键失败不阻断其余键（含同一条的第二个键）",
   );
@@ -166,12 +172,14 @@ test("⑦ 清空回收站竞态：回执给出被删 id ⇒ 清**回执里**的�
       "remove",
       "meta:pl:refined-dir:a",
       "meta:pl:skill-descriptor:a",
+      "meta:pl:template-var-memory:a",
       "meta:pl:refined-dir:b",
       "meta:pl:skill-descriptor:b",
+      "meta:pl:template-var-memory:b",
     ],
     "b 不在面板列表（入参 ids）里，但它在**回执**里 ⇒ 必须清；「只清面板列表」那一版在这里必红",
   );
-  assert.deepEqual(result, { succeeded: 4, failed: 0 });
+  assert.deepEqual(result, { succeeded: 6, failed: 0 });
 });
 
 test("⑦ 反面对照：回执没有 id 列表（单条路由回**条数**）⇒ 退回入参 ids，且不得把数值当 id", async () => {
@@ -185,8 +193,8 @@ test("⑦ 反面对照：回执没有 id 列表（单条路由回**条数**）�
     },
     deleteMeta: h.deleteMeta,
   });
-  assert.deepEqual(h.events, ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1"]);
-  assert.deepEqual(result, { succeeded: 2, failed: 0 });
+  assert.deepEqual(h.events, ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1", "meta:pl:template-var-memory:p1"]);
+  assert.deepEqual(result, { succeeded: 3, failed: 0 });
 });
 
 test("⑦ 回执说「一条都没删」（空列表）⇒ 一把键也不清，**不得**退回入参 ids", async () => {
@@ -226,7 +234,7 @@ test("⑦ 回执形状不认识（缺键 / 非字符串数组）⇒ 退回入参
     });
     assert.deepEqual(
       h.events,
-      ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1"],
+      ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1", "meta:pl:template-var-memory:p1"],
       "形状不符的回执（" + JSON.stringify(receipt) + "）只能当作「回执没说」",
     );
   }
@@ -257,10 +265,10 @@ test("O-1：deleteMeta 在**同步阶段**抛出 ⇒ 逐键记 failed，其余�
   );
   assert.deepEqual(
     events,
-    ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1"],
-    "主删除先行；两把键都被发起（一个同步抛出不阻断另一个）",
+    ["remove", "meta:pl:refined-dir:p1", "meta:pl:skill-descriptor:p1", "meta:pl:template-var-memory:p1"],
+    "主删除先行；三把键都被发起（一个同步抛出不阻断另一个）",
   );
-  assert.deepEqual(out, { succeeded: 1, failed: 1 }, "同步抛出记 failed，其余键照清");
+  assert.deepEqual(out, { succeeded: 2, failed: 1 }, "同步抛出记 failed，其余键照清");
   assert.equal(warns.length, 1, "同步抛出同样必须可见（warn）");
   assert.match(warns[0], /pl:refined-dir:p1/, "warn 里带出残键名");
 });
@@ -271,12 +279,13 @@ test("O-1：缺省 deleteMeta 真走 api.deleteMeta（DELETE /meta/<编码后的
   const s = stubFetch(() => jsonRes({ ok: true, data: { key: "x", deleted: true } }));
   try {
     const result = await deletePrompts({ ids: ["p1"], irreversible: true, remove: async () => {} });
-    assert.deepEqual(result, { succeeded: 2, failed: 0 });
-    assert.equal(s.calls.length, 2, "两把键两次请求");
+    assert.deepEqual(result, { succeeded: 3, failed: 0 });
+    assert.equal(s.calls.length, 3, "三把键三次请求");
     assert.equal(s.calls[0].url, "/api/prompt-enhancer/meta/" + encodeURIComponent("pl:refined-dir:p1"));
     assert.equal(s.calls[0].init.method, "DELETE");
     assert.equal(s.calls[0].init.body, undefined, "DELETE 不带请求体");
     assert.equal(s.calls[1].url, "/api/prompt-enhancer/meta/" + encodeURIComponent("pl:skill-descriptor:p1"));
+    assert.equal(s.calls[2].url, "/api/prompt-enhancer/meta/" + encodeURIComponent("pl:template-var-memory:p1"));
   } finally {
     s.restore();
   }

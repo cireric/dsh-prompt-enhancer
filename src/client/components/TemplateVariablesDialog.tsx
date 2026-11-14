@@ -9,19 +9,29 @@
  */
 import * as React from "react";
 import type { TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
-import { api } from "../utils/api.ts";
+import type { TemplateVariable } from "../../types.ts";
+import { api, CLEAR_TIMEOUT_MS } from "../utils/api.ts";
 import { en, zh } from "../utils/i18n.ts";
-import { fillTemplate, memoryKey, parseVariables, parseMemory, pickRemembered } from "../utils/template.ts";
+import { fillTemplate, initialTemplateValues, parseVariables, parseMemory, pickRemembered, templateMemoryKey, unfilledVariables } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
+
+const NO_VARIABLES: readonly TemplateVariable[] = [];
 
 /** 任务 6 依赖的对外接口：正文 + 取消 + 回填。 */
 export type TemplateVariablesDialogProps = {
   /** 含 `{{变量}}` 的正文（模板原样，不是填充后的结果）。 */
   body: string;
+  variables?: readonly TemplateVariable[];
   /** 取消：关窗且不改草稿；由调用方卸载本组件。 */
   onCancel: () => void;
   /** 确认：回传填充后的正文；由调用方卸载本组件并落草稿。 */
-  onFilled: (filledBody: string) => void;
+  onFilled?: (filledBody: string) => void;
+  confirmLabel?: string;
+  panelSize?: Pick<React.CSSProperties, "width" | "height">;
+  /** 应用到草稿前，未填项需要显式选择保留。 */
+  confirmUnfilled?: boolean;
+  promptId?: string;
+  focusVariable?: string;
   /**
    * 宿主 locale 座位（`PropsLocale<'prompt-enhancer'>` 的 `t`）。
    *
@@ -50,103 +60,158 @@ function fallbackTranslate(): TranslateNS<"prompt-enhancer"> {
 
 export function TemplateVariablesDialog({
   body,
+  variables = NO_VARIABLES,
   onCancel,
   onFilled,
+  confirmLabel,
+  panelSize,
+  confirmUnfilled = false,
+  promptId,
+  focusVariable,
   t,
 }: TemplateVariablesDialogProps): React.ReactElement {
   const tr = t ?? fallbackTranslate();
+  const expanded = panelSize?.height !== undefined;
   const names = React.useMemo(() => parseVariables(body), [body]);
+  const focusedName = focusVariable && names.includes(focusVariable) ? focusVariable : names[0];
+  const configured = new Map(variables.map((variable) => [variable.name, variable]));
   const [values, setValues] = React.useState<Record<string, string>>({});
+  const filledValues = { ...initialTemplateValues(body, variables), ...values };
   const [remembered, setRemembered] = React.useState(false);
-  /** 落库的完整记忆（本轮未填的变量不被抹掉）。 */
-  const memory = React.useRef<Record<string, string>>({});
-  /**
-   * 记忆读取状态：`pending` 未返回 → `ok` 读到完整记忆 / `failed` 读取失败。
-   *
-   * 只有 `ok` 时 `memory.current` 才是**完整**记忆、可以安全地读-改-写；
-   * `pending` 与 `failed` 下它都是空对象，此时写回会把所有提示词共用的整份
-   * `pl:template-var-memory` 替换成本轮值（全部变量为空时就是写入 `{}`，
-   * 静默抹掉其它模板的已记忆值）。故这两态一律**跳过** `setMeta`，
-   * 语义为「本次按无记忆处理」，而不是「清空记忆」。
-   */
-  const readState = React.useRef<"pending" | "ok" | "failed">("pending");
+  const [rememberValues, setRememberValues] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [saveFailed, setSaveFailed] = React.useState(false);
+  const restoreDefaults = React.useRef(false);
+  const savingRef = React.useRef(false);
+  const active = React.useRef(false);
+  const memoryKey = promptId === undefined ? undefined : templateMemoryKey(promptId);
 
-  // 打开时读一次记忆：预填上次填过的值，并提示用户。
   React.useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
+
+  React.useEffect(() => {
+    if (!memoryKey) return;
     let alive = true;
-    // body 变了就重新等这一次读取（未就绪期间不得写回陈旧记忆）。
-    readState.current = "pending";
     api.getMeta(memoryKey).then(
       (raw) => {
-        if (!alive) return;
-        const stored = parseMemory(raw);
-        memory.current = stored;
-        readState.current = "ok";
-        const prefill = pickRemembered(body, stored);
-        // 记忆是异步回来的：合并而不是覆盖，用户在这期间敲进去的值不被抹掉。
-        setValues((prev) => {
-          const next: Record<string, string> = { ...prefill };
-          for (const [name, value] of Object.entries(prev)) if (value !== "") next[name] = value;
-          return next;
-        });
-        setRemembered(Object.keys(prefill).length > 0);
+        if (!alive || restoreDefaults.current || savingRef.current) return;
+        const prefill = pickRemembered(body, parseMemory(raw));
+        if (!Object.keys(prefill).length) return;
+        setValues((previous) => ({ ...prefill, ...previous }));
+        setRemembered(true);
       },
-      (err: unknown) => {
-        if (!alive) return;
-        // 置位为 failed：不再算「未就绪」，但同样不允许写回（见 readState 注释）。
-        readState.current = "failed";
-        console.warn("[prompt-enhancer] " + memoryKey + " 读取失败，本次按无记忆处理", err);
-      },
+      (error: unknown) => console.warn("[prompt-enhancer] 读取模板变量记忆失败", error),
     );
-    return () => {
-      alive = false;
-    };
-  }, [body]);
+    return () => { alive = false; };
+  }, [body, memoryKey]);
 
-  const confirm = (ev: React.FormEvent<HTMLFormElement>): void => {
-    ev.preventDefault();
-    if (readState.current === "ok") {
-      const merged: Record<string, string> = { ...memory.current };
-      for (const [name, value] of Object.entries(values)) if (value !== "") merged[name] = value;
-      // 记忆写入不阻塞插入：失败只留 console 痕迹（宿主标准 props 无 toast 座位）。
-      void api.setMeta(memoryKey, JSON.stringify(merged)).catch((err: unknown) => {
-        console.warn("[prompt-enhancer] " + memoryKey + " 保存失败", err);
-      });
-    } else {
-      // 读取未返回或已失败：memory.current 不完整，写回会覆盖共享记忆。
-      console.warn("[prompt-enhancer] " + memoryKey + " 记忆未就绪，本次不写回");
+  const filled = fillTemplate(body, filledValues);
+  const unfilled = unfilledVariables(names, filledValues);
+  const needsDecision = confirmUnfilled && unfilled.length > 0;
+  const commit = async (): Promise<void> => {
+    if (!onFilled || savingRef.current) return;
+    if (!memoryKey || (!rememberValues && !restoreDefaults.current)) {
+      onFilled(filled);
+      return;
     }
-    onFilled(fillTemplate(body, values));
+
+    savingRef.current = true;
+    setSaving(true);
+    setSaveFailed(false);
+    try {
+      if (rememberValues) {
+        await api.setMeta(memoryKey, JSON.stringify(pickRemembered(body, filledValues)), CLEAR_TIMEOUT_MS);
+      } else {
+        await api.deleteMeta(memoryKey);
+      }
+    } catch (error) {
+      console.warn("[prompt-enhancer] 保存模板变量记忆失败", error);
+      if (active.current) setSaveFailed(true);
+      return;
+    } finally {
+      savingRef.current = false;
+      if (active.current) setSaving(false);
+    }
+    if (active.current) onFilled(filled);
   };
 
   return (
-    <div style={CARD} role="dialog" aria-label={tr("vars.title")}>
-      <form style={FORM} onSubmit={confirm}>
+    <div
+      style={{
+        ...CARD,
+        width: panelSize?.width ?? CARD.width,
+        ...(expanded ? { height: panelSize.height, maxHeight: undefined, padding: 12, overflow: "hidden" } : {}),
+      }}
+      role="dialog"
+      aria-label={tr("vars.title")}
+    >
+      <form style={expanded ? EXPANDED_FORM : FORM} onSubmit={(event) => {
+        event.preventDefault();
+        if (!needsDecision) void commit();
+      }}>
         <div style={TITLE}>{tr("vars.title")}</div>
         <div style={HINT}>{tr("vars.hint")}</div>
         {remembered && <div style={REMEMBERED}>{tr("vars.remembered")}</div>}
-        {names.map((name, index) => (
-          <label key={name} style={FIELD}>
-            <span style={LABEL}>{name}</span>
-            <input
-              type="text"
-              style={INPUT}
-              value={values[name] ?? ""}
-              // 只对首个输入框生效；React 仅在挂载时应用 autoFocus
-              autoFocus={index === 0}
-              aria-label={name}
-              onChange={(ev) => {
-                const next = ev.currentTarget.value;
-                setValues((prev) => ({ ...prev, [name]: next }));
-              }}
-            />
-          </label>
-        ))}
+        <div style={expanded ? EXPANDED_FIELDS : FORM}>
+          {names.map((name) => (
+            <label key={name} style={FIELD}>
+              <span style={LABEL}>{name}</span>
+              {configured.get(name)?.description && <span style={HINT}>{configured.get(name)?.description}</span>}
+              <input
+                type="text"
+                style={INPUT}
+                value={Object.hasOwn(filledValues, name) ? filledValues[name] : ""}
+                disabled={saving}
+                autoFocus={name === focusedName}
+                aria-label={name}
+                onChange={(ev) => {
+                  const next = ev.currentTarget.value;
+                  setValues((prev) => ({ ...prev, [name]: next }));
+                }}
+              />
+            </label>
+          ))}
+          {unfilled.length > 0 && (
+            <div role="status" style={HINT}>{tr("vars.unfilled")} {unfilled.join(", ")}</div>
+          )}
+        </div>
+        <div style={expanded ? EXPANDED_PREVIEW_FIELD : FIELD}>
+          <span style={TITLE}>{tr("vars.preview")}</span>
+          <pre style={expanded ? EXPANDED_PREVIEW : PREVIEW} tabIndex={0}>{filled}</pre>
+        </div>
+        {memoryKey && onFilled && (
+          <div style={MEMORY_ACTIONS}>
+            <label>
+              <input type="checkbox" checked={rememberValues} disabled={saving} onChange={(event) => {
+                setRememberValues(event.currentTarget.checked);
+                setSaveFailed(false);
+              }} />
+              {tr("vars.rememberTemplate")}
+            </label>
+            <button type="button" style={GHOST} disabled={saving} onClick={() => {
+              restoreDefaults.current = true;
+              setValues({});
+              setRememberValues(false);
+              setRemembered(false);
+              setSaveFailed(false);
+            }}>{tr("vars.restoreDefaults")}</button>
+          </div>
+        )}
+        {saveFailed && (
+          <div role="alert" style={MEMORY_ACTIONS}>
+            <span style={HINT}>{tr("vars.memoryFailed")}</span>
+            <button type="button" style={GHOST} onClick={() => onFilled?.(filled)}>{tr("vars.continueWithoutMemory")}</button>
+          </div>
+        )}
         <div style={ACTIONS}>
-          <button type="submit" style={PRIMARY}>
-            {tr("vars.fill")}
-          </button>
-          <button type="button" style={GHOST} onClick={onCancel}>
+          {onFilled && (needsDecision ? (
+            <button type="button" style={PRIMARY} disabled={saving} onClick={() => void commit()}>{tr("vars.applyWithPlaceholders")}</button>
+          ) : (
+            <button type="submit" style={PRIMARY} disabled={saving}>{confirmLabel ?? tr("vars.fill")}</button>
+          ))}
+          <button type="button" style={GHOST} disabled={saving} onClick={onCancel}>
             {tr("vars.cancel")}
           </button>
         </div>
@@ -157,9 +222,10 @@ export function TemplateVariablesDialog({
 
 const CARD: React.CSSProperties = {
   ...overlayBase,
-  width: 300,
+  width: "min(360px, calc(100vw - 32px))",
+  boxSizing: "border-box",
   maxWidth: "100%",
-  maxHeight: 320,
+  maxHeight: "min(460px, calc(100dvh - 130px))",
   overflowY: "auto",
   padding: 10,
   fontSize: 12,
@@ -191,6 +257,8 @@ const ACTIONS: React.CSSProperties = {
   display: "flex",
   justifyContent: "flex-end",
   gap: 8,
+  flexWrap: "wrap",
+  flexShrink: 0,
   marginTop: 2,
 };
 
@@ -207,3 +275,37 @@ const BUTTON: React.CSSProperties = {
 const PRIMARY: React.CSSProperties = { ...BUTTON, color: TOKEN.accent, borderColor: TOKEN.accent };
 
 const GHOST: React.CSSProperties = { ...BUTTON, color: TOKEN.muted };
+
+
+const PREVIEW: React.CSSProperties = {
+  margin: 0, padding: 8, maxHeight: 150, overflowY: "auto",
+  background: TOKEN.hover, borderRadius: 6, whiteSpace: "pre-wrap",
+  overflowWrap: "anywhere", font: "inherit", lineHeight: 1.55,
+};
+
+
+const EXPANDED_FORM: React.CSSProperties = { ...FORM, height: "100%", overflowY: "auto", padding: 2, boxSizing: "border-box" };
+
+const EXPANDED_FIELDS: React.CSSProperties = {
+  ...FORM,
+  flex: "0 1 auto",
+  minHeight: 48,
+  maxHeight: "38%",
+  overflowY: "auto",
+  padding: 2,
+};
+
+const EXPANDED_PREVIEW_FIELD: React.CSSProperties = { ...FIELD, flex: "1 0 84px", minHeight: 0 };
+
+const EXPANDED_PREVIEW: React.CSSProperties = {
+  ...PREVIEW,
+  flex: "1 1 0",
+  minHeight: 0,
+  maxHeight: undefined,
+  fontSize: 13,
+};
+
+
+const MEMORY_ACTIONS: React.CSSProperties = {
+  display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 4,
+};

@@ -19,12 +19,14 @@
  * 故技能页**不需要**参与 claim 互斥（扩枚举只会让两套分层语义互相污染）。详见 task-2-report.md。
  */
 import * as React from "react";
+import { renderSkillFile } from "../../skill-description.ts";
 import { api } from "../utils/api.ts";
 import { requestConfirm } from "../utils/confirm.ts";
 import { notifyDataChanged, useDataChanged } from "../utils/data-sync.ts";
 import {
   actions,
   button,
+  compareBody,
   dialogTitle,
   errorDetail,
   errorText,
@@ -64,14 +66,16 @@ export interface SkillExportModalProps {
   t: ManagerTranslate;
   /** 返回管理面板（清掉宿主的面板值；开合与页签仍归 ui-state 的 store）。 */
   onBack: () => void;
+  initialPromptId?: string;
 }
 
 /** 在途动作（AI 补全 / 导出）互斥：任一在途时其它按钮一律禁用。 */
 type Busy = "idle" | "describing" | "exporting";
 
-export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.ReactElement {
+export function SkillExportModal({ t, onBack, initialPromptId }: SkillExportModalProps): React.ReactElement {
   /** 勾选的提示词 id（**与加载顺序无关**：全选/筛选都经纯函数在同一集合上运算）。 */
-  const [selected, setSelected] = React.useState<string[]>([]);
+  const [selected, setSelected] = React.useState<string[]>(initialPromptId ? [initialPromptId] : []);
+  const [reviewing, setReviewing] = React.useState(false);
   const [tag, setTag] = React.useState("");
   /** 逐条的 AI 补全结果（失败条目行内标注；不阻断其它条目）。 */
   const [descriptors, setDescriptors] = React.useState<Record<string, DescriptorOutcome>>({});
@@ -131,6 +135,7 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
   const summary = outcomes === null ? null : summarizeExport(outcomes);
   const idle = busy === "idle";
   const allVisibleSelected = isAllSelected(visible, selected);
+  const shown = reviewing ? chosen : visible;
 
   /** 逐条 AI 补全：失败非阻断（语义在 `describeEach`），`onEach` 让每条的结果立刻落行内。 */
   const describeChosen = (): void => {
@@ -251,7 +256,7 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
         <button
           type="button"
           style={button}
-          disabled={!idle || visible.length === 0}
+          disabled={!idle || reviewing || visible.length === 0}
           onClick={() => setSelected(toggleAllVisible(visible, selected))}
         >
           {allVisibleSelected ? t("manager.skill.selectNone") : t("manager.skill.selectAll")}
@@ -261,6 +266,7 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
           <select
             aria-label={t("manager.skill.tagFilter")}
             value={tag}
+            disabled={reviewing}
             onChange={(ev) => setTag(ev.target.value)}
             style={{ ...select, marginLeft: 4 }}
           >
@@ -279,20 +285,21 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
           type="button"
           style={{ ...button, opacity: idle && chosen.length > 0 ? 1 : 0.6 }}
           aria-busy={busy === "describing"}
-          disabled={!idle || chosen.length === 0}
+          disabled={!idle || reviewing || chosen.length === 0}
           onClick={describeChosen}
         >
           {busy === "describing" ? t("manager.skill.describing") : t("manager.skill.describe")}
         </button>
-        <button
-          type="button"
-          style={{ ...primaryButton, opacity: idle && chosen.length > 0 ? 1 : 0.6 }}
-          aria-busy={busy === "exporting"}
-          disabled={!idle || chosen.length === 0}
-          onClick={runExport}
-        >
-          {busy === "exporting" ? t("manager.skill.exporting") : t("manager.skill.export")}
-        </button>
+        {reviewing ? (
+          <button type="button" style={button} disabled={!idle} onClick={() => setReviewing(false)}>
+            {t("manager.skill.backToSelection")}
+          </button>
+        ) : (
+          <button type="button" style={primaryButton} disabled={!idle || chosen.length === 0}
+            onClick={() => { setReviewing(true); setOutcomes(null); }}>
+            {t("manager.skill.preview")}
+          </button>
+        )}
       </div>
 
       {loadError !== null && (
@@ -308,9 +315,9 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
         <span style={muted}>{t("manager.skill.empty")}</span>
       )}
 
-      {loadError === null && visible.length > 0 && (
+      {loadError === null && shown.length > 0 && (
         <div role="list">
-          {visible.map((prompt) => {
+          {shown.map((prompt) => {
             const recorded = descriptors[prompt.id];
             const descriptor = recorded?.ok ? recorded.descriptor : undefined;
             const pre = precheckExport(prompt, descriptor);
@@ -325,7 +332,7 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
                   type="checkbox"
                   aria-label={prompt.title}
                   checked={selected.includes(prompt.id)}
-                  disabled={!idle}
+                  disabled={!idle || reviewing}
                   onChange={() => setSelected(toggleSelected(selected, prompt.id))}
                 />
                 <span style={rowText}>
@@ -356,6 +363,11 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
                       </span>
                     </span>
                   )}
+                  {reviewing && pre.ok && (
+                    <pre style={{ ...compareBody, margin: "6px 0 0" }}>
+                      {renderSkillFile({ name: pre.name, description: pre.description, whenToUse: descriptor?.whenToUse, body: prompt.body })}
+                    </pre>
+                  )}
                   {/* 预校验失败只在**勾选后**标注：未勾选的条目不该满屏飘红。 */}
                   {!pre.ok && selected.includes(prompt.id) && (
                     <span role="alert" style={errorText}>
@@ -369,6 +381,15 @@ export function SkillExportModal({ t, onBack }: SkillExportModalProps): React.Re
               </div>
             );
           })}
+        </div>
+      )}
+
+      {reviewing && (
+        <div style={actions}>
+          <button type="button" style={primaryButton} aria-busy={busy === "exporting"}
+            disabled={!idle || chosen.length === 0 || loadError !== null} onClick={runExport}>
+            {busy === "exporting" ? t("manager.skill.exporting") : t("manager.skill.export")}
+          </button>
         </div>
       )}
 

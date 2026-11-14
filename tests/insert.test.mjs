@@ -36,3 +36,13 @@ test("promptSummary：空正文 → 空串", () => {
   assert.equal(ins.promptSummary({ body: "   \n\t " }), "");
 });
 
+
+test("最近使用按最后插入时间排序，排除从未使用的条目", () => {
+  const prompts = [
+    { id: "never", lastUsedAt: 0, usageCount: 0 },
+    { id: "frequent", lastUsedAt: 10, usageCount: 500 },
+    { id: "recent", lastUsedAt: 20, usageCount: 1 },
+  ];
+  assert.deepEqual(ins.recentPrompts(prompts, 1).map((p) => p.id), ["recent"]);
+  assert.deepEqual(ins.recentPrompts(prompts).map((p) => p.id), ["recent", "frequent"]);
+});
