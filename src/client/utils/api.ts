@@ -5,6 +5,7 @@ import {
   type PluginSettings,
   type Prompt,
   type PromptCheckResult,
+  type PromptDraftContext,
   type PromptDraftRequest,
   type PromptDraftResult,
   type PromptDraftSearchResult,
@@ -220,8 +221,8 @@ export const api = {
       false,
       signal,
     ),
-  checkPrompt: (body: string, signal?: AbortSignal) =>
-    call<PromptCheckResult>("POST", "/ai/check", { body }, STRUCTURED_AI_TIMEOUT_MS, false, signal),
+  checkPrompt: (body: string, signal?: AbortSignal, draftContext?: PromptDraftContext) =>
+    call<PromptCheckResult>("POST", "/ai/check", { body, draftContext }, STRUCTURED_AI_TIMEOUT_MS, false, signal),
   draftPrompt: (request: PromptDraftRequest, signal?: AbortSignal) =>
     call<PromptDraftResult>("POST", "/ai/draft", request, STRUCTURED_AI_TIMEOUT_MS, false, signal),
   searchDraft: (query: string, signal?: AbortSignal) =>

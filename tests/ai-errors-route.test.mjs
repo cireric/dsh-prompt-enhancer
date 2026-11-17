@@ -416,6 +416,104 @@ test("从想法起草：已回答或跳过后拒绝再次追问", async () => {
   assert.equal(report.envelope.error.code, "schema-mismatch");
 });
 
+test("起草与改写：向模型传入执行环境，反馈基于当前编辑稿并跳过澄清", async () => {
+  const idea = "分析构建为什么慢";
+  const executor = "只读仓库的编程代理，看不到当前聊天";
+  const draft = { kind: "draft", body: "只读分析构建耗时。", assumptions: [] };
+  const revision = { body: "只读分析构建耗时，优先使用构建日志。", feedback: "最多列三个瓶颈。" };
+  const revised = { ...draft, body: "只读使用构建日志分析构建耗时，最多列三个瓶颈。" };
+  const clarification = { kind: "clarify", questions: [{ question: "输出多长？", options: [] }] };
+  const stop = { type: "finish", reason: { kind: "stop" } };
+  const seen = [];
+  const runtime = fakeRuntime([draft, clarification, revised].map((output) => [JSON.stringify(output), stop]));
+  ai.registerLlm({
+    ...runtime,
+    stream(options) {
+      seen.push({ input: JSON.parse(options.messages[0].content[0].text), system: options.system });
+      return runtime.stream();
+    },
+  });
+
+  const first = await dispatch("POST", "/ai/draft", { idea, executor: ` ${executor} ` });
+  assert.deepEqual(first.envelope, { ok: true, data: draft });
+  assert.deepEqual(seen[0].input, { idea, executor });
+  assert.match(seen[0].system, /执行者实际可见的信息、可用的工具与权限/);
+
+  const second = await dispatch("POST", "/ai/draft", { idea, executor, revision });
+  assert.deepEqual(second.envelope, { ok: true, data: revised });
+  assert.deepEqual(seen[1].input, { idea, executor, revision });
+  assert.match(seen[1].system, /按 revision\.feedback 修改 revision\.body/);
+  assert.match(seen[2].input.retryDiagnosis, /schema-mismatch/);
+});
+
+test("起草的待补材料保留在正文，检查按原需求和已采用反馈运行", async () => {
+  const idea = "总结一段访谈，输出中文要点";
+  const executor = "没有联网工具的聊天模型";
+  const feedbackHistory = ["交付语言改为英文"];
+  const missingInput = "Ask the user to provide the interview transcript.";
+  const draft = {
+    kind: "draft",
+    body: "Summarize the interview in English.",
+    understanding: "Summarize an interview in English.",
+    assumptions: [],
+    missingInputs: [missingInput, missingInput],
+  };
+  const stop = { type: "finish", reason: { kind: "stop" } };
+  const seen = [];
+  const runtime = fakeRuntime([
+    [JSON.stringify(draft), stop],
+    ['{"findings":[]}', stop],
+    ['{"findings":[]}', stop],
+  ]);
+  ai.registerLlm({
+    ...runtime,
+    stream(options) {
+      seen.push(JSON.parse(options.messages[0].content[0].text));
+      return runtime.stream();
+    },
+  });
+  const draftContext = { idea, executor, feedbackHistory };
+  const result = await dispatch("POST", "/ai/draft", {
+    ...draftContext,
+    revision: { body: "用英文总结访谈。", feedback: "明确需要提供访谈逐字稿。" },
+  });
+  const body = draft.body + "\n\n- " + missingInput;
+  assert.deepEqual(result.envelope, { ok: true, data: { ...draft, body, missingInputs: [missingInput] } });
+  assert.deepEqual(seen[0].feedbackHistory, feedbackHistory);
+
+  for (const input of [{ body }, { body, draftContext }]) {
+    const checked = await dispatch("POST", "/ai/check", input);
+    assert.deepEqual(checked.envelope, { ok: true, data: { findings: [] } });
+  }
+  assert.deepEqual(seen.slice(1), [{ body }, { body, draftContext }]);
+});
+
+test("检查拒绝把未采用的改写当作起草上下文", async () => {
+  const report = await dispatch("POST", "/ai/check", {
+    body: "根据访谈逐字稿总结三条要点。",
+    draftContext: { idea: "总结访谈", revision: { body: "总结访谈。", feedback: "输出英文版。" } },
+  });
+  assert.equal(report.status, 400);
+});
+
+test("起草拒绝无效的执行环境或改写参数", async (t) => {
+  const idea = "分析构建为什么慢";
+  for (const [name, fields] of [
+    ["执行环境类型错误", { executor: true }],
+    ["执行环境过长", { executor: "a".repeat(1001) }],
+    ["改写不是对象", { revision: [] }],
+    ["正文空白", { revision: { body: " ", feedback: "缩短" } }],
+    ["反馈空白", { revision: { body: "分析构建耗时", feedback: " " } }],
+    ["反馈过长", { revision: { body: "分析构建耗时", feedback: "a".repeat(2001) } }],
+    ["已采用反馈无效", { feedbackHistory: [42] }],
+  ]) {
+    await t.test(name, async () => {
+      const report = await dispatch("POST", "/ai/draft", { idea, ...fields });
+      assert.equal(report.status, 400);
+    });
+  }
+});
+
 test("起草核实：只搜索用户关键词，来源可用于起草，搜索不可用时仍可生成", async () => {
   const { registerDraftSearch } = await import("../src/host/draft-search.ts");
   const source = { url: "https://www.apple.com/airpods/compare/", title: "AirPods 官方对比" };

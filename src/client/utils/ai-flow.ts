@@ -14,13 +14,18 @@ import type { Prompt, PromptWritablePatch, TemplateVariable } from "../../types.
 import type { PromptEnhancerKey } from "./i18n.ts";
 import type { AiRefineResult } from "./api.ts";
 import { ApiError } from "./api.ts";
-import { clampTitle } from "../../types.ts";
+import { clampTitle, DRAFT_FEEDBACK_MAX_LENGTH } from "../../types.ts";
 import { firstNonEmptyLine } from "../../first-line.ts";
 import { needsValues, parseVariables } from "./template.ts";
 
 /** keepVariables 开关口径：草稿含 `{{变量}}` 才勾选；`{{}}` / `{{   }}` 不算（复用 parseVariables 口径）。 */
 export function keepVariablesFor(draft: string): boolean {
   return needsValues(draft);
+}
+
+export function appendDraftSuggestion(feedback: string | undefined, suggestion: string): string | undefined {
+  const combined = feedback?.trim() ? feedback.trim() + "\n\n" + suggestion : suggestion;
+  return combined.length <= DRAFT_FEEDBACK_MAX_LENGTH ? combined : undefined;
 }
 
 /** 落到提示词库的入参：body 用**原文**（AI 完善稿只进输入框），title 走 clampTitle，tags 最多 1 个。 */

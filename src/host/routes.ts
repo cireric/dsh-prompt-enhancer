@@ -492,7 +492,11 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
-      const checked = await ai.checkPromptCore(text, getSettings(), trace, signal);
+      const draftContext = readDraftRequest(body.draftContext);
+      if (body.draftContext !== undefined && (!draftContext || draftContext.revision)) {
+        return fail(res, 400, "起草上下文格式不正确");
+      }
+      const checked = await ai.checkPromptCore(text, getSettings(), trace, signal, draftContext);
       if (!checked.ok) return failWithCode(res, 503, { code: checked.code, message: devMessage(checked.code) }, trace);
       return ok(res, checked.report);
     },

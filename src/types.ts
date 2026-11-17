@@ -48,13 +48,21 @@ export interface PromptDraftQuestion {
   options: string[];
 }
 
-export interface PromptDraftRequest {
+export interface PromptDraftContext {
   idea: string;
+  executor?: string;
   /** Absent on the first request. Present to generate after the clarification round. */
   answers?: Array<{ question: string; answer: string }>;
   references?: string;
   sources?: PromptDraftSource[];
+  feedbackHistory?: string[];
 }
+
+export interface PromptDraftRequest extends PromptDraftContext {
+  revision?: { body: string; feedback: string };
+}
+
+export const DRAFT_FEEDBACK_MAX_LENGTH = 2000;
 
 export interface PromptDraftSource {
   url: string;
@@ -68,7 +76,7 @@ export type PromptDraftSearchResult =
 
 export type PromptDraftResult =
   | { kind: "clarify"; questions: PromptDraftQuestion[] }
-  | { kind: "draft"; body: string; assumptions: string[]; toVerify?: string[] };
+  | { kind: "draft"; body: string; understanding?: string; assumptions: string[]; missingInputs?: string[]; toVerify?: string[] };
 
 /** 一条提示词。 */
 export interface Prompt {

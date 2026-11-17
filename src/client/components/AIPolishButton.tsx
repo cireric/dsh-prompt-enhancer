@@ -6,6 +6,7 @@ import type { Prompt, PromptCheckResult, PromptDraftRequest, TemplateVariable } 
 import { PromptDraftForm, type DraftSession } from "./PromptDraftForm.tsx";
 import {
   aiErrorKey,
+  appendDraftSuggestion,
   canToggle,
   composeRefinedBody,
   keepVariablesFor,
@@ -265,7 +266,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
           setRefined(result);
           setStatus("refined");
         } else if (mode === "check") {
-          const report = await api.checkPrompt(snapshot, controller.signal);
+          const report = await api.checkPrompt(snapshot, controller.signal, draftSession?.generatedFrom);
           if (!isCurrentRequest(controller)) return;
           setCheckReport(report);
           setDraftSession((session) => session && { ...session, checkedBody: snapshot });
@@ -304,6 +305,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   const generateDraft = (request: PromptDraftRequest): void => {
     if (busyRef.current || !request.idea.trim()) return;
+    const { revision, ...generatedFrom } = request;
     const controller = beginRequest("draftPrompt");
     setErrorKey(null);
     setCopied(false);
@@ -313,9 +315,14 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
       try {
         const result = await api.draftPrompt(request, controller.signal);
         if (!isCurrentRequest(controller)) return;
+        if (revision && result.kind === "draft") {
+          generatedFrom.feedbackHistory = [...(generatedFrom.feedbackHistory ?? []), revision.feedback.trim()];
+        }
         setDraftSession((session) => session && (result.kind === "clarify"
           ? { ...session, step: "questions", questions: result.questions, answers: result.questions.map(() => "") }
-          : { ...session, step: "result", body: result.body, assumptions: result.assumptions, toVerify: result.toVerify, draftSources: request.sources }));
+          : { ...session, step: "result", body: result.body, assumptions: result.assumptions,
+              understanding: result.understanding, missingInputs: result.missingInputs,
+              toVerify: result.toVerify, generatedFrom, feedback: "" }));
       } catch (err) {
         if (!isCurrentRequest(controller)) return;
         console.warn("[prompt-enhancer] 提示词起草失败", err);
@@ -646,13 +653,22 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                       <span role="status">{t("ai.checkClear")}</span>
                     ) : (
                       <ul style={CHECK_FINDINGS}>
-                        {checkReport.findings.map(({ quote, issue, suggestion }, index) => (
-                          <li key={index} style={index === 0 ? CHECK_FINDING : CHECK_NEXT_FINDING}>
-                            <strong style={CHECK_ISSUE}>{issue}</strong>
-                            <blockquote style={CHECK_QUOTE}>{quote}</blockquote>
-                            <p style={CHECK_SUGGESTION}><strong>{t("ai.checkSuggestion")}</strong> {suggestion}</p>
-                          </li>
-                        ))}
+                        {checkReport.findings.map(({ quote, issue, suggestion }, index) => {
+                          const feedback = appendDraftSuggestion(draftSession?.feedback, suggestion);
+                          return (
+                            <li key={index} style={index === 0 ? CHECK_FINDING : CHECK_NEXT_FINDING}>
+                              <strong style={CHECK_ISSUE}>{issue}</strong>
+                              <blockquote style={CHECK_QUOTE}>{quote}</blockquote>
+                              <p style={CHECK_SUGGESTION}><strong>{t("ai.checkSuggestion")}</strong> {suggestion}</p>
+                              {draftSession && checkInput === original && feedback !== undefined && (
+                                <button type="button" style={PANEL_BUTTON} onClick={() => {
+                                  setDraftSession({ ...draftSession, feedback });
+                                  backToDraft();
+                                }}>{t("ai.draft.useSuggestion")}</button>
+                              )}
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>
