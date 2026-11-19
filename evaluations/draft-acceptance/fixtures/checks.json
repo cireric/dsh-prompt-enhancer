@@ -1,0 +1,20 @@
+{
+  "checks": [
+    {
+      "name": "lint",
+      "status": "pass"
+    },
+    {
+      "name": "typecheck",
+      "status": "fail"
+    },
+    {
+      "name": "unit",
+      "status": "pass"
+    },
+    {
+      "name": "integration",
+      "status": "skipped"
+    }
+  ]
+}
