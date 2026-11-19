@@ -151,10 +151,8 @@ test("parseRefineResult：解析四字段，标签归一为单个", () => {
 test("parseRefineResult：围栏与前后杂质可解析，字段按需 trim", () => {
   const out = refine.parseRefineResult('```json\n{ "title":" T ", "tags":[" x "], "summary":" s ", "body":" B " }\n```');
   assert.deepEqual(out, { title: "T", tags: ["x"], summary: "s", body: "B" });
-  const noisy = refine.parseRefineResult('好的：{"body":"正文"} 完毕');
-  assert.equal(noisy.body, "正文");
-  assert.equal(noisy.title, "", "缺失字段回落空串");
-  assert.deepEqual(noisy.tags, []);
+  const noisy = refine.parseRefineResult('好的：{"title":"T","tags":[],"summary":"","body":"正文"} 完毕');
+  assert.deepEqual(noisy, { title: "T", tags: [], summary: "", body: "正文" });
 });
 
 test("parseRefineResult：正文缺失/为空 → undefined（调用方按失败处理）", () => {
@@ -165,7 +163,8 @@ test("parseRefineResult：正文缺失/为空 → undefined（调用方按失败
 
 test("parseRefineResult：JSON 正文自己的两段代码围栏保持原样", () => {
   const body = '输出格式参考\n```json\n{"result": "示例"}\n```\n\n再附上\n```text\n{{说明}}\n```';
-  for (const output of [JSON.stringify({ body }), '```json\n' + JSON.stringify({ body }) + '\n```']) {
+  const json = JSON.stringify({ title: "T", tags: [], summary: "", body });
+  for (const output of [json, '```json\n' + json + '\n```']) {
     assert.equal(refine.parseRefineResult(output)?.body, body);
   }
 });
@@ -178,7 +177,18 @@ test("parseRefineResult：非 JSON / 坏 JSON → undefined（不得抛）", () 
 });
 
 test("parseRefineResult：正文里的 {{变量}} 必须原样保留", () => {
-  const out = refine.parseRefineResult('{"body":"把 {{文本}} 翻成 {{目标语言}}"}');
+  const out = refine.parseRefineResult('{"title":"翻译","tags":[],"summary":"","body":"把 {{文本}} 翻成 {{目标语言}}"}');
   assert.equal(out.body, "把 {{文本}} 翻成 {{目标语言}}");
   assert.deepEqual(text.extractVariables(out.body), ["文本", "目标语言"]);
+});
+
+test("stripAiFiller：保留以常见套话词开头的实际执行指令", () => {
+  for (const body of [
+    "需要先运行 npm test。\n记录输出。",
+    "先运行测试。\n如果有失败，请记录日志。",
+    "Please don't modify source files.\nReport the results.",
+    "Run the tests.\nPlease continue with the remaining checks.",
+  ]) {
+    assert.equal(text.stripAiFiller(body), body);
+  }
 });

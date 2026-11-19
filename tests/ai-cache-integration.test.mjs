@@ -202,3 +202,23 @@ test("技能描述符：全部轮次失败 → 恰 3 次模型调用（重试预
   assert.equal(descFake.calls, 3, "3 轮循环 = 恰 3 次模型调用（旧实现叠加诊断重试会到 6）");
   assert.deepEqual(r, { fail: "timeout" });
 });
+test("回退结果可返回，但无法遮蔽配置模型恢复后的结果", async () => {
+  const stop = { type: "finish", reason: { kind: "stop" } };
+  const calls = [];
+  let primaryHealthy = false;
+  ai.registerLlm({
+    listProviders: () => [{ id: "primary" }, { id: "backup" }],
+    listModels: async () => [{ id: "chat" }],
+    stream({ provider }) {
+      calls.push(provider);
+      if (provider === "primary" && !primaryHealthy) return fakeStream([stop])();
+      return fakeStream([provider, stop])();
+    },
+  });
+  const config = { aiProvider: "primary", aiModel: "chat" };
+  assert.deepEqual(await ai.polishPromptBodyCore("草稿", config), { ok: true, polished: "backup" });
+  primaryHealthy = true;
+  assert.deepEqual(await ai.polishPromptBodyCore("草稿", config), { ok: true, polished: "primary" });
+  assert.deepEqual(await ai.polishPromptBodyCore("草稿", config), { ok: true, polished: "primary" });
+  assert.deepEqual(calls, ["primary", "backup", "primary"]);
+});

@@ -132,7 +132,7 @@ function parseJsonBody(raw: string): Record<string, unknown> {
  * 用事件而非 `for await`：`for await` 在 break/throw 时会对流调 `return()`，同样会提前销毁
  * 请求流，把上面这条约束从后门放回来。
  */
-function readBody(req: IncomingMessage, res: ServerResponse): Promise<Record<string, unknown>> {
+function readBody(req: IncomingMessage, res: ServerResponse, signal?: AbortSignal): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
@@ -142,6 +142,7 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<Record<str
       req.off("data", onData);
       req.off("end", onEnd);
       req.off("error", onError);
+      signal?.removeEventListener("abort", onAbort);
     }
 
     function onData(chunk: Buffer): void {
@@ -177,9 +178,18 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<Record<str
       reject(err);
     }
 
+    function onAbort(): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(signal?.reason);
+    }
+
+    if (signal?.aborted) return onAbort();
     req.on("data", onData);
     req.on("end", onEnd);
     req.on("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -500,14 +510,14 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     method: "GET",
     pattern: "GET /ai/providers",
     match: shape("ai", "providers"),
-    handle: async ({ res, trace }) => ok(res, await ai.listAiSelectables(trace)),
+    handle: async ({ res, trace, signal }) => ok(res, await ai.listAiSelectables(trace, signal)),
   },
   {
     method: "POST",
     pattern: "POST /ai/polish",
     match: shape("ai", "polish"),
     handle: async ({ req, res, trace, signal }) => {
-      const body = await readBody(req, res);
+      const body = await readBody(req, res, signal);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const opts = { keepVariables: body.keepVariables !== false, trace, signal };
@@ -529,7 +539,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     pattern: "POST /ai/check",
     match: shape("ai", "check"),
     handle: async ({ req, res, trace, signal }) => {
-      const body = await readBody(req, res);
+      const body = await readBody(req, res, signal);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const draftContext = readDraftRequest(body.draftContext);
@@ -546,7 +556,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     pattern: "POST /ai/draft",
     match: shape("ai", "draft"),
     handle: async ({ req, res, trace, signal }) => {
-      const request = readDraftRequest(await readBody(req, res));
+      const request = readDraftRequest(await readBody(req, res, signal));
       if (!request) return fail(res, 400, "起草参数格式不正确");
       const result = await ai.draftPromptCore(request, getSettings(), trace, signal);
       if (!result.ok) return failWithCode(res, 503, { code: result.code, message: devMessage(result.code) }, trace);
@@ -558,7 +568,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     pattern: "POST /ai/draft/search",
     match: shape("ai", "draft", "search"),
     handle: async ({ req, res, trace, signal }) => {
-      const query = asString((await readBody(req, res)).query)?.trim();
+      const query = asString((await readBody(req, res, signal)).query)?.trim();
       if (!query || query.length > 240) return fail(res, 400, "查询词为空或超长");
       return ok(res, await searchDraftSources(query, trace, signal));
     },
@@ -568,7 +578,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     pattern: "POST /ai/refine",
     match: shape("ai", "refine"),
     handle: async ({ req, res, trace, signal }) => {
-      const body = await readBody(req, res);
+      const body = await readBody(req, res, signal);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const existingTags = store.listTags().map((t) => t.name);
@@ -582,7 +592,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     pattern: "POST /ai/skill-descriptor",
     match: shape("ai", "skill-descriptor"),
     handle: async ({ req, res, trace, signal }) => {
-      const body = await readBody(req, res);
+      const body = await readBody(req, res, signal);
       const text = asString(body.body);
       if (!text?.trim()) return fail(res, 400, "缺少 body");
       const result = await ai.generateSkillDescriptor(
@@ -737,7 +747,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
 
 // ── 分发 ───────────────────────────────────────────────────────────────────
 
-async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function dispatch(req: IncomingMessage, res: ServerResponse, lifetime?: AbortSignal): Promise<void> {
   const method = (req.method ?? "GET").toUpperCase();
   const url = new URL(req.url ?? "/", "http://localhost");
   const seg = segments(url.pathname);
@@ -766,18 +776,19 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       if (seg[0] === "ai") {
         trace = startReviewTrace(seg.slice(1).join("/"));
         trace("request-start");
-      }
-      if (method === "POST" && seg[0] === "ai") {
         requestCancellation = new AbortController();
         res.once?.("close", onClose);
         if (res.destroyed) onClose();
-        requestCancellation.signal.throwIfAborted();
+        const signal = lifetime ? AbortSignal.any([lifetime, requestCancellation.signal]) : requestCancellation.signal;
+        signal.throwIfAborted();
+        return await route.handle({ req, res, seg, url, trace, signal });
       }
-      return await route.handle({ req, res, seg, url, trace, signal: requestCancellation?.signal });
+      return await route.handle({ req, res, seg, url });
     }
     return fail(res, 404, `no route ${method} ${url.pathname}`);
   } catch (e) {
     if (requestCancellation?.signal.aborted) return;
+    if (requestCancellation && lifetime?.aborted) return failWithCode(res, 503, { code: "no-llm" }, trace);
     if (e instanceof BadRequest) return fail(res, 400, e.message);
     if (e instanceof store.PromptConflict) return fail(res, 409, e.message);
     if (trace) trace("request-threw", { code: safeErrorCode(e) });
@@ -790,6 +801,6 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
 }
 
 /** 构造注册用的路由数组（单条 prefix 路由）。 */
-export function makeRoutes(): PromptEnhancerRoute[] {
-  return [{ kind: "prefix", path: API_PREFIX, handler: dispatch }];
+export function makeRoutes(lifetime?: AbortSignal): PromptEnhancerRoute[] {
+  return [{ kind: "prefix", path: API_PREFIX, handler: (req, res) => dispatch(req, res, lifetime) }];
 }

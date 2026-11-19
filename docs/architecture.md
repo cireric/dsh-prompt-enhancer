@@ -104,17 +104,17 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 | 面 | 现状 | 出处 |
 |---|---|---|
-| 模型路由 | 设置里的 provider+model 优先（需核验可用）→ 否则遍历 provider、每 provider 取 `/chat\|deepseek/i` 命中的模型，去重成有序候选；30s TTL 缓存 | `ai.ts:186-224` |
+| 模型路由 | 先尝试显式设置的 provider/model。自动选择或需要回退时按序查询目录，每个 provider 优先选 `/chat\|deepseek/i` 命中的模型，目录缓存 30s。 | `ai.ts#discoverCandidates` |
 | 调用 | 全局**串行锁**（同时只允许一个 LLM 调用，防并发打爆额度）· 每次尝试超时取单次上限与拿到锁后剩余预算的较小值 · 默认输出 2048 token · `temperature 0.4` | `ai.ts#collectText`、`ai-budget.ts` |
-| 总预算 | 候选轮询、诊断重试和串行锁排队共享一个 `AiBudget`，耗尽后停止发请求。各操作的上限见 D10。 | `ai-budget.ts`、`ai.ts#polishPromptBodyCore` |
+| 总预算 | 从能力入口计时，目录和模型元数据查询、串行锁排队、候选调用与诊断重试共享 `AiBudget`。到期或取消时请求立即结束。各操作的上限见 D10。 | `ai-budget.ts`、`ai.ts#polishPromptBodyCore` |
 | 失败码 | 7 值枚举 `no-llm` / `route` / `timeout` / `empty-output` / `parse` / `schema-mismatch` / `unknown`，跨层传 code、client 走 i18n 字典（`ai.code.*`） | `ai-errors.ts:14-21` |
-| 重试 | `callLlmWithRetry` 轮询候选，允许一轮诊断重试。检查和模板增强在候选阶段校验响应，格式异常会进入同一重试流程。JSON 请求通过同一对象内的 `retryDiagnosis` 字段携带诊断，正文保持原样。技能描述符使用单独的三轮尝试。 | `ai.ts#callLlmWithRetry`、`ai-errors.ts#failureDiagnosis` |
-| 结果缓存 | 读穿式 LRU + TTL：键 = hash(system + user + route)，TTL 30 分钟、上限 50 条、重启即清；失败不入缓存 | `ai-cache.ts:13-14,48-56` |
-| 输出后处理 | 润色剥离整体围栏和首尾套话，日志记录删去的行数及处理后的正文长度 | `text.ts:71-123` |
+| 重试 | `callPrompt` 轮询候选，允许一轮诊断重试。候选阶段验证结构及内容，格式或截断错误可继续回退或重试。JSON 请求通过同一对象内的 `retryDiagnosis` 字段携带诊断，正文保持原样。技能描述符使用单独的三轮尝试。 | `ai.ts#callPrompt`、`ai-errors.ts#failureDiagnosis` |
+| 结果缓存 | 读穿式 LRU + TTL：键 = hash(system + user + route)，TTL 30 分钟、上限 50 条、重启即清。只有首选模型的成功结果填充首选缓存。 | `ai-cache.ts:13-14,48-56` |
+| 输出后处理 | 润色剥离包裹和明确套话，拒绝空稿和截断。润色与模板增强保护原占位符及可识别的命令、路径和权限约束。模板增强另校验必填字段。 | `text.ts:71-123` |
 | 客户端超时 | 模型生成请求的上限见 D10。探测和清键为 15s。`TimeoutError` 按名字判定，探测超时带 `probe` 标记。 | `api.ts` |
 | AI 请求诊断 | 正式构建也写 `$DSH_HOME/prompt-enhancer/log/review-YYYY-MM-DD.jsonl`（UTC 日期）。所有 `/ai/` 路由按 `id` 关联模型枚举、来源搜索、路由选择、缓存、排队、流式调用、校验及最终 HTTP 状态。模型请求只记录参数和长度，失败记录结束类型、错误码和可用的 HTTP 状态。 | `review-trace.ts`、`ai.ts#collectText` |
 
-**已识别的质量缺口**（见 `docs/proposals/2026-10-03-…md` B1/B2）：润色的产出**没有任何事实/长度校验**——system prompt 里只有祈使句（`ai.ts:279-280`）。
+**质量边界**：改写规则覆盖可检测的字面量。自由文本的语义一致性需要用户核对。
 
 ---
 
@@ -140,7 +140,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | dsh 0.2.0 迁移 | 设置从 `settingsScope` → `configForms` + `Config`；`ctx.settings.update(entryId, patch)` 取代 `register`（旧写法启动即抛，是设置页保存 503 的根因） | `src/index.ts:4-14` |
 | 首包（已交付） | 统一 AI 错误码 + 诊断注入重试 · AI 结果缓存 · 推荐相关性重排（usage ×0.15 封顶 + 草稿词硬门槛） | issues #1–#6（全 CLOSED） |
 | D9 | **跨源写入闸**：写方法只接受同源请求（403 且不读体）；宿主 webServer 无 origin/token/CSRF 守卫，故闸门落在插件路由层 | 本文 §4.1、`routes.ts#isCrossSiteWrite` |
-| D10 | 默认单次尝试上限为 30s，宿主总预算为 110s，客户端超时为 120s。检查、模板增强和起草对所有候选使用 180s 的单次上限，宿主总预算为 215s，客户端超时为 225s。实际等待时间取单次上限和剩余总预算的较小值。 | 本文 §5、`ai-budget.ts`、`ai.ts#attemptAllCandidates` |
+| D10 | 默认单次尝试上限为 30s，宿主总预算为 110s，客户端超时为 120s。检查、模板增强和起草的单次上限为 180s，宿主总预算为 215s，客户端超时为 225s。候选目录单次查询上限为 30s，各阶段均受剩余总预算约束。 | 本文 §5、`ai-budget.ts`、`ai.ts#attemptAllCandidates` |
 | D11 | **超限响应先于关连接**：5 MB 闸不得先 `req.destroy()`（会连 socket 一起拆，客户端只见 EPIPE）；改为停止读取 + `Connection: close`，让 400 正常写出 | 本文 §4.1、`routes.ts#readBody` |
 | D12 | **产物源码指纹**：`build` 把 `src/**` 的 hash 写进 `.build-meta.json`，`smoke` 比对当前 src 并红——「改完 src 不重建就提交」是本仓唯一能骗过其它所有门的失效模式（`npm test` 测 src、`smoke` 测 lib） | 本文 §7、`scripts/source-hash.mjs` |
 | D13 | **路由清单单一真源**：`ROUTE_SPECS` 驱动 `dispatch`，测试的覆盖账本按 `pattern` 与它双向对齐（此前 dispatch 是手写 if 链、测试另有一份手抄副本） | 本文 §4.1、`routes.ts#ROUTE_SPECS` |
@@ -152,7 +152,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D19 | 起草将影响结论的外部事实写成正文中的核实步骤，追问聚焦用户偏好。用户可主动通过宿主 `ctx.web.search()` 查询来源，发送范围限于独立填写的关键词。搜索不可用时可自行补充链接或摘录并继续起草。 | `draft-search.ts`、`draft.ts`、`PromptDraftForm.tsx` |
 | D20 | AI 请求的最终错误码只描述用户收到的结果。请求日志保留每轮候选的结束状态、插件计时器是否触发和校验结果，供定位更早的故障。 | 本文 §5、`review-trace.ts` |
 | D21 | 检查、模板增强和起草优先使用候选模型声明的 `off` 推理档位。关闭推理的模型获分配 2048 个检查输出 token 或 4096 个增强／起草输出 token。模型未声明该档位时使用 8192 输出 token，为共用预算的推理和 JSON 正文留出空间。起草在接受候选前校验完整结果，截断或结构错误可继续尝试下一候选或诊断重试。 | `ai.ts#collectText`、`ai.ts#draftPromptCore` |
-| D22 | AI 面板等待时显示已用时长。取消请求返回操作菜单或起草面板，保留用户输入。HTTP 连接提前关闭时，宿主向当前模型调用或来源搜索传递取消信号，并停止后续候选和诊断重试。 | `AIPolishButton.tsx`、`routes.ts#dispatch`、`ai.ts#attemptAllCandidates` |
+| D22 | AI 面板等待时显示已用时长。取消请求返回操作菜单或起草面板，保留用户输入。HTTP 连接提前关闭或插件卸载时，宿主取消请求及排队等待，并停止后续候选和诊断重试。 | `AIPolishButton.tsx`、`routes.ts#dispatch`、`ai.ts#attemptAllCandidates` |
 | D23 | 写入冲突保护。管理器仅提交改动字段，保存和换稿携带宿主签发的 `contentVersion`。旧调用仍可省略该字段。创建需要淘汰时必须提交已确认的 ID，名单过期返回 409。确认导入按同 ID 覆盖在用条目或回收站条目，恢复遇到历史同 ID 冲突时保留两份并返回 409。 | `store.ts#createPromptWithEvictions`、`store.ts#importPrompts`、`prompt-edit.ts` |
 | D24 | 填值记忆完成后复核草稿版本。草稿变化时，追加使用当前内容，覆盖和发送需要重新确认。覆盖使用宿主整体替换；追加和替换尾部令牌使用区间插入以保留内联引用。公开输入状态未暴露引用选区卡片的完整坐标，含此类卡片的尾部编辑可能被宿主拒绝，界面保留草稿并提示失败。 | `TemplateVariablesDialog.tsx`、`insert.ts` |
 | D25 | 确认覆盖同名技能会转移唯一归属，包括撤销回收站中的旧归属。历史同名归属需要重新确认。技能内容写入失败时回滚归属变更。 | `store.ts#recordSkillExport`、`skills.ts#exportSkill` |
@@ -167,7 +167,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 ```sh
 npm run verify      # 四道门一次跑满（= typecheck && test && build && smoke）；提交前必须跑它
 npm run typecheck   # tsc --noEmit
-npm test            # node --test（45 个用例文件、460 条用例）
+npm test            # node --test
 npm run build       # lib/index.js + lib/client.js（同时把源码指纹写进 .build-meta.json）
 npm run smoke       # 真实执行 client bundle：注册 id、7 个插槽的账本顺序、inject 段序、导出形状、
                     # 产物只由 src/ 组成（metafile 闸门）、lib 与 src 同代（源码指纹）

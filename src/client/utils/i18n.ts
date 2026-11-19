@@ -123,7 +123,7 @@ export const zh = {
   "ai.code.timeout": "模型响应超时。请稍后重试，或在设置中切换模型。",
   "ai.code.emptyOutput": "模型返回了空结果，请重试",
   "ai.code.parse": "模型输出不是有效内容，请重试",
-  "ai.code.schemaMismatch": "模型未返回可用的结果格式，请重试。",
+  "ai.code.schemaMismatch": "模型返回的格式或关键内容未通过校验，请重试。",
   // T7-7：**探测**超时的专属文案——必须与 ai.timeout 可辨（用户要做的事不同：查模型配置 / 网络）。
   "ai.probeTimeout": "AI 服务探测超时，请检查模型配置或网络后重试",
   "ai.refine": "增强为模板",
@@ -467,7 +467,7 @@ export const en: Record<keyof typeof zh, string> = {
   "ai.code.timeout": "The model timed out. Try again later or switch models in Settings.",
   "ai.code.emptyOutput": "The model returned an empty result, please retry",
   "ai.code.parse": "The model output was not valid content, please retry",
-  "ai.code.schemaMismatch": "The model returned a result in an unusable format. Try again.",
+  "ai.code.schemaMismatch": "The result failed format or content checks. Try again.",
   // T7-7: probe-specific timeout copy — must stay distinguishable from "ai.timeout".
   "ai.probeTimeout": "Timed out probing for available models, please check the model settings or network and retry",
   "ai.refine": "Enhance as template",

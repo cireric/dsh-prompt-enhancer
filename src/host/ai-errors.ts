@@ -75,14 +75,14 @@ export function failureDiagnosis(failure: AiFailure, expectation: DiagnosisExpec
  * 重试与否由调用方（`ai.ts`）按能力决定：技能描述符有自己的 3 轮循环，不再叠加本重试。
  * `expectation` 只影响诊断文案（R1：润色是纯文本，其余是 JSON），编排语义两种形态完全一致。
  */
-export async function withDiagnosticRetry(
-  attempt: (diagnosis?: string) => Promise<AiAttempt>,
+export async function withDiagnosticRetry<T extends Extract<AiAttempt, { ok: true }>>(
+  attempt: (diagnosis?: string) => Promise<T | Extract<AiAttempt, { ok: false }>>,
   expectation: DiagnosisExpectation = "json",
-): Promise<AiCallResult> {
+): Promise<T | Extract<AiCallResult, { ok: false }>> {
   const first = await attempt();
-  if (first.ok) return { ok: true, text: first.text };
+  if (first.ok) return first;
   const second = await attempt(failureDiagnosis(first.failure, expectation));
-  if (second.ok) return { ok: true, text: second.text };
+  if (second.ok) return second;
   return second.failure.detail === undefined
     ? { ok: false, code: second.failure.code }
     : { ok: false, code: second.failure.code, detail: second.failure.detail };

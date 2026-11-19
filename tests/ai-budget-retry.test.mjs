@@ -171,3 +171,154 @@ test("R3 预算耗尽：技能描述符的 3 轮循环同样不发请求", async
   assert.equal(cap.calls, 0);
 });
 
+
+test("可用的配置模型无需等待未使用的回退目录", { timeout: 500 }, async () => {
+  const cap = capturingRuntime([["润色稿", STOP]]);
+  const calls = [];
+  ai.registerLlm({
+    ...cap.runtime,
+    listProviders: () => [{ id: "slow" }, { id: "fake" }],
+    listModels: async (provider) => {
+      calls.push(provider);
+      if (provider === "slow") return new Promise(() => {});
+      return [{ id: "fake-chat" }];
+    },
+  });
+
+  const result = await ai.polishPromptBodyCore("草稿", { aiProvider: "fake", aiModel: "fake-chat" });
+  assert.deepEqual(result, { ok: true, polished: "润色稿" });
+  assert.ok(!calls.includes("slow"));
+});
+
+test("冷目录访问消耗总预算，迟到目录不写入缓存", { timeout: 1000 }, async () => {
+  const cap = capturingRuntime([["润色稿", STOP]]);
+  const catalog = Promise.withResolvers();
+  let lookups = 0;
+  ai.registerLlm({
+    ...cap.runtime,
+    listModels: async () => ++lookups === 1 ? catalog.promise : [{ id: "fake-chat" }],
+  });
+
+  const expired = await ai.polishPromptBodyCore("草稿", settings, { budget: budgetMod.startAiBudget(75) });
+  assert.deepEqual(expired, { ok: false, code: "timeout" });
+  assert.equal(lookups, 1);
+  assert.equal(cap.calls, 0);
+  catalog.resolve([{ id: "stale-model" }]);
+  await new Promise((done) => setImmediate(done));
+  assert.deepEqual(await ai.polishPromptBodyCore("草稿", settings), { ok: true, polished: "润色稿" });
+  assert.equal(lookups, 2);
+});
+
+test("取消及超时的排队请求在持锁调用结束前立即完成", { timeout: 1000 }, async (t) => {
+  const cap = capturingRuntime([["润色稿", STOP]]);
+  const running = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  ai.registerLlm({
+    ...cap.runtime,
+    async *stream(options) {
+      running.resolve();
+      await release.promise;
+      yield* cap.runtime.stream(options);
+    },
+  });
+  const first = ai.polishPromptBodyCore("先到的草稿", settings);
+  await running.promise;
+
+  const queued = Promise.withResolvers();
+  const abort = new AbortController();
+  const second = ai.polishPromptBodyCore("要取消的草稿", settings, {
+    signal: abort.signal,
+    trace: (event) => { if (event === "queue-enter") queued.resolve(); },
+  });
+  await queued.promise;
+  abort.abort();
+  await assert.rejects(second, { name: "AbortError" });
+
+  const third = await ai.polishPromptBodyCore("会超时的草稿", settings, { budget: budgetMod.startAiBudget(75) });
+  assert.deepEqual(third, { ok: false, code: "timeout" });
+  release.resolve();
+  await first;
+  await new Promise((done) => setImmediate(done));
+  assert.equal(cap.calls, 1);
+});
+
+test("润色拒绝截断输出和清洗后的空文本，再保留指令及原占位符", async () => {
+  const body = "需要先运行 npm test。\n记录 {{ 输出 }}。";
+  const cap = capturingRuntime([
+    ["未完成的指令", { type: "finish", reason: { kind: "max-tokens" } }],
+    ["好的", STOP],
+    [body, STOP],
+  ]);
+  ai.registerLlm({
+    ...cap.runtime,
+    listProviders: () => [{ id: "first" }, { id: "second" }],
+  });
+  assert.deepEqual(await ai.polishPromptBodyCore(body, settings), { ok: true, polished: body });
+  assert.equal(cap.calls, 3);
+  assert.match(cap.messages[2], /empty-output/);
+});
+
+test("润色不能改写或删除原占位符", async () => {
+  const body = "翻译 {{ 原文 }}，再显示 {{ 原文 }}。";
+  const cap = capturingRuntime([
+    ["翻译 {{原文}}，再显示 {{ 原文 }}。", STOP],
+    [body, STOP],
+  ]);
+  ai.registerLlm(cap.runtime);
+  assert.deepEqual(await ai.polishPromptBodyCore(body, settings), { ok: true, polished: body });
+  assert.equal(cap.calls, 2);
+});
+
+test("润色保留明确命令和执行限制，缺失则进入诊断重试", async () => {
+  const body = "运行 npm test。禁止写入。";
+  const cap = capturingRuntime([
+    ["运行测试。禁止写入。", STOP],
+    [body, STOP],
+  ]);
+  ai.registerLlm(cap.runtime);
+  assert.deepEqual(await ai.polishPromptBodyCore(body, settings), { ok: true, polished: body });
+  assert.equal(cap.calls, 2);
+});
+
+const originalTemplate = "审查 {{ 文件 }}。运行 npm test。读取 ./src/config.ts。未经确认不得提交。";
+const completeTemplate = { title: "审查文件", tags: ["审查"], summary: "审查并验证", body: originalTemplate };
+for (const [label, invalid] of [
+  ["结构字段", { body: originalTemplate }],
+  ["原占位符", { ...completeTemplate, body: originalTemplate.replace("{{ 文件 }}", "{{文件}}") }],
+  ["命令", { ...completeTemplate, body: originalTemplate.replace("npm test", "测试") }],
+  ["路径", { ...completeTemplate, body: originalTemplate.replace("./src/config.ts", "配置文件") }],
+  ["执行约束", { ...completeTemplate, body: originalTemplate.replace("未经确认不得提交。", "") }],
+]) {
+  test(`增强拒绝缺少${label}的结果`, async () => {
+    const cap = capturingRuntime([[JSON.stringify(invalid), STOP], [JSON.stringify(completeTemplate), STOP]]);
+    ai.registerLlm(cap.runtime);
+    assert.deepEqual(await ai.refinePromptCore(originalTemplate, settings), { ok: true, refined: completeTemplate });
+    assert.equal(cap.calls, 2);
+    assert.match(JSON.parse(cap.messages[1]).retryDiagnosis, /schema-mismatch/);
+  });
+}
+
+test("取消模型目录请求后不等待当前目录，也不访问后续 provider", { timeout: 1000 }, async (t) => {
+  const lookingUp = Promise.withResolvers();
+  const catalog = Promise.withResolvers();
+  const providers = [];
+  t.after(() => catalog.resolve([]));
+  ai.registerLlm({
+    listProviders: () => [{ id: "slow" }, { id: "other" }],
+    listModels: async (provider) => {
+      providers.push(provider);
+      if (provider !== "slow") return [];
+      lookingUp.resolve();
+      return catalog.promise;
+    },
+  });
+  const caller = new AbortController();
+  const pending = ai.listAiSelectables(undefined, caller.signal);
+  await lookingUp.promise;
+  caller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  catalog.resolve([]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(providers, ["slow"]);
+});

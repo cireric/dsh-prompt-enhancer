@@ -70,8 +70,10 @@ export function apply(ctx: Context, config: PluginRuntimeConfig): void {
 
   ctx.inject(["webServer"], (httpCtx) => {
     httpCtx.effect(() => {
-      const disposers = makeRoutes().map((route) => httpCtx.webServer.register(route));
+      const lifetime = new AbortController();
+      const disposers = makeRoutes(lifetime.signal).map((route) => httpCtx.webServer.register(route));
       return () => {
+        lifetime.abort();
         for (const dispose of disposers) dispose();
       };
     }, "prompt-enhancer: routes");

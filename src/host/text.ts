@@ -6,46 +6,12 @@
  * 解析与清洗一律落在这里。
  */
 
-/** 命中即视为「AI 套话」整行的开场行（中文 + 英文；整行匹配，避免误删正文内部）。 */
-const AI_OPEN_RE =
-  /^(好的?|好的呢|没问题|收到|可以|想到了|毕竟是|这是我的|这是我(为[你您])?(优化|润色|完善|整理|改写)?(后|好的?|的|成的|版)?|以下为?(你|您)?(的)?(优化|润色|完善|整理|改写)?(后|好的?|的|成的|版|结果|建议)?|下面是?(的)?|以下是?[你您]?(的)?|这会?是|为你?|为您?|已(经)?为[你您]|已为你|结果如下|如下|示例如下|请[你您]查收|我给[你您]|回答完毕|帮你|现在为[你您]|给你(的)?)|^(hello|hi\b|hey\b|sure|of\s+course|no\s+problem|here(?:\s|'s| is)|below\b|this\s+is|the\s+(polished|optimized|improved|revised|updated|cleaned|final|better)\s+version|i(?:'ve| have| am)?(?: prepared| optimized| provided| polished| revised| improved| updated)?|please\s+find|glad\s+to\s+help|conforme?d)/i;
-
-/** 命中即视为「AI 套话」整行的收尾行（中文 + 英文；整行匹配）。 */
-const AI_CLOSE_RE =
-  /^(希望(?:能|对)?[你您]?|如有(?:任何)?|如果(?:有|需要|你)|倘若|有问题|有任何|祝你?|祝您|以上(?:是)?|仅供|谢谢|感谢|需要|如需|有需要|敬请|请继续|随时|以下是根据|我[可能已经]?可以|加油|总体来说|总而言之|只需|您可以在|您可以按|有任何需要)|^(hope|i\s+hope|let\s+me\s+know|if\s+you\s+need|feel\s+free|thanks|thank\s+you|regards|best\s+regards|good\s+luck|please\s+(?:feel\s+free|let\s+me|don't|do\s+not\s+hesitate)|any\s+questions|do\s+not\s+hesitate)/i;
-
-/**
- * **元话语收尾信号**：套话行几乎都以标点（冒号/句号）或「结果 / 提示词 / prompt」这类**元词**收尾；
- * 而正文行以内容词收尾。这是把两类行分开的关键判据（见 `isFillerLine`）。
- */
-const META_TAIL =
-  /([:：。！!?]|以下|如下|结果|版本|提示词|正文|内容|prompt|version|result|below|following|text)$/i;
-
-/** 短行豁免上限：纯寒暄行本来就很短（「好的」「谢谢」「Sure」），超过这个长度就不再当寒暄。 */
-const SHORT_LINE_MAX = 6;
-
-/** 首尾各最多剥离的行数（防止把整段正文当套话吃掉）。 */
+// Only remove complete greetings or introductions. Their prefixes can also start real instructions.
+const GREETING = /^(?:好的?|好的呢|没问题|收到|可以|谢谢|感谢|sure|of course|no problem|thanks|thank you|hi|hello)[。.!！]?$/i;
+const INTRO =
+  /^(?:(?:(?:好的?|没问题|收到|可以)[，,、!！]\s*)?(?:以下是我的|(?:以下|下面)(?:是|为)(?:(?:为)?[你您](?:的)?)?(?:优化|润色|完善|整理|改写)(?:后|好)?的?(?:版本|版|结果|建议|提示词(?:正文)?|正文)|结果如下)|(?:(?:sure|of course|no problem)[,!.]\s*)?(?:here|below) (?:is|are) the (?:polished|optimized|improved|revised|updated|cleaned) (?:prompt|version|text|result))[:：。.!！]?$/i;
+const FAREWELL = /^(?:希望这对[你您]有帮助[。！]|(?:如有|如果有)(?:任何)?(?:问题|疑问)[，,]\s*请(?:告诉我|随时联系我)[。！]?|let me know if you need anything else[.!])$/i;
 const STRIP_MAX_LINES = 6;
-
-/**
- * 判断「这一行是不是 AI 套话」。
- *
- * 判据是**两个条件的合取**（刻意不同于上游的「行首命中即剥」）：
- *   1. 行首命中套话模式（{@link AI_OPEN_RE} / {@link AI_CLOSE_RE}）；
- *   2. **且**该行以元话语信号收尾（{@link META_TAIL}），或者它本身就是极短句。
- *
- * 为什么必须加第 2 条——两类失败的代价不对称：
- * - 漏剥一行寒暄 = 可见噪音，用户一眼看见就能删；
- * - 误剥一行正文 = **静默丢内容**，在 AI 自动流程里用户根本看不到，而且不可逆。
- * 上游只做第 1 条，于是「好的提示词应该包含明确的约束」这种正文首行会被整行吃掉。
- * （夹具实测见 `tests/text.test.mjs`：本判据 7/8 剥对真套话、7/7 保留正文；上游是 8/8 但 0/7。）
- */
-function isFillerLine(line: string): boolean {
-  const t = line.trim();
-  if (!t) return false;
-  if (!AI_OPEN_RE.test(t) && !AI_CLOSE_RE.test(t)) return false;
-  return META_TAIL.test(t) || [...t].length <= SHORT_LINE_MAX;
-}
 
 /** 去掉 UTF-8 BOM（Windows 记事本/PowerShell 等工具可能写入），避免首字符解析失败。 */
 export function stripBom(text: string): string {
@@ -59,43 +25,36 @@ export interface StripResult {
   stripped: string[];
 }
 
-/**
- * 剥离 AI 输出里混入的套话，并**回报被剥掉了什么**。
- *
- * - 整体 Markdown 代码块包裹（``` 或 ```lang ```）；
- * - 紧贴正文首尾、且满足 {@link isFillerLine} 的行，首尾各最多 {@link STRIP_MAX_LINES} 行。
- *
- * 返回 `stripped` 是为了让调用方（`ai.ts`）能把被剥的行写进诊断日志——
- * 「模型到底吐不吐套话」「我们有没有误剥」这两件事从此有据可查，而不是靠猜。
- */
-export function stripAiFillerDetailed(text: string): StripResult {
-  if (!text) return { text, stripped: [] };
-
+/** Remove wrapper text and keep matching lines or a fenced example from the user's source. */
+export function stripAiFillerDetailed(text: string, source = ""): StripResult {
   let out = text.trim();
   const stripped: string[] = [];
-
-  // 去掉整体 Markdown 代码块包裹
-  const unfenced = out.replace(/^\s*```[a-zA-Z0-9_+\-.]*\s*\n?([\s\S]*?)\s*\n?```\s*$/, "$1");
-  if (unfenced !== out) {
+  const fenced = out.match(/^```[a-zA-Z0-9_+.\-]*[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?```[ \t]*$/);
+  const enclosed = fenced?.[1] ?? "";
+  if (fenced && !source.trim().startsWith("```") && !/^ {0,3}```/m.test(enclosed)) {
     stripped.push("（整体代码围栏已剥离）");
-    out = unfenced.trim();
+    out = enclosed.trim();
   }
 
   const lines = out.split("\n");
-
-  // 从最前剥离开场套话
+  const original = new Set(source.split("\n").map((line) => line.trim()));
   let start = 0;
-  const maxFront = Math.min(lines.length, STRIP_MAX_LINES);
-  while (start < maxFront && isFillerLine(lines[start]!)) {
-    stripped.push(lines[start]!.trim());
-    start++;
-  }
-
-  // 从最后剥离收尾套话
   let end = lines.length;
-  while (end - 1 > start && end - start <= STRIP_MAX_LINES && isFillerLine(lines[end - 1]!)) {
-    stripped.push(lines[end - 1]!.trim());
+  while (start < Math.min(end, STRIP_MAX_LINES)) {
+    const line = lines[start]!.trim();
+    if (original.has(line) || (!GREETING.test(line) && !INTRO.test(line))) break;
+    stripped.push(line);
+    start++;
+    while (start < end && !lines[start]!.trim()) start++;
+  }
+  let trailing = 0;
+  while (end > start && trailing < STRIP_MAX_LINES) {
+    const line = lines[end - 1]!.trim();
+    if (original.has(line) || (!GREETING.test(line) && !FAREWELL.test(line))) break;
+    stripped.push(line);
     end--;
+    trailing++;
+    while (end > start && !lines[end - 1]!.trim()) end--;
   }
 
   return { text: lines.slice(start, end).join("\n").trim(), stripped };
@@ -106,7 +65,41 @@ export function stripAiFiller(text: string): string {
   return stripAiFillerDetailed(text).text;
 }
 
+const PLACEHOLDER = /\{\{\s*([^{}]+?)\s*\}\}/g;
+
 /** 抽出正文里的模板变量名（`{{变量名}}`），去重前先 trim 去空。 */
 export function extractVariables(body: string): string[] {
-  return [...body.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((m) => m[1]!.trim()).filter(Boolean);
+  return [...body.matchAll(PLACEHOLDER)].map((match) => match[1]!.trim()).filter(Boolean);
+}
+
+export function placeholderLiterals(body: string): string[] {
+  return [...body.matchAll(PLACEHOLDER)].filter((match) => match[1]!.trim()).map((match) => match[0]);
+}
+
+export function preservesLiterals(original: readonly string[], candidate: readonly string[]): boolean {
+  const counts = new Map<string, number>();
+  for (const literal of candidate) counts.set(literal, (counts.get(literal) ?? 0) + 1);
+  for (const literal of original) {
+    const count = counts.get(literal) ?? 0;
+    if (count === 0) return false;
+    counts.set(literal, count - 1);
+  }
+  return true;
+}
+
+// Prose has no lossless equivalence check. Protect verbatim literals and explicit permission clauses.
+const CODE = /`+[^`\r\n]+`+/g;
+const FENCED_CODE = /^ {0,3}(`{3,}|~{3,})[^\r\n]*\r?\n[\s\S]*?^ {0,3}\1[ \t]*$/gm;
+const COMMAND = /\b(?:(?:npm|pnpm|yarn|bun)\s+run[ \t]+[\w:.\-]+|(?:git|npm|pnpm|yarn|bun|docker|kubectl|cargo|pip)\b[ \t]+[\w\-]+)(?:[ \t]+--?[\w\-]+)*/g;
+const PATH = /(?:[A-Za-z]:[\\/]|(?:https?:\/|\.{1,2}|~)?\/|\b[\w.\-]+[\\/])(?:[\w.\-]+[\\/])*[\w.\-]+/g;
+const PERMISSION = /(?:未经|不许|不得|禁止|严禁|不允许|不要|只允许|仅限|必须|等待[^。；！？\r\n]{0,24}?确认|等[^。；！？\r\n]{0,24}?确认后|\b(?:do not|must not|never|only|must|without (?:prior )?(?:approval|confirmation)|wait for (?:my |user )?(?:approval|confirmation))\b)(?:[^.。；！？\r\n;!?]|\.(?!\s|$))*/giu;
+
+export function executionLiterals(body: string): string[] {
+  return [
+    ...[...body.matchAll(CODE)].map((match) => match[0].replace(/^`+|`+$/g, "")),
+    ...[...body.matchAll(FENCED_CODE)].map((match) => match[0]),
+    ...[...body.matchAll(COMMAND)].map((match) => match[0]),
+    ...[...body.matchAll(PATH)].map((match) => match[0].replace(/\.+$/, "")),
+    ...[...body.matchAll(PERMISSION)].map((match) => match[0].trim()),
+  ];
 }

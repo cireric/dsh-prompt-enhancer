@@ -29,6 +29,42 @@ async function installHost(services = {}) {
   return { fiber, routes: () => routes };
 }
 
+test("unloading the plugin aborts a running generation and prevents fallback", { timeout: 2000 }, async () => {
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const calls = [];
+  const host = await installHost({
+    llm: {
+      listProviders: () => [{ id: "first" }, { id: "fallback" }],
+      listModels: async () => [{ id: "chat" }],
+      async *stream({ provider, signal }) {
+        calls.push(provider);
+        if (provider === "first") {
+          started.resolve(signal);
+          await release.promise;
+          yield { type: "finish", reason: { kind: "aborted" } };
+        } else {
+          yield { type: "text-delta", index: 0, text: '{"findings":[]}' };
+          yield { type: "finish", reason: { kind: "stop" } };
+        }
+      },
+    },
+  });
+  const [route] = host.routes();
+  assert.ok(route);
+  const res = Object.assign(new EventEmitter(), fakeRes());
+  const pending = route.handler(fakeReq("POST", API_PREFIX + "/ai/check", { body: "Review this prompt" }), res);
+  const signal = await started.promise;
+  await host.fiber.dispose();
+  release.resolve();
+  await pending;
+  assert.deepEqual(host.routes(), []);
+  assert.equal(signal.aborted, true);
+  assert.deepEqual(calls, ["first"]);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.listenerCount("close"), 0);
+});
+
 test("PUT settings reports 503 when the real Cordis context has no optional service", async () => {
   const host = await installHost();
   try {

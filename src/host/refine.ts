@@ -5,6 +5,8 @@
  * 用模拟输出直接单测（`tests/text.test.mjs`）。`ai.ts` 复用本模块完成同一段解析。
  */
 
+import { executionLiterals, placeholderLiterals, preservesLiterals } from "./text.ts";
+
 /** AI 完善结果：AI 生成的标题/标签/摘要/正文。 */
 export interface AiRefineResult {
   title: string;
@@ -14,26 +16,23 @@ export interface AiRefineResult {
   suggestions?: string[];
 }
 
-/**
- * 从模型输出文本中容错解析出完善结果：
- * - 剥离 Markdown 代码围栏（```json ... ```），截取首个 JSON 对象；
- * - 正文必填，缺失/为空返回 `undefined`（调用方按「AI 完善失败」处理）；
- * - 标签只保留单个（与词库「单个标签」约定一致），去空去空格；
- * - 标题/摘要/正文按原样 trim，**不修改正文中的任何 `{{变量}}`**。
- */
-export function parseRefineResult(text: string): AiRefineResult | undefined {
-  // Fenced examples can be part of the JSON body string.
+/** 校验模板的必填字段和原文中的受保护内容，并归一标签和可选建议。 */
+export function parseRefineResult(text: string, source = ""): AiRefineResult | undefined {
+  // The input may be wrapped in a JSON fence or a model's introduction.
   const json = text.trim();
   const start = json.indexOf("{");
   const end = json.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return undefined;
+  if (json.startsWith("[") || start === -1 || end <= start) return undefined;
   try {
     const parsed = JSON.parse(json.slice(start, end + 1)) as Partial<AiRefineResult>;
-    const body = typeof parsed.body === "string" ? parsed.body.trim() : "";
-    if (!body) return undefined;
-    const tags = Array.isArray(parsed.tags)
-      ? parsed.tags.filter((t): t is string => typeof t === "string" && !!t.trim()).map((t) => t.trim())
-      : [];
+    const { title, tags, summary, body } = parsed;
+    if (typeof title !== "string" || !title.trim() ||
+        !Array.isArray(tags) || !tags.every((tag) => typeof tag === "string") ||
+        typeof summary !== "string" || typeof body !== "string" || !body.trim() ||
+        !preservesLiterals(placeholderLiterals(source), placeholderLiterals(body)) ||
+        !preservesLiterals(executionLiterals(source), executionLiterals(body))) {
+      return undefined;
+    }
     const suggestions = Array.isArray(parsed.suggestions)
       ? [...new Set(parsed.suggestions.flatMap((item) =>
         typeof item === "string" && item.trim() ? [item.trim()] : [],
@@ -41,11 +40,10 @@ export function parseRefineResult(text: string): AiRefineResult | undefined {
       : [];
     return {
       ...(suggestions.length ? { suggestions } : {}),
-      title: typeof parsed.title === "string" ? parsed.title.trim() : "",
-      // 词库只支持单个标签，这里直接归一为单个，避免调用方各自处理
-      tags: tags.slice(0, 1),
-      summary: typeof parsed.summary === "string" ? parsed.summary.trim() : "",
-      body,
+      title: title.trim(),
+      tags: tags.map((tag) => tag.trim()).filter(Boolean).slice(0, 1),
+      summary: summary.trim(),
+      body: body.trim(),
     };
   } catch {
     return undefined;

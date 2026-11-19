@@ -199,7 +199,7 @@ test("检查、增强和起草对所有候选使用 180 秒上限，并扣除已
   const settings = { aiProvider: "preferred", aiModel: "fake-chat" };
   const scenarios = [
     [() => ai.checkPromptCore(body, settings), { findings: [] }, 180_000, 35_000],
-    [() => ai.refinePromptCore(body, settings), { title: "起草", body }, 0, 180_000],
+    [() => ai.refinePromptCore(body, settings), { title: "起草", tags: [], summary: "", body }, 0, 180_000],
     [() => ai.draftPromptCore({ idea: body, answers: [] }, settings),
       { kind: "draft", body, assumptions: [] }, 180_000, 35_000],
   ];
@@ -679,9 +679,10 @@ test("信封 error.message：普通 node --test 进程（非 dev 构建）不下
 });
 
 test("增强模板从路由返回独立建议，忽略无效条目并去重", async () => {
-  const body = "检查 {{提交范围}}。等我确认后才提交。";
+  const body = "检查 {{提交范围}}。等待确认后提交。";
   ai.registerLlm(fakeRuntime([[
-    JSON.stringify({ body, suggestions: [" 回报提交哈希。 ", null, "", "回报提交哈希。"] }),
+    JSON.stringify({ title: "检查提交范围", tags: ["Git"], summary: "审查提交", body,
+      suggestions: [" 回报提交哈希。 ", null, "", "回报提交哈希。"] }),
     { type: "finish", reason: { kind: "stop" } },
   ]]));
   const result = await dispatch("POST", "/ai/refine", { body: "检查 Git 改动，等待确认后提交。" });
