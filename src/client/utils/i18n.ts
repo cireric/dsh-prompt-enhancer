@@ -248,7 +248,7 @@ export const zh = {
   "error.delete": "删除失败",
   "error.rollbackNoSource": "该提示词没有可切换的原文",
   // ── P6 T5：导入导出（D5 / §4.3）────────────────────────────────────────
-  "transfer.tooLarge": "备份文件过大（超过 5 MB），未导入",
+  "transfer.tooLarge": "备份文件或导入请求超过 5 MiB，未导入",
   "transfer.badJson": "备份文件不是合法的 JSON",
   "manager.transfer.export": "导出备份",
   "manager.transfer.exporting": "正在导出…",
@@ -587,7 +587,7 @@ export const en: Record<keyof typeof zh, string> = {
   "error.delete": "Failed to delete",
   "error.rollbackNoSource": "This prompt has no original to toggle",
   // ── P6 T5: import / export (D5 / 4.3)────────────────────────────────────
-  "transfer.tooLarge": "The backup file is too large (over 5 MB) and was not imported",
+  "transfer.tooLarge": "The backup file or import request exceeds 5 MiB. Import was cancelled.",
   "transfer.badJson": "The backup file is not valid JSON",
   "manager.transfer.export": "Export backup",
   "manager.transfer.exporting": "Exporting…",

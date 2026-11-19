@@ -10,8 +10,7 @@
  *     （文件名由宿主生成，客户端不能指定）→ 显示宿主返回的 `path` 与条数；失败行内红色原文。
  *
  *   · **导入**：**React 渲染**的隐藏 `<input type="file">`（不是 `document.createElement` +
- *     `appendChild` 那种 DOM 注入）→ `file.text()` → `parseBackupFile`（客户端独有的两道闸：
- *     体积 / JSON 解析，见 utils/transfer.ts）→ `api.importBackup(backup, false)` 取**宿主**预览
+ *     `appendChild` 那种 DOM 注入）→ `readBackupFile`（体积 / JSON 解析，见 utils/transfer.ts）→ `api.importBackup(backup, false)` 取**宿主**预览
  *     → 展示 `{added, overwritten, total}` + 一行「同 id 覆盖且不可撤销」→ 确认按钮
  *     → `api.importBackup(backup, true)` → `classifyImportResult` 判 `applied === true`
  *     （A9：宿主只回预览时**不得**渲染成「导入完成」）→ `notifyDataChanged()`。
@@ -35,7 +34,7 @@ import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import {
   classifyImportResult,
   clearOverwrittenMetaDetached,
-  parseBackupFile,
+  readBackupFile,
   readExistingPromptIds,
 } from "../utils/transfer.ts";
 import { deletePrompts } from "../utils/prompt-meta.ts";
@@ -118,16 +117,14 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
     setBusy("reading");
     void (async () => {
       try {
-        let text: string;
+        let parsed;
         try {
-          text = await file.text();
+          parsed = await readBackupFile(file);
         } catch (err) {
           console.warn("[prompt-enhancer] 读取所选备份文件失败", err);
           if (aliveRef.current) setFailure({ key: "manager.transfer.readFailed", detail: reasonOf(err) });
           return;
         }
-        // 客户端独有的两道闸（体积 / JSON 解析）；信封判定归宿主，见文件头。
-        const parsed = parseBackupFile(text, file.size);
         if (!parsed.ok) {
           if (aliveRef.current) setFailure({ key: parsed.errorKey, detail: parsed.detail });
           return;

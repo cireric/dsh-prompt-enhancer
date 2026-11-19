@@ -24,6 +24,7 @@ import {
   BACKUP_VERSION,
   SCHEMA_VERSION,
   clampTitle,
+  isNonnegativeSafeInteger,
   type ImportResult,
   type ImportStats,
   type ListPromptsOptions,
@@ -76,7 +77,11 @@ let db: DatabaseSync | undefined;
  * 因此上游那个「迁移 fire-and-forget + 播种在前」的顺序缺陷在本项目结构上不可能发生。
  * v2 起承担真实迁移：见 `migrateTrashSkillColumns`。
  */
-const MIGRATIONS: Array<(cur: DatabaseSync) => void> = [migrateTrashSkillColumns, migrateTemplateVariables];
+const MIGRATIONS: Array<(cur: DatabaseSync) => void> = [
+  migrateTrashSkillColumns,
+  migrateTemplateVariables,
+  migrateBackupIntegers,
+];
 
 /**
  * v1 → v2：回收站补 `skillName` / `skillExportedAt` 两列。
@@ -104,6 +109,19 @@ function migrateTemplateVariables(cur: DatabaseSync): void {
     const columns = cur.prepare(`PRAGMA table_info(${table})`).all();
     if (!columns.some((column) => column.name === "variables")) {
       cur.exec(`ALTER TABLE ${table} ADD COLUMN variables TEXT`);
+    }
+  }
+}
+
+/** v4：早期导入允许越界整数和小数，修复后保留提示词、标签和回收站原有内容。 */
+function migrateBackupIntegers(cur: DatabaseSync): void {
+  const promptColumns = ["aiRefinedAt", "createdAt", "updatedAt", "usageCount", "lastUsedAt", "skillExportedAt"];
+  for (const [table, columns] of Object.entries({ prompts: promptColumns, trash: promptColumns, tags: ["createdAt"] })) {
+    for (const col of columns) {
+      cur.exec(`
+        UPDATE ${table} SET ${col} = CAST(MIN(MAX(${col}, 0), ${Number.MAX_SAFE_INTEGER}) AS INTEGER)
+        WHERE typeof(${col}) <> 'integer' OR ${col} < 0 OR ${col} > ${Number.MAX_SAFE_INTEGER}
+      `);
     }
   }
 }
@@ -537,8 +555,10 @@ export function recordUsage(id: string): Prompt | undefined {
   const existing = selectPrompt(id);
   if (!existing) return undefined;
   const now = Date.now();
-  cur.prepare("UPDATE prompts SET usageCount = usageCount + 1, lastUsedAt = ? WHERE id = ?").run(now, id);
-  return { ...existing, usageCount: existing.usageCount + 1, lastUsedAt: now };
+  const maxCount = Number.MAX_SAFE_INTEGER;
+  cur.prepare("UPDATE prompts SET usageCount = MIN(usageCount + 1, ?), lastUsedAt = ? WHERE id = ?")
+    .run(maxCount, now, id);
+  return { ...existing, usageCount: Math.min(existing.usageCount + 1, maxCount), lastUsedAt: now };
 }
 
 /** 软删除：整行搬进回收站，**含** skill 两列（规格 §13.5 补列后，恢复不再丢导出记录）。 */
@@ -731,17 +751,25 @@ function validateBackup(input: unknown): { ok: true; value: ValidatedBackup } | 
   if (!Array.isArray(raw.prompts)) return { ok: false, error: "备份缺少 prompts 数组" };
 
   const prompts: Prompt[] = [];
+  const ids = new Set<string>();
   for (const [index, item] of raw.prompts.entries()) {
     if (typeof item !== "object" || item === null) return { ok: false, error: `第 ${index + 1} 条不是对象` };
     const e = item as Record<string, unknown>;
     if (typeof e.id !== "string" || !e.id) return { ok: false, error: `第 ${index + 1} 条缺少 id` };
+    if (ids.has(e.id)) return { ok: false, error: `第 ${index + 1} 条含重复的提示词 id：${e.id}` };
+    ids.add(e.id);
     if (typeof e.body !== "string") return { ok: false, error: `第 ${index + 1} 条缺少 body` };
     const variables = readTemplateVariables(e.variables);
     if (e.variables !== undefined && !variables) {
       return { ok: false, error: `第 ${index + 1} 条变量配置无效` };
     }
-    const updatedAt = numberOr(e.updatedAt, 0);
-    const createdAt = numberOr(e.createdAt, updatedAt);
+    const { updatedAt = 0, createdAt = updatedAt, aiRefinedAt = 0, usageCount = 0, lastUsedAt = 0, skillExportedAt = 0 } = e;
+    const numbers = { updatedAt, createdAt, aiRefinedAt, usageCount, lastUsedAt, skillExportedAt };
+    for (const [field, value] of Object.entries(numbers)) {
+      if (!isNonnegativeSafeInteger(value)) {
+        return { ok: false, error: `第 ${index + 1} 条的 ${field} 必须是非负安全整数` };
+      }
+    }
     prompts.push({
       id: e.id,
       title: typeof e.title === "string" ? clampTitle(e.title) : "",
@@ -751,13 +779,8 @@ function validateBackup(input: unknown): { ok: true; value: ValidatedBackup } | 
       ...(variables?.length ? { variables } : {}),
       sourceBody: typeof e.sourceBody === "string" ? e.sourceBody : undefined,
       aiRefined: e.aiRefined === true || e.aiRefined === 1,
-      aiRefinedAt: numberOr(e.aiRefinedAt, 0),
-      createdAt,
-      updatedAt,
-      usageCount: numberOr(e.usageCount, 0),
-      lastUsedAt: numberOr(e.lastUsedAt, 0),
+      ...(numbers as Record<keyof typeof numbers, number>),
       skillName: typeof e.skillName === "string" ? e.skillName : undefined,
-      skillExportedAt: numberOr(e.skillExportedAt, 0),
     });
   }
 
@@ -767,16 +790,16 @@ function validateBackup(input: unknown): { ok: true; value: ValidatedBackup } | 
       if (typeof item !== "object" || item === null) continue;
       const t = item as Record<string, unknown>;
       if (typeof t.name === "string" && t.name.trim()) {
-        tags.push({ name: t.name.trim(), createdAt: numberOr(t.createdAt, Date.now()) });
+        const { createdAt = Date.now() } = t;
+        if (!isNonnegativeSafeInteger(createdAt)) {
+          return { ok: false, error: `标签 ${t.name.trim()} 的 createdAt 必须是非负安全整数` };
+        }
+        tags.push({ name: t.name.trim(), createdAt });
       }
     }
   }
 
   return { ok: true, value: { prompts, tags } };
-}
-
-function numberOr(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 /**

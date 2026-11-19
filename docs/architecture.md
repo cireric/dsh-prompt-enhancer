@@ -54,7 +54,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 | 不变量 | 内容 | 出处 |
 |---|---|---|
-| schema 演进 | `SCHEMA_VERSION = 3` + `MIGRATIONS` 数组，迁移**幂等**（先探测再 ALTER，不允许「失败就吞」） | `src/types.ts:15`、`src/host/store.ts:76` |
+| schema 演进 | `SCHEMA_VERSION = 4` + `MIGRATIONS` 数组，迁移**幂等**。v4 将旧库中的异常计数和时间戳修复到非负安全整数范围，保留条目内容 | `src/types.ts:15`、`src/host/store.ts:76` |
 | 存储层解耦 | `store.ts` **不 import 任何宿主能力**（cordis/服务），故可脱离 `dsh` 单测 | 硬约束 12 |
 | 测试隔离 | 靠环境变量把 `DSH_HOME` 指向临时目录，**不加 test-only API**；`paths.ts` 全部调用期求值 | 硬约束 13 |
 | 回滚语义 | `sourceBody` 存 AI 优化前原文，`POST /prompts/:id/rollback` 执行 **swap(body, sourceBody)**，可反复点 | `store.ts:560-568` |
@@ -126,7 +126,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D2 | 持续优化 = AI 优化 + 使用统计 + 可回滚；**不引入版本历史表** | 本文 §1、§3 |
 | D3 | 沉淀 = 手动三入口；**无自学习/自动捕获**（上游的自动捕获是死代码） | 本文 §1 |
 | D4 | 实现路线：移植 host 存储层 + 通用组件 + 模板变量 + AI 模块，重写巨型弹窗，**只用官方插槽** | 本文 §2、`AGENTS.md` 硬约束 3 |
-| D5 | 导入走浏览器 `<input type=file>` 客户端读文件；导出走 `workspaces.pickDirectory()` + `POST /export/save`；**不自建 `/fs/*` 路由** | 本文 §4.1 |
+| D5 | 导入走浏览器 `<input type=file>` 客户端读文件；导出走 `workspaces.pickDirectory()` 和 `POST /export/save`。文件及带封装的导入请求各限 5 MiB。导出成功时保证可通过正常入口导入。超限在写盘前报错，成功文件使用唯一文件名并独占创建。 | 本文 §4.1 |
 | D6 | 数据变更同步用**同进程 window 事件**，无 WebSocket（上游的 WS 通道 emit 零调用点，已死） | 本文 §2 |
 | D7 | 命名空间：包 `dsh-prompt-enhancer` / HTTP `/api/prompt-enhancer` / i18n `prompt-enhancer` / 数据 `$DSH_HOME/prompt-enhancer/` | 本文 §2、§3 |
 | D8 | 技能导出**单向**：写 `$DSH_HOME/skills/<name>/SKILL.md` + 过期徽标 + 一键重导；**不做反向导入、不做活同步、不做项目级技能根** | 本文 §4.1（`/skills/export`） |

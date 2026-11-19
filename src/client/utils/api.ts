@@ -1,3 +1,4 @@
+import { makeImportRequest } from "../../backup-transfer.ts";
 import type { AiRefineResult } from "../../host/refine.ts";
 import {
   API_PREFIX,
@@ -293,7 +294,7 @@ export const api = {
    * confirm 缺省时不发该键（宿主同判为未确认），调用方显式传 true 才落库。
    */
   importBackup: (backup: unknown, confirm?: boolean) =>
-    call<ImportResult>("POST", "/import", { backup, confirm }),
+    call<ImportResult>("POST", "/import", makeImportRequest(backup, confirm)),
   /** 把备份写到宿主可写的绝对路径目录；文件名由服务端生成（客户端不能指定任意文件名）。 */
   exportBackup: (dir: string) =>
     call<{ path: string; prompts: number; tags: number }>("POST", "/export/save", { dir }),

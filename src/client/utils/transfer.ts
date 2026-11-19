@@ -2,8 +2,7 @@
  * 导入文件的**客户端独有**两道闸（R14 修订版，T5）——除此外客户端不做任何信封校验。
  *
  * 为什么只有这两条：
- *   · **体积闸**（`byteLength > MAX_BACKUP_BYTES`）：超大文件不该先被读进内存再解析；
- *     这个上界只有客户端有（浏览器的 `File.size`），宿主拿不到。
+ *   · **体积闸**：读取前检查文件字节数，解析后检查包含外层信封的请求字节数。
  *   · **`JSON.parse` 失败分类**：解析器错误必须转成可读文案，而不是把 `SyntaxError` 抛给 UI。
  *
  * **不在这里做**（R14 修订版 / 约束 C）：`version` 是否为 1、`prompts` 是否为数组、元素是否缺
@@ -13,11 +12,12 @@
  * 纯模块（无 React、无 DOM、无 fetch）：`node --test` 直接删 import 源码即可测。
  */
 
+import { IMPORT_REQUEST_OVERHEAD, MAX_REQUEST_BODY_BYTES } from "../../backup-transfer.ts";
 import type { ImportResult } from "../../types.ts";
 import { reasonOf } from "../../err-text.ts";
 
 /** 备份文件体积上限（5 MiB，字节）。与 `File.size` 同单位（字节，不是字符数）。 */
-export const MAX_BACKUP_BYTES = 5 * 1024 * 1024;
+export const MAX_BACKUP_BYTES = MAX_REQUEST_BODY_BYTES;
 
 /**
  * 两道闸的判定结果：
@@ -31,28 +31,31 @@ export type BackupParse =
   | { ok: true; backup: unknown }
   | { ok: false; errorKey: "transfer.tooLarge" | "transfer.badJson"; detail: string };
 
-/**
- * 只做两道闸：先体积、后解析（顺序不可换——超限文件不该被解析）。
- * `byteLength` 由调用方给 `file.size`（字节）；边界取 `>`，即**恰好等于上限放行**。
- */
+function checkSize(byteLength: number): Extract<BackupParse, { ok: false }> | undefined {
+  if (byteLength <= MAX_BACKUP_BYTES) return undefined;
+  return {
+    ok: false,
+    errorKey: "transfer.tooLarge",
+    detail: `${byteLength}/${MAX_BACKUP_BYTES}`,
+  };
+}
+
+export async function readBackupFile(file: Pick<File, "size" | "text">): Promise<BackupParse> {
+  return checkSize(file.size) ?? parseBackupFile(await file.text(), file.size);
+}
+
+/** 旧备份可含排版空白，请求按解析后的紧凑 JSON 计量。 */
 export function parseBackupFile(text: string, byteLength: number): BackupParse {
-  if (byteLength > MAX_BACKUP_BYTES) {
-    return {
-      ok: false,
-      errorKey: "transfer.tooLarge",
-      // 纯数据（实际值/上限），措辞在 i18n 的 transfer.tooLarge（A10）。
-      detail: `${byteLength}/${MAX_BACKUP_BYTES}`,
-    };
-  }
+  const oversized = checkSize(byteLength);
+  if (oversized) return oversized;
+  let backup: unknown;
   try {
-    return { ok: true, backup: JSON.parse(text) };
+    backup = JSON.parse(text);
   } catch (err) {
-    return {
-      ok: false,
-      errorKey: "transfer.badJson",
-      detail: reasonOf(err),
-    };
+    return { ok: false, errorKey: "transfer.badJson", detail: reasonOf(err) };
   }
+  const bytes = new TextEncoder().encode(JSON.stringify(backup)).byteLength + IMPORT_REQUEST_OVERHEAD;
+  return checkSize(bytes) ?? { ok: true, backup };
 }
 
 /**

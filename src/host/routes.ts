@@ -18,7 +18,8 @@
  * 状态码：400 参数错误 / 403 跨源写入被拒（见 isCrossSiteWrite）/ 404 未找到 / 409 同名冲突需确认 /
  * 503 AI 或设置服务不可用 / 500 未预期异常。
  */
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, openSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, join } from "node:path";
 import * as ai from "./ai.ts";
@@ -30,7 +31,8 @@ import { clearRouteCache } from "./ai.ts";
 import { getSettings, isSettingsAvailable, updateSettings } from "./settings.ts";
 import { safeErrorCode, startReviewTrace, type ReviewTrace } from "./review-trace.ts";
 import { readTemplateVariables } from "../template-variables.ts";
-import { API_PREFIX, type PromptSort, type PromptWritablePatch } from "../types.ts";
+import { IMPORT_REQUEST_OVERHEAD, MAX_REQUEST_BODY_BYTES } from "../backup-transfer.ts";
+import { API_PREFIX, isNonnegativeSafeInteger, type PromptSort, type PromptWritablePatch } from "../types.ts";
 
 /** 路由注册对象（与 `@deepseek-ai/dsh-host-webserver` 的 `WebRoute` 对齐）。 */
 export interface PromptEnhancerRoute {
@@ -81,9 +83,6 @@ function devMessage(detail: string): string | undefined {
   return __DEV__ ? detail : undefined;
 }
 
-/** 请求体体积上限（5 MB）：提示词正文与导入备份都远小于此；防超大 POST 打满宿主进程内存。 */
-const MAX_BODY_BYTES = 5 * 1024 * 1024;
-
 /** 解析已读满的请求体；空体按空对象处理（GET 语义的 POST 也照旧）。 */
 function parseJsonBody(raw: string): Record<string, unknown> {
   if (!raw) return {};
@@ -100,7 +99,7 @@ function parseJsonBody(raw: string): Record<string, unknown> {
 }
 
 /**
- * 读请求体（上限 {@link MAX_BODY_BYTES}）。
+ * 读请求体（上限 {@link MAX_REQUEST_BODY_BYTES}）。
  *
  * ⚠️ 超限时**不得**先 `req.destroy()`：`IncomingMessage.destroy()` 会连底层 socket 一起拆掉，
  * 响应还没写出去客户端只会拿到 `TypeError: fetch failed (cause: EPIPE)`——文档承诺的 400 信封
@@ -126,12 +125,12 @@ function readBody(req: IncomingMessage, res: ServerResponse): Promise<Record<str
       if (settled) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
       total += buf.length;
-      if (total > MAX_BODY_BYTES) {
+      if (total > MAX_REQUEST_BODY_BYTES) {
         settled = true;
         cleanup();
         req.pause();
         res.setHeader("Connection", "close");
-        reject(new BadRequest("请求体超过上限（" + MAX_BODY_BYTES + " 字节）"));
+        reject(new BadRequest("请求体超过上限（" + MAX_REQUEST_BODY_BYTES + " 字节）"));
         return;
       }
       chunks.push(buf);
@@ -200,14 +199,6 @@ function asStringArray(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : undefined;
 }
 
-/**
- * 有限数字才收：typeof NaN === "number" 为真，须用 Number.isFinite 显式排除 NaN/Infinity
- * ——否则直进 SQL 绑定，要么抛错变意外 500，要么落 NULL 被 ?? 0 静默归零。
- */
-function asFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function segments(pathname: string): string[] {
   return pathname
     .slice(API_PREFIX.length)
@@ -220,6 +211,25 @@ function segments(pathname: string): string[] {
         return s;
       }
     });
+}
+
+/** 独占创建，写盘失败时只清理本次创建的文件。 */
+function writeNewBackup(target: string, contents: string): void {
+  const fd = openSync(target, "wx");
+  try {
+    try {
+      writeFileSync(fd, contents, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    try {
+      unlinkSync(target);
+    } catch (cleanupError) {
+      console.warn("[prompt-enhancer] 未能清理写入失败的备份文件：" + target, cleanupError);
+    }
+    throw error;
+  }
 }
 
 /** 导出文件名用的时间戳（本地时区）。 */
@@ -344,9 +354,10 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       if (body.variables !== undefined) patch.variables = requestVariables(body.variables);
       if (body.skillName !== undefined) patch.skillName = asString(body.skillName);
       if (body.skillExportedAt !== undefined) {
-        const at = asFiniteNumber(body.skillExportedAt);
-        if (at === undefined) return fail(res, 400, "skillExportedAt 必须是有限数字");
-        patch.skillExportedAt = at;
+        if (!isNonnegativeSafeInteger(body.skillExportedAt)) {
+          return fail(res, 400, "skillExportedAt 必须是非负安全整数");
+        }
+        patch.skillExportedAt = body.skillExportedAt;
       }
       const updated = store.updatePrompt(id, patch, { aiWriteBack: body.aiWriteBack === true });
       return updated ? ok(res, updated) : fail(res, 404, "提示词不存在");
@@ -600,10 +611,15 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       if (!existsSync(dir) || !statSync(dir).isDirectory()) return fail(res, 400, "dir 不存在或不是目录");
 
       const backup = store.exportPrompts();
-      // 文件名由服务端生成：不让客户端指定任意路径，也顺带避免覆盖同名文件
-      const target = join(dir, `prompt-enhancer-backup-${stamp()}.json`);
+      const compact = JSON.stringify(backup);
+      if (Buffer.byteLength(compact) + IMPORT_REQUEST_OVERHEAD > MAX_REQUEST_BODY_BYTES) {
+        return fail(res, 400, `备份超过导入请求体上限（${MAX_REQUEST_BODY_BYTES} 字节），未写入文件`);
+      }
+      const pretty = JSON.stringify(backup, null, 2) + "\n";
+      const contents = Buffer.byteLength(pretty) <= MAX_REQUEST_BODY_BYTES ? pretty : compact + "\n";
+      const target = join(dir, `prompt-enhancer-backup-${stamp()}-${randomUUID()}.json`);
       try {
-        writeFileSync(target, JSON.stringify(backup, null, 2) + "\n", "utf8");
+        writeNewBackup(target, contents);
       } catch (e) {
         return fail(res, 500, "写盘失败：" + String(e));
       }

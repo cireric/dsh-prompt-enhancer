@@ -1,5 +1,5 @@
 /**
- * 迁移单测：v1 → v3（回收站补 `skillName` / `skillExportedAt`，规格 §13.5）。
+ * 迁移单测：v1 → v4（回收站补 `skillName` / `skillExportedAt`，规格 §13.5）。
  *
  * 本文件**必须独立成进程**：它先手工造一个 v1 形状的库（trash 没有那两列），
  * 再让 store 的首次初始化去迁移它。若与 store.test.mjs 同进程，就造不出「旧库」前提。
@@ -71,7 +71,7 @@ test("v1 库首次初始化即自动补列，且原有数据无损", () => {
   assert.equal(all[0].usageCount, 3, "旧行的统计字段必须原样保留");
   assert.deepEqual(all[0].tags, ["老标签"]);
   assert.equal(all[0].skillExportedAt, 0, "旧行缺失的新列必须取默认值 0");
-  assert.equal(store.getMetaValue("schemaVersion"), "3", "迁移后 schemaVersion 必须升到 3");
+  assert.equal(store.getMetaValue("schemaVersion"), "4", "迁移后 schemaVersion 必须升到 4");
 
   const db = new DatabaseSync(file);
   try {

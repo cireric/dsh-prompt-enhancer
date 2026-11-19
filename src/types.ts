@@ -11,11 +11,16 @@ export const TITLE_MAX_LEN = 25;
 /** 提示词最大存储数量（超出时按规格 §4.4 的淘汰策略清理）。 */
 export const DEFAULT_MAX_PROMPT_COUNT = 300;
 
-/** 数据库 schema 版本，写入 meta 表。v3：提示词和回收站增加变量配置。 */
-export const SCHEMA_VERSION = 3;
+/** 数据库 schema 版本，写入 meta 表。v4：修复旧库中的无效整数。 */
+export const SCHEMA_VERSION = 4;
 
 /** 导入导出信封的版本号（与参考项目同构，见规格 §4.3）。 */
 export const BACKUP_VERSION = 1;
+
+/** SQLite 中按 JavaScript number 读取的计数与时间戳。 */
+export function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
 
 /** 唯一路由前缀：host 注册（routes.ts）与 client 调用（api.ts）共用，避免两处字面量漂移。 */
 export const API_PREFIX = "/api/prompt-enhancer";
