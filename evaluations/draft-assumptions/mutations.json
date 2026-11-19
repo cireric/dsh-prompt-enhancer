@@ -1,0 +1,49 @@
+{
+  "priorSurvivingMutation": "最初的 system 正则过宽，旧请求约束也能匹配；收紧为两条完整语义锚点后重跑。",
+  "runs": [
+    {
+      "file": "src/host/draft.ts",
+      "command": [
+        "node",
+        "--test",
+        "tests/draft-assumptions.test.mjs"
+      ],
+      "exitCode": 1,
+      "failureLines": [
+        "✖ 起草拒绝只存在于假设栏的执行默认值，不自动追加到正文 (1.172833ms)",
+        "✖ 假设须在模型正文中落实，不能靠待补材料自动追加而通过 (0.520875ms)",
+        "✖ 改写缺失正文假设时沿用诊断重试，原始需求、反馈和执行环境保持不变 (2.965958ms)",
+        "✖ 两轮仍未把假设写进正文时失败，不缓存不完整稿 (0.36975ms)",
+        "ℹ tests 4",
+        "ℹ pass 0",
+        "ℹ fail 4",
+        "✖ failing tests:",
+        "✖ 起草拒绝只存在于假设栏的执行默认值，不自动追加到正文 (1.172833ms)",
+        "✖ 假设须在模型正文中落实，不能靠待补材料自动追加而通过 (0.520875ms)",
+        "✖ 改写缺失正文假设时沿用诊断重试，原始需求、反馈和执行环境保持不变 (2.965958ms)",
+        "✖ 两轮仍未把假设写进正文时失败，不缓存不完整稿 (0.36975ms)"
+      ],
+      "diff": "--- src/host/draft.ts\n+++ src/host/draft.ts (mutated)\n@@ -66,7 +66,6 @@\n     if (!missingInputs || !toVerify) return undefined;\n     const body = result.body.trim();\n     // 假设引用正文原句；缺失时让模型整合，避免自动追加与正文冲突的默认值。\n-    if (assumptions.some((assumption) => !body.includes(assumption))) return undefined;\n     const missingSteps = [...new Set([...missingInputs, ...toVerify])].filter((step) => !body.includes(step));\n     return {\n       kind: \"draft\",\n"
+    },
+    {
+      "file": "src/host/ai.ts",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern",
+        "改写缺失正文假设",
+        "tests/draft-assumptions.test.mjs"
+      ],
+      "exitCode": 1,
+      "failureLines": [
+        "✖ 改写缺失正文假设时沿用诊断重试，原始需求、反馈和执行环境保持不变 (9.454917ms)",
+        "ℹ tests 1",
+        "ℹ pass 0",
+        "ℹ fail 1",
+        "✖ failing tests:",
+        "✖ 改写缺失正文假设时沿用诊断重试，原始需求、反馈和执行环境保持不变 (9.454917ms)"
+      ],
+      "diff": "--- src/host/ai.ts\n+++ src/host/ai.ts (mutated)\n@@ -750,7 +750,7 @@\n   \"当任务结论依赖外部事实或来源质量时，把相关核查写入正文。追溯关键主张的一手来源并核对原文是否支持结论，同源转载只算一次。核对来源的时间、版本、地区和适用条件。根据证据强度限定结论，区分个案、观察和因果证据。仅加入与任务有关且执行者能完成的核查。\",\n   \"比较、诊断和因果研究按判断的重要性设置证据深度。必要时要求用基线、替代解释或反例检验关键判断，核对来源的利益关系和样本局限，标明结论在什么条件下需要修正。缺少证据时说明判断条件和剩余未知。\",\n   \"交付前对照原始需求、澄清和已采用的反馈检查正文。检验一个合理的误读、边界或输入缺失情境，核对交付能否验收，修正不一致。只在任务需要时检查这些情境，输出修正后的正文。\",\n-  '出稿时只返回 JSON：{\"kind\":\"draft\",\"body\":\"完整提示词\",\"understanding\":\"一句话概括理解的目标和交付物\",\"assumptions\":[\"关键假设\"],\"missingInputs\":[\"执行前索取的具体材料或确认事项\"],\"toVerify\":[\"待核实步骤\"]}。assumptions、missingInputs 和 toVerify 没有对应项时用空数组。assumptions 引用正文中说明关键假设的原句，不另写同义说明。missingInputs 和 toVerify 写成执行者能采取的具体行动。assumptions、missingInputs 和 toVerify 的每条必须逐字包含在 body 中。',\n+  '出稿时只返回 JSON：{\"kind\":\"draft\",\"body\":\"完整提示词\",\"understanding\":\"一句话概括理解的目标和交付物\",\"assumptions\":[\"关键假设\"],\"missingInputs\":[\"执行前索取的具体材料或确认事项\"],\"toVerify\":[\"待核实步骤\"]}。assumptions、missingInputs 和 toVerify 没有对应项时用空数组。missingInputs 和 toVerify 写成执行者能采取的具体行动，每条必须逐字包含在 body 中。',\n ].join(\"\\n\");\n \n export async function draftPromptCore(\n"
+    }
+  ]
+}

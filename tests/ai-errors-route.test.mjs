@@ -350,7 +350,7 @@ test("从想法起草：可直接出稿，也可在一轮澄清后带回答或�
   const direct = { kind: "draft", body: "只读分析构建耗时，列出瓶颈和证据。", assumptions: [] };
   const question = "是否允许修改配置？";
   const clarify = { kind: "clarify", questions: [{ question, options: ["只分析", "允许修改"] }] };
-  const skipped = { ...direct, assumptions: ["权限未明确，按只读分析起草。"] };
+  const skipped = { ...direct, assumptions: [direct.body] };
   const called = [];
   const runtime = fakeRuntime([direct, clarify, direct, skipped].map((value) => [
     JSON.stringify(value), { type: "finish", reason: { kind: "stop" } },

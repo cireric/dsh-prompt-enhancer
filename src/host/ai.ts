@@ -750,7 +750,7 @@ const DRAFT_SYSTEM = [
   "当任务结论依赖外部事实或来源质量时，把相关核查写入正文。追溯关键主张的一手来源并核对原文是否支持结论，同源转载只算一次。核对来源的时间、版本、地区和适用条件。根据证据强度限定结论，区分个案、观察和因果证据。仅加入与任务有关且执行者能完成的核查。",
   "比较、诊断和因果研究按判断的重要性设置证据深度。必要时要求用基线、替代解释或反例检验关键判断，核对来源的利益关系和样本局限，标明结论在什么条件下需要修正。缺少证据时说明判断条件和剩余未知。",
   "交付前对照原始需求、澄清和已采用的反馈检查正文。检验一个合理的误读、边界或输入缺失情境，核对交付能否验收，修正不一致。只在任务需要时检查这些情境，输出修正后的正文。",
-  '出稿时只返回 JSON：{"kind":"draft","body":"完整提示词","understanding":"一句话概括理解的目标和交付物","assumptions":["关键假设"],"missingInputs":["执行前索取的具体材料或确认事项"],"toVerify":["待核实步骤"]}。assumptions、missingInputs 和 toVerify 没有对应项时用空数组。missingInputs 和 toVerify 写成执行者能采取的具体行动，每条必须逐字包含在 body 中。',
+  '出稿时只返回 JSON：{"kind":"draft","body":"完整提示词","understanding":"一句话概括理解的目标和交付物","assumptions":["关键假设"],"missingInputs":["执行前索取的具体材料或确认事项"],"toVerify":["待核实步骤"]}。assumptions、missingInputs 和 toVerify 没有对应项时用空数组。assumptions 引用正文中说明关键假设的原句，不另写同义说明。missingInputs 和 toVerify 写成执行者能采取的具体行动。assumptions、missingInputs 和 toVerify 的每条必须逐字包含在 body 中。',
 ].join("\n");
 
 export async function draftPromptCore(

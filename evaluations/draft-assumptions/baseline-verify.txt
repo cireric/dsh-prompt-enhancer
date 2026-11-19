@@ -1,0 +1,12 @@
+> tsc --noEmit
+> node --test
+ℹ tests 542
+ℹ suites 0
+ℹ pass 542
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+> node scripts/build.mjs
+> node scripts/smoke.mjs
+smoke: PASSED

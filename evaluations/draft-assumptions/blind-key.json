@@ -1,0 +1,38 @@
+{
+  "direct": {
+    "A": "candidate",
+    "B": "baseline"
+  },
+  "clarify": {
+    "A": "baseline",
+    "B": "candidate"
+  },
+  "missing-material": {
+    "A": "candidate",
+    "B": "baseline"
+  },
+  "skipped-permission": {
+    "A": "baseline",
+    "B": "candidate"
+  },
+  "external-evidence": {
+    "A": "candidate",
+    "B": "baseline"
+  },
+  "rewrite": {
+    "A": "baseline",
+    "B": "candidate"
+  },
+  "paraphrase": {
+    "A": "candidate",
+    "B": "baseline"
+  },
+  "holdout-csv": {
+    "A": "candidate",
+    "B": "baseline"
+  },
+  "holdout-conflict": {
+    "A": "candidate",
+    "B": "baseline"
+  }
+}

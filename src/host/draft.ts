@@ -65,6 +65,8 @@ export function parseDraftResult(text: string, canClarify: boolean): PromptDraft
     const toVerify = result.toVerify === undefined ? [] : readStrings(result.toVerify);
     if (!missingInputs || !toVerify) return undefined;
     const body = result.body.trim();
+    // 假设引用正文原句；缺失时让模型整合，避免自动追加与正文冲突的默认值。
+    if (assumptions.some((assumption) => !body.includes(assumption))) return undefined;
     const missingSteps = [...new Set([...missingInputs, ...toVerify])].filter((step) => !body.includes(step));
     return {
       kind: "draft",

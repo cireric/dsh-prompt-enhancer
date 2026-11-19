@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-19",
+  "timezone": "Asia/Shanghai",
+  "node": "v26.13.0",
+  "npm": "11.20.0",
+  "packages": {
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.3",
+    "typescript": "5.9.3",
+    "esbuild": "0.28.2"
+  },
+  "noNetwork": true,
+  "realModelCalls": 0,
+  "downstreamModelCalls": 0
+}
