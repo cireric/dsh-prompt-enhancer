@@ -193,6 +193,7 @@ export const zh = {
   "manager.compare.current": "当前正文",
   "manager.compare.counterpart": "另一份",
   "manager.compare.toggle": "互换两份正文",
+  "manager.compare.saveBeforeToggle": "请先保存修改，再互换正文。",
   "manager.compare.toggling": "正在互换…",
   "manager.compare.unknownDirection": "宿主不记录哪一份是原文，这里只并列两份正文；互换后两份对调。",
   // P7 T4（I-1 根治）：方向已按提示词持久化（pl:refined-dir:<id>），已知方向时如实标注。
@@ -532,6 +533,7 @@ export const en: Record<keyof typeof zh, string> = {
   "manager.compare.current": "Current body",
   "manager.compare.counterpart": "The other body",
   "manager.compare.toggle": "Swap the two bodies",
+  "manager.compare.saveBeforeToggle": "Save your changes before swapping the bodies.",
   "manager.compare.toggling": "Swapping…",
   "manager.compare.unknownDirection": "The host does not record which body is the original, so both are shown side by side; swapping exchanges them.",
   // P7 T4 (root fix for I-1): the direction is persisted per prompt (pl:refined-dir:<id>), so a known direction is labelled as such.

@@ -32,7 +32,7 @@ import { getSettings, isSettingsAvailable, updateSettings } from "./settings.ts"
 import { safeErrorCode, startReviewTrace, type ReviewTrace } from "./review-trace.ts";
 import { readTemplateVariables } from "../template-variables.ts";
 import { IMPORT_REQUEST_OVERHEAD, MAX_REQUEST_BODY_BYTES } from "../backup-transfer.ts";
-import { API_PREFIX, isNonnegativeSafeInteger, type PromptSort, type PromptWritablePatch } from "../types.ts";
+import { API_PREFIX, isNonnegativeSafeInteger, type Prompt, type PromptSort, type PromptWritablePatch } from "../types.ts";
 
 /** 路由注册对象（与 `@deepseek-ai/dsh-host-webserver` 的 `WebRoute` 对齐）。 */
 export interface PromptEnhancerRoute {
@@ -43,6 +43,16 @@ export interface PromptEnhancerRoute {
 
 /** 请求体不是合法 JSON / 参数缺失时抛出，由分发层映射成 400。 */
 class BadRequest extends Error {}
+
+function requestVersion(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^[a-f\d]{64}$/.test(value)) throw new BadRequest("contentVersion 无效");
+  return value;
+}
+
+function versioned(prompt: Prompt): Prompt {
+  return { ...prompt, contentVersion: store.promptContentVersion(prompt) };
+}
 
 function requestVariables(value: unknown) {
   if (value === undefined) return undefined;
@@ -297,7 +307,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
         q: url.searchParams.get("q") ?? undefined,
         tag: url.searchParams.get("tag") ?? undefined,
         sort: sort as PromptSort | undefined,
-      }));
+      }).map(versioned));
     },
   },
   {
@@ -308,19 +318,21 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       const body = await readBody(req, res);
       const text = asString(body.body);
       if (!text) return fail(res, 400, "缺少 body");
-      const created = store.createPrompt({
+      const rawApproved = body.approvedEvictions;
+      const approvedEvictions = asStringArray(rawApproved);
+      if (rawApproved !== undefined && (!Array.isArray(rawApproved) || approvedEvictions?.length !== rawApproved.length)) {
+        return fail(res, 400, "approvedEvictions 必须是字符串数组");
+      }
+      const created = store.createPromptWithEvictions({
         title: asString(body.title) ?? "",
         body: text,
         tags: asStringArray(body.tags),
         summary: asString(body.summary),
         variables: requestVariables(body.variables),
-      });
-      // 超限淘汰按设置里的上限（上限不在 store 内读取：store 保持纯模块）。
-      // R45：把刚创建的那条豁免出去——落库次序是「先 createPrompt 再淘汰」，新项的键
-      // (aiRefined=false, lastUsedAt=0) 是候选最小元，不豁免就会把刚保存的那条物理删除，
-      // 而客户端的二次确认只看得见插入前的集合（D-1：确认框撒谎 + 刚保存的记录被静默销毁）。
-      const evicted = store.enforceMaxCount(getSettings().maxPromptCount, { exceptId: created.id });
-      return ok(res, { prompt: created, evicted });
+      }, getSettings().maxPromptCount, approvedEvictions ?? []);
+      return created
+        ? ok(res, { ...created, prompt: versioned(created.prompt) })
+        : fail(res, 409, "待淘汰的提示词已变化，请重试并重新确认");
     },
   },
   {
@@ -329,7 +341,7 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     match: shape("prompts", null),
     handle: ({ res, seg }) => {
       const found = store.getPrompt(seg[1]!);
-      return found ? ok(res, found) : fail(res, 404, "提示词不存在");
+      return found ? ok(res, versioned(found)) : fail(res, 404, "提示词不存在");
     },
   },
   {
@@ -359,8 +371,11 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
         }
         patch.skillExportedAt = body.skillExportedAt;
       }
-      const updated = store.updatePrompt(id, patch, { aiWriteBack: body.aiWriteBack === true });
-      return updated ? ok(res, updated) : fail(res, 404, "提示词不存在");
+      const updated = store.updatePrompt(id, patch, {
+        aiWriteBack: body.aiWriteBack === true,
+        contentVersion: requestVersion(body.contentVersion),
+      });
+      return updated ? ok(res, versioned(updated)) : fail(res, 404, "提示词不存在");
     },
   },
   {
@@ -376,21 +391,22 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     match: shape("prompts", null, "use"),
     handle: ({ res, seg }) => {
       const used = store.recordUsage(seg[1]!);
-      return used ? ok(res, used) : fail(res, 404, "提示词不存在");
+      return used ? ok(res, versioned(used)) : fail(res, 404, "提示词不存在");
     },
   },
   {
     method: "POST",
     pattern: "POST /prompts/:id/rollback",
     match: shape("prompts", null, "rollback"),
-    handle: ({ res, seg }) => {
-      const result = store.rollbackPrompt(seg[1]!);
+    handle: async ({ req, res, seg }) => {
+      const body = await readBody(req, res);
+      const result = store.rollbackPrompt(seg[1]!, requestVersion(body.contentVersion));
       if (!result.ok) {
         return result.error === "提示词不存在"
           ? fail(res, 404, result.error)
           : fail(res, 400, result.error ?? "回滚失败");
       }
-      return ok(res, result.prompt);
+      return ok(res, versioned(result.prompt));
     },
   },
 
@@ -778,6 +794,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
   } catch (e) {
     if (requestCancellation?.signal.aborted) return;
     if (e instanceof BadRequest) return fail(res, 400, e.message);
+    if (e instanceof store.PromptConflict) return fail(res, 409, e.message);
     if (trace) trace("request-threw", { code: safeErrorCode(e) });
     else console.error("[prompt-enhancer] 未预期错误 " + method + " " + url.pathname, e);
     return fail(res, 500, "internal error");

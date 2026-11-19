@@ -10,14 +10,14 @@
  *   「建表 → 索引 → 迁移 → 标签同步 → 播种」，全部同步完成（P2-D5）。
  * - 错误处理：可恢复的数据异常走 `console.warn`（可见），不可恢复的写失败**重抛**。
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { createDatabase } from "./node-sqlite.ts";
 import { readTemplateVariables } from "../template-variables.ts";
 import { dbPath } from "./paths.ts";
-import { compareEvictionOrder } from "../eviction-order.ts";
+import { selectEvictions } from "../eviction-order.ts";
 import { matchRank, normalizeQuery } from "../search-match.ts";
 import { normalizeTagName, normalizeTags } from "../tags.ts";
 import {
@@ -337,6 +337,20 @@ function seedDefaultPromptIfEmpty(cur: DatabaseSync): void {
 
 // ── 行读写（内部）──────────────────────────────────────────────────────────
 
+export class PromptConflict extends Error {}
+
+export function promptContentVersion(prompt: Prompt): string {
+  return createHash("sha256").update(JSON.stringify([
+    prompt.title, prompt.body, prompt.tags, prompt.summary, prompt.variables, prompt.sourceBody,
+  ])).digest("hex");
+}
+
+function assertPromptVersion(prompt: Prompt, expected: string | undefined): void {
+  if (expected !== undefined && expected !== promptContentVersion(prompt)) {
+    throw new PromptConflict("提示词已在别处修改，请保留当前输入并重新打开条目核对");
+  }
+}
+
 const PROMPT_COLUMNS = "id, title, body, tags, summary, sourceBody, aiRefined, aiRefinedAt, createdAt, updatedAt, usageCount, lastUsedAt, skillName, skillExportedAt, variables";
 
 function selectAllPrompts(): PromptRow[] {
@@ -497,6 +511,21 @@ export function createPrompt(input: PromptInput): Prompt {
   return prompt;
 }
 
+/** Check the approved set under the same transaction that creates and evicts. */
+export function createPromptWithEvictions(
+  input: PromptInput, maxCount: number, approvedEvictions: readonly string[],
+): { prompt: Prompt; evicted: string[] } | undefined {
+  const cur = getDb();
+  return inTransaction(cur, () => {
+    const existing = selectAllPrompts().map(rowToPrompt);
+    const victims = selectEvictions(existing, existing.length + 1 - maxCount);
+    const approved = new Set(approvedEvictions);
+    if (victims.length !== approved.size || victims.some(({ id }) => !approved.has(id))) return undefined;
+    const prompt = createPrompt(input);
+    return { prompt, evicted: deleteEvictionVictims(cur, victims) };
+  });
+}
+
 /**
  * 更新。`options.aiWriteBack` 为 true 时按规格 §4.4 回填 AI 优化前原文（P2-D12）：
  * store 无法自行分辨「AI 写回」与用户手工编辑，必须由调用方显式声明。
@@ -504,11 +533,19 @@ export function createPrompt(input: PromptInput): Prompt {
 export function updatePrompt(
   id: string,
   patch: PromptInternalPatch,
-  options: { aiWriteBack?: boolean } = {},
+  options: { aiWriteBack?: boolean; contentVersion?: string } = {},
 ): Prompt | undefined {
   const cur = getDb();
+  return inTransaction(cur, () => updateStoredPrompt(cur, id, patch, options));
+}
+
+function updateStoredPrompt(
+  cur: DatabaseSync, id: string, patch: PromptInternalPatch,
+  options: { aiWriteBack?: boolean; contentVersion?: string },
+): Prompt | undefined {
   const existing = selectPrompt(id);
   if (!existing) return undefined;
+  assertPromptVersion(existing, options.contentVersion);
 
   const next: Prompt = { ...existing };
   let contentChanged = false;
@@ -536,7 +573,10 @@ export function updatePrompt(
     next.summary = patch.summary;
     contentChanged = true;
   }
-  if (patch.variables !== undefined) next.variables = patch.variables.length ? patch.variables : undefined;
+  if (patch.variables !== undefined) {
+    next.variables = patch.variables.length ? patch.variables : undefined;
+    contentChanged = true;
+  }
   // AI 三字段（sourceBody/aiRefined/aiRefinedAt）不在此接受：唯一写入者是
   // aiWriteBack:true 的内部派生（上方 503-507 行），§13.8-决定四 / §13.13。
   if (patch.skillName !== undefined) next.skillName = patch.skillName;
@@ -569,8 +609,11 @@ export function deletePrompt(id: string): boolean {
   const deletedAt = Date.now();
 
   inTransaction(cur, () => {
+    if (cur.prepare("SELECT 1 FROM trash WHERE id = ?").get(id)) {
+      throw new PromptConflict("回收站已有同 ID 提示词，请先处理该条目");
+    }
     cur.prepare(
-      `INSERT OR REPLACE INTO trash (${PROMPT_COLUMNS}, deletedAt)
+      `INSERT INTO trash (${PROMPT_COLUMNS}, deletedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(existing.id, ...bindPrompt(existing), deletedAt);
     cur.prepare("DELETE FROM prompts WHERE id = ?").run(id);
@@ -579,16 +622,19 @@ export function deletePrompt(id: string): boolean {
 }
 
 /** 「原文 ↔ 优化稿」双向切换；没有原文时拒绝且不写任何行（N2）。 */
-export function rollbackPrompt(id: string): RollbackResult {
+export function rollbackPrompt(id: string, contentVersion?: string): RollbackResult {
   const cur = getDb();
-  const existing = selectPrompt(id);
-  if (!existing) return { ok: false, error: "提示词不存在" };
-  const original = existing.sourceBody;
-  if (!original) return { ok: false, error: "该提示词没有可回退的原文（sourceBody 为空）" };
+  return inTransaction(cur, () => {
+    const existing = selectPrompt(id);
+    if (!existing) return { ok: false, error: "提示词不存在" };
+    assertPromptVersion(existing, contentVersion);
+    const original = existing.sourceBody;
+    if (!original) return { ok: false, error: "该提示词没有可回退的原文（sourceBody 为空）" };
 
-  const swapped: Prompt = { ...existing, body: original, sourceBody: existing.body, updatedAt: Date.now() };
-  writePrompt(cur, swapped);
-  return { ok: true, prompt: swapped };
+    const swapped: Prompt = { ...existing, body: original, sourceBody: existing.body, updatedAt: Date.now() };
+    writePrompt(cur, swapped);
+    return { ok: true, prompt: swapped };
+  });
 }
 
 // ── 标签 ───────────────────────────────────────────────────────────────────
@@ -675,6 +721,9 @@ export function restorePrompts(ids: string[]): number {
     for (const id of ids) {
       const row = rows.get(id);
       if (!row) continue;
+      if (cur.prepare("SELECT 1 FROM prompts WHERE id = ?").get(id)) {
+        throw new PromptConflict("词库已有同 ID 提示词，恢复会覆盖当前条目");
+      }
       const item = rowToTrash(row);
       insertPrompt(cur, item);
       cur.prepare("DELETE FROM trash WHERE id = ?").run(id);
@@ -812,28 +861,24 @@ export function importPrompts(input: unknown, options: { confirm?: boolean } = {
 
   const { prompts, tags } = validated.value;
   const cur = getDb();
-  const existing = new Set(selectAllPrompts().map((r) => r.id));
+  return inTransaction(cur, () => {
+    const existing = cur.prepare(
+      "SELECT 1 FROM prompts WHERE id = ? UNION ALL SELECT 1 FROM trash WHERE id = ? LIMIT 1",
+    );
+    const overwritten = prompts.filter(({ id }) => existing.get(id, id) !== undefined).length;
+    const stats: ImportStats = { added: prompts.length - overwritten, overwritten, total: prompts.length };
+    if (!options.confirm) return { ok: true, applied: false, stats };
 
-  let added = 0;
-  let overwritten = 0;
-  for (const p of prompts) {
-    if (existing.has(p.id)) overwritten++;
-    else added++;
-  }
-  const stats: ImportStats = { added, overwritten, total: prompts.length };
-
-  if (!options.confirm) return { ok: true, applied: false, stats };
-
-  inTransaction(cur, () => {
+    const removeTrash = cur.prepare("DELETE FROM trash WHERE id = ?");
     for (const p of prompts) {
       insertPrompt(cur, p);
+      removeTrash.run(p.id);
       ensureTagsWith(cur, p.tags);
     }
     for (const t of tags) ensureTagWith(cur, t.name);
     syncTagsFromPrompts(cur);
+    return { ok: true, applied: true, stats };
   });
-
-  return { ok: true, applied: true, stats };
 }
 
 // ── 超限淘汰（规格 §4.4）───────────────────────────────────────────────────
@@ -865,57 +910,20 @@ function pruneOrphanTags(cur: DatabaseSync, candidateNames: Iterable<string>): v
   }
 }
 
-/**
- * 超过上限时物理删除（不进回收站），返回被淘汰的 id。
- * 顺序：**`aiRefined = 0` 优先**（未经人工确认价值），其次 `lastUsedAt` 最旧、`createdAt` 最旧，
- * 最后以 `id` 升序兜底——规格 §4.4，与上游的 `usageCount` 升序**不同**，不得照抄上游（P2-D3）。
- * 键序的**唯一实现**是 `src/eviction-order.ts#compareEvictionOrder`（见下方 ⇄ 段）。
- *
- * 必须是**全序**（修复轮 1 的评审阻断项）：客户端预检读的是 `GET /prompts` 的 default 排序
- * （最新优先），而本函数读 `selectAllPrompts()`（无 `ORDER BY` = 插入序）——同一集合、**不同顺序**。
- * 键并列时排序稳定性只会各自保持输入序，两端就会给出不同的受害者；全序（最后一键 `id` 唯一）
- * 才能让「弹窗列的受害者」与「实际被物理删除的对象」必然一致。`createdAt` 也会并列
- * （导入把备份里的 `createdAt` 原样写入，见 `validateBackup`），故 `id` 兜底不是可选项。
- *
- * ⇄ **排序键的唯一实现**在 `src/eviction-order.ts#compareEvictionOrder`（R59 / F-3）：本函数与
- * `src/client/utils/eviction.ts#previewEvictions`（宿主没有 dry-run 路由，§4.4 的二次确认靠客户端
- * 预演）**import 同一个比较器**，不再各抄一份「靠注释对齐」的键序。改键序只改那个模块；
- * 「两端给出同一批受害者 / 同一顺序」由 `tests/eviction.test.mjs` 的「真实序列」逐 id 锁死（保留）。
- *
- * **R45（T8，D-1 修复）：本次调用豁免一条 id。** `POST /prompts` 的落库顺序是「先 `createPrompt`
- * 再调本函数」，故新项此刻已在库里，且它的键恒为 `(aiRefined=false, lastUsedAt=0, createdAt=最新)`——
- * 在 §4.4 的键序下它是候选集的**最小元**，旧实现于是**必然淘汰刚保存的那一条**（T7 C10 实测
- * `evicted:[刚建的那条]`），而客户端的二次确认只能看见**插入前**的集合、必然列出别的条目 →
- * 确认框与真实淘汰对象逐 id 不等（D-1）。修法：调用方传 `exceptId`（= `created.id`），
- * 新项**永不**成为本次创建的受害者。
- *
- * ⚠️ **计数仍按全集**（`all.length - maxCount`，`all` 含新项），**只有候选排序集**剔除 `exceptId`。
- * 若把计数也改成剔除后集合的 `candidates.length - maxCount`，超限时会**少淘汰一条**——
- * `tests/eviction.test.mjs` 的「真实序列」用例（存活集合断言）锁住这一点。
- *
- * ⚠️ `maxCount === 0` 是退化配置：受害者数（`all.length`）会大于候选数（`all.length - 1`），
- * `slice` 静默截断 → 留下的恰是被豁免的那一条；旧实现在 `maxCount === 0` 时会清空全库，
- * 故这一点的行为与旧版不同。**如实记录**（R45 明示），不为它加特判。
- */
+/** 删除超出上限的条目，且可豁免指定 ID。 */
 export function enforceMaxCount(maxCount: number, options: { exceptId?: string } = {}): string[] {
   const cur = getDb();
-  const all = selectAllPrompts().map(rowToPrompt);
-  if (all.length <= maxCount) return [];
-
-  // R45：受害者**计数按全集**（含被豁免的那条）；候选**排序集**才把 exceptId 剔掉。
-  const over = all.length - maxCount;
-  const candidates = options.exceptId === undefined ? all : all.filter((p) => p.id !== options.exceptId);
-
-  const victims = [...candidates]
-    // ⇄ 比较器来自 `src/eviction-order.ts`（**唯一实现**；客户端预检 eviction.ts 用的是同一个）：
-    //   本处不再手抄键序，改键序请改那个模块。
-    .sort(compareEvictionOrder)
-    .slice(0, over);
-
-  inTransaction(cur, () => {
-    for (const victim of victims) cur.prepare("DELETE FROM prompts WHERE id = ?").run(victim.id);
-    // D-P6-6 / R46：只清**本次受害者引用过的**、淘汰后已无引用的标签行（同一事务，回滚时一起回滚）。
-    pruneOrphanTags(cur, victims.flatMap((victim) => victim.tags));
+  return inTransaction(cur, () => {
+    const all = selectAllPrompts().map(rowToPrompt);
+    const candidates = all.filter(({ id }) => id !== options.exceptId);
+    return deleteEvictionVictims(cur, selectEvictions(candidates, all.length - maxCount));
   });
-  return victims.map((v) => v.id);
+}
+
+function deleteEvictionVictims(cur: DatabaseSync, victims: readonly Prompt[]): string[] {
+  if (victims.length === 0) return [];
+  const remove = cur.prepare("DELETE FROM prompts WHERE id = ?");
+  for (const victim of victims) remove.run(victim.id);
+  pruneOrphanTags(cur, victims.flatMap((victim) => victim.tags));
+  return victims.map(({ id }) => id);
 }

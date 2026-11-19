@@ -395,6 +395,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
         try {
           const updated = await writeBackRefined({
             promptId: outcome.prompt.id,
+            contentVersion: outcome.prompt.contentVersion,
             body: refinedBody,
             variables: templateVariables,
             update: api.updatePrompt,
@@ -426,6 +427,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
       try {
         const updated = await writeBackRefined({
           promptId: saved.id,
+          contentVersion: saved.contentVersion,
           body: refinedBody,
           variables: templateVariables,
           update: api.updatePrompt,

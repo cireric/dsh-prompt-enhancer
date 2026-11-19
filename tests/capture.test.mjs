@@ -244,6 +244,7 @@ test("出口 2 超限：弹确认，detail 逐字等于预演出的受害者标�
     assert.deepEqual(outcome.prompt, created, "返回宿主实际创建的那一条");
     assert.deepEqual(outcome.evicted, [prompts[0].id], "淘汰名单以宿主响应里的 evicted（被删 id）为准");
     assert.equal(s.calls.filter(isCreate).length, 1, "确认后恰好创建一次");
+    assert.deepEqual(JSON.parse(s.calls.find(isCreate).init.body).approvedEvictions, [prompts[0].id]);
     // 淘汰者的三把键就该被清（T7 ① 正是补在这里：被淘汰者不进回收站 ⇒ 没有第二个清理点）。
     // C（重要-4）后清键**不再压着保存反馈**（后台）⇒ 断言请求形状前先等它落地。
     assert.ok(await until(() => s.calls.filter(isMetaDelete).length === 3), "清键必须最终发出（非阻塞 ≠ 不做）");

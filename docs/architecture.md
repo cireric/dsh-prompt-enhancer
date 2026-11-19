@@ -60,7 +60,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 回滚语义 | `sourceBody` 存 AI 优化前原文，`POST /prompts/:id/rollback` 执行 **swap(body, sourceBody)**，可反复点 | `store.ts:560-568` |
 | 写回缝唯一 | 三 AI 字段（`sourceBody`/`aiRefined`/`aiRefinedAt`）**唯一写入者**是 `updatePrompt(…, { aiWriteBack: true })` 的内部派生；补丁类型按路由白名单收窄，客户端传不进来 | `types.ts:79-89`、`store.ts:497-502`、spec §13.13 |
 | 淘汰键序 | `(aiRefined asc, lastUsedAt asc, createdAt asc, id asc)` 的**唯一实现**在 `src/eviction-order.ts`，宿主真实淘汰与客户端预检共用，防两端漂移（D-1 的土壤） | `eviction-order.ts:33` |
-| 淘汰豁免 | 刚创建的条目 `exceptId` 豁免——否则新项（`aiRefined=false, lastUsedAt=0`）是候选最小元，会被自己的创建请求删掉 | `routes.ts:168`、`store.ts:863` |
+| 淘汰豁免 | 创建前只从既有条目选淘汰对象。核对确认名单、创建、标签同步和淘汰在同一事务内完成。 | `store.ts#createPromptWithEvictions` |
 | 方向不猜 | 「当前 body 是哪一侧」只从 meta `pl:refined-dir:<id>` 读；**无记录 ⇒ 中性且不落库**（`aiRefined` 不参与推断——它只说明「发生过一次写回」） | `refined-direction.ts:44-96`、spec §13.11-二 |
 | meta 键约定 | `pl:<用途>:<id>`（如 `pl:refined-dir:<id>` / `pl:skill-descriptor:<id>`）；不可逆删除才清键，软删除不清 | `prompt-meta.ts:24`、`refined-direction.ts:39-42` |
 
@@ -70,7 +70,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 ### 4.1 HTTP（单条 prefix 路由，30 条）
 
-信封统一 `{ ok, data }` / `{ ok:false, error }`；AI 路由的失败信封扩为 `{ ok:false, error:{ code, message } }`（code 跨层传枚举，message 仅开发诊断）。状态码：400 参数 / 403 跨源写入被拒 / 404 未找到 / 409 同名冲突 / 500 未预期 / 503 AI 或设置不可用（`routes.ts` 文件头）。
+信封统一 `{ ok, data }` / `{ ok:false, error }`；AI 路由的失败信封扩为 `{ ok:false, error:{ code, message } }`（code 跨层传枚举，message 仅开发诊断）。状态码：400 参数 / 403 跨源写入被拒 / 404 未找到 / 409 写入冲突 / 500 未预期 / 503 AI 或设置不可用（`routes.ts` 文件头）。
 
 **路由清单单一真源**（2026-10-03，D13）：`routes.ts#ROUTE_SPECS` 是路由的唯一一份清单——`dispatch`
 按它匹配分发，`tests/api.test.mjs` 的覆盖账本按 `pattern` 与它双向对齐（加路由不加覆盖行即红）。
@@ -79,7 +79,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 | 组 | 路由 |
 |---|---|
-| 提示词 | `GET /prompts`（`q`/`tag`/`sort=default\|updated\|used\|created`）· `POST /prompts`（创建后按 `maxPromptCount` 淘汰）· `GET/PUT/DELETE /prompts/:id` · `POST /prompts/:id/use` · `POST /prompts/:id/rollback` |
+| 提示词 | `GET /prompts`（`q`/`tag`/`sort=default\|updated\|used\|created`）· `POST /prompts`（需要淘汰时携带 `approvedEvictions`）· `GET/PUT/DELETE /prompts/:id` · `POST /prompts/:id/use` · `POST /prompts/:id/rollback` |
 | 标签 | `GET /tags` · `POST /tags` · `PUT /tags/:from`（改名）· `DELETE /tags/:name`（在用保护） |
 | 回收站 | `GET /trash` · `POST /trash/:id/restore` · `DELETE /trash/:id` · `DELETE /trash`（回 `{removed, ids}`） |
 | AI | `GET /ai/providers` · `POST /ai/polish` · `POST /ai/check`（`findings` 含原文引用、问题和建议） · `POST /ai/draft`（想法、可选回答及资料，返回澄清问题或正文、假设与待核实项） · `POST /ai/draft/search`（用可选宿主搜索查询资料来源） · `POST /ai/refine`（四个原有字段和可选 `suggestions`） · `POST /ai/skill-descriptor` |
@@ -153,6 +153,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D20 | AI 请求的最终错误码只描述用户收到的结果。请求日志保留每轮候选的结束状态、插件计时器是否触发和校验结果，供定位更早的故障。 | 本文 §5、`review-trace.ts` |
 | D21 | 检查、模板增强和起草优先使用候选模型声明的 `off` 推理档位。关闭推理的模型获分配 2048 个检查输出 token 或 4096 个增强／起草输出 token。模型未声明该档位时使用 8192 输出 token，为共用预算的推理和 JSON 正文留出空间。起草在接受候选前校验完整结果，截断或结构错误可继续尝试下一候选或诊断重试。 | `ai.ts#collectText`、`ai.ts#draftPromptCore` |
 | D22 | AI 面板等待时显示已用时长。取消请求返回操作菜单或起草面板，保留用户输入。HTTP 连接提前关闭时，宿主向当前模型调用或来源搜索传递取消信号，并停止后续候选和诊断重试。 | `AIPolishButton.tsx`、`routes.ts#dispatch`、`ai.ts#attemptAllCandidates` |
+| D23 | 写入冲突保护。管理器仅提交改动字段，保存和换稿携带宿主签发的 `contentVersion`。旧调用仍可省略该字段。创建需要淘汰时必须提交已确认的 ID，名单过期返回 409。确认导入按同 ID 覆盖在用条目或回收站条目，恢复遇到历史同 ID 冲突时保留两份并返回 409。 | `store.ts#createPromptWithEvictions`、`store.ts#importPrompts`、`prompt-edit.ts` |
 | D26 | 起草接收可选的下游执行环境，按模型能看到的上下文及可用工具生成自包含正文，交付前检查约束、能力和验收条件。按反馈改写时，同一接口携带生成本稿的输入、当前编辑稿及反馈，直接返回新版。失败或取消保留正文和反馈。 | `PromptDraftForm.tsx`、`draft.ts`、`ai.ts#draftPromptCore` |
 | D27 | 起草从已有信息补齐交付要求和验收条件，在正文写明影响执行的默认值和待补材料。一轮澄清只处理会改变任务的用户选择。结论依赖外部事实时，正文按需增加一手来源溯源、适用性检查和证据强度约束。 | `ai.ts#draftPromptCore` |
 | D28 | 起草按单次任务、可复用工作流或长期角色组织正文，并展示生成时理解的目标和执行前待补材料。起草面板触发的检查对照该稿的原始输入、澄清和按顺序采用的反馈。可把当前检查报告中的单条建议带回反馈框，由用户编辑并提交。 | `draft.ts`、`ai.ts#checkPromptCore`、`AIPolishButton.tsx` |
@@ -202,6 +203,6 @@ npm run smoke       # 真实执行 client bundle：注册 id、7 个插槽的账
 | 方向记录 | meta `pl:refined-dir:<id>`，值为裸的 `original` / `refined`；空串 = 无记录 |
 | 技能过期 | `skillName` 非空且 `skillExportedAt < updatedAt` |
 | 沉淀三入口 | 管理面板新建/编辑 · 选中文字存为提示词 · 当前草稿存为提示词 |
-| 淘汰预演 | 客户端按宿主同键序预演受害者并二次确认（真实删除仍由宿主执行，结果以响应里的 `evicted` 为准） |
+| 淘汰预演 | 客户端按共享键序预演受害者并确认。宿主在创建事务内核对已批准的 ID |
 
 上游参考分析（功能对照、删除清单、实测异常）保留在 `docs/analysis-dsh-prompt-library/`；规格全文与 §13 自检收敛记录保留在 `docs/superpowers/specs/`。

@@ -13,14 +13,8 @@
  */
 import * as React from "react";
 import type { TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
-import {
-  clampTitle,
-  type Prompt,
-  type PromptSort,
-  type PromptWritablePatch,
-} from "../../types.ts";
-import { firstNonEmptyLine } from "../../first-line.ts";
-import { parseTagList } from "../../tags.ts";
+import type { Prompt, PromptSort } from "../../types.ts";
+import { changedPromptFields, promptFormInput } from "../utils/prompt-edit.ts";
 import { canToggle } from "../utils/ai-flow.ts";
 import { deletePrompts } from "../utils/prompt-meta.ts";
 import { ApiError, api } from "../utils/api.ts";
@@ -126,17 +120,6 @@ const SORTS: ReadonlyArray<{ value: PromptSort; label: PromptEnhancerKey }> = [
 
 /** 搜索防抖（简报要求 ≥250ms；取 300ms 留出余量）。 */
 const SEARCH_DEBOUNCE_MS = 300;
-
-/**
- * 落库入参：宿主 POST /prompts 与 PUT /prompts/:id 的白名单字段子集（title / body 必填，
- * 其余三个可省）。用同一个对象喂两个路由，避免两处字段各写一遍后漂移。
- */
-interface PromptWriteInput extends PromptWritablePatch {
-  title: string;
-  body: string;
-  tags: string[];
-  summary: string;
-}
 
 /** 详情页的目标：新建（可能带沉淀预填）或编辑某条已存在的提示词。 */
 type EditTarget =
@@ -638,8 +621,7 @@ interface PromptDetailProps {
  *     固化（R-P7-AC：`aiRefined` 推断在「切换过奇数次」的旧记录上恰好反相，还会被下一次切换固化成
  *     反相，用户任何操作都修不好）。记录的**播种**在方向真正可知之处：AI 写回缝
  *     （`ai-flow.ts#writeBackRefined` → `seedRefinedDirection`）。
- * 判定、来源、翻转与「方向 → 标注」的映射都在纯逻辑模块里（可单测），本组件只做接线；不引入新存储键、
- * 不改宿主路由，切换按钮与 `canToggle` 守卫保留（能力不减）。
+ * 方向判定与文案映射由纯逻辑模块负责。保存和切换使用当前记录的内容版本。
  */
 function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElement {
   const initial = target.kind === "edit" ? target.prompt : null;
@@ -699,48 +681,40 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
   }, [initial === null ? null : initial.id]);
 
   const blankBody = body.trim() === "";
+  const fields = { title, body, tagsText, summary, variables };
+  const patch = current ? changedPromptFields(current, fields) : {};
+  const hasChanges = Object.keys(patch).length > 0;
+  const pending = busy !== "idle";
 
-  /**
-   * 保存：新建走 `createFromCapture`（R28 的唯一落库入口，内部已广播数据变更，并承载 §4.4 的
-   * 淘汰二次确认），编辑走 `updatePrompt`（直连 PUT，故由本组件广播）；两者成功后其它组件都会重拉。
-   * 淘汰确认里被取消（`ok: false`）时**静默回到原状态**：不创建、不留半成品、不渲染成错误。
-   */
   const save = (): void => {
-    if (busy !== "idle" || blankBody) return;
+    if (pending || blankBody || (current !== null && !hasChanges)) return;
     const editing = current;
-    const sourceNames = parseVariables(editing?.sourceBody ?? "");
-    // 白名单字段（PromptWritablePatch）：标题走 clampTitle + 首行兜底，标签按逗号切分。
-    const input: PromptWriteInput = {
-      title: clampTitle(title.trim() || firstNonEmptyLine(body)),
-      body,
-      tags: parseTagList(tagsText),
-      summary: summary.trim(),
-      variables: variables.filter(({ name }) =>
-        variableNames.includes(name) || sourceNames.includes(name)),
-    };
     setBusy("saving");
     setFailure(null);
     setNotice(null);
+    const acceptSaved = (saved: Prompt): void => {
+      // A response may normalize submitted values, while later edits stay in the form.
+      setCurrent(saved);
+      setTitle((value) => value === title ? saved.title : value);
+      setBody((value) => value === body ? saved.body : value);
+      setTagsText((value) => value === tagsText ? saved.tags.join(", ") : value);
+      setSummary((value) => value === summary ? (saved.summary ?? "") : value);
+      setVariables((value) => value === variables ? (saved.variables ?? []) : value);
+    };
     void (async () => {
       try {
         if (editing === null) {
           // 入口 A 的创建路径（R28）：与入口 B/C、AI 面板同一落库入口，§4.4 的淘汰预检在那里。
-          const outcome = await createFromCapture(input);
+          const outcome = await createFromCapture(promptFormInput(fields));
           if (!aliveRef.current) return;
           // 用户在淘汰二次确认里取消：未创建任何记录 → 静默回到原状态（不是错误）。
           if (!outcome.ok) return;
-          setCurrent(outcome.prompt);
-          setTitle(outcome.prompt.title);
+          acceptSaved(outcome.prompt);
           setNotice(outcome.evicted.length > 0 ? t("manager.list.evicted") : t("manager.edit.saved"));
         } else {
-          const updated = await api.updatePrompt(editing.id, input);
+          const updated = await api.updatePrompt(editing.id, { ...patch, contentVersion: editing.contentVersion });
           if (!aliveRef.current) return;
-          setCurrent(updated);
-          setTitle(updated.title);
-          setBody(updated.body);
-          setTagsText((updated.tags ?? []).join(", "));
-          setSummary(updated.summary ?? "");
-          setVariables(updated.variables ?? []);
+          acceptSaved(updated);
           setNotice(t("manager.edit.saved"));
           // 编辑路径直连 PUT，广播由本组件负责（创建路径的广播在 createFromCapture 内）。
           notifyDataChanged();
@@ -763,14 +737,14 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
    * 而且只有**一处**接线（T7 ⑧-①：决策在 `applyToggleDirection` 内部求值，组件读它的返回值）。
    */
   const toggle = (): void => {
-    if (busy !== "idle" || current === null) return;
+    if (pending || hasChanges || current === null) return;
     const id = current.id;
     setBusy("toggling");
     setFailure(null);
     setNotice(null);
     void (async () => {
       try {
-        const swapped = await api.rollbackPrompt(id);
+        const swapped = await api.rollbackPrompt(id, current.contentVersion);
         // R-P7-AE：切换改变了真值 ⇒ 库里那条记录必须跟着失效（决策是纯函数 toggleDirectionWrite）：
         //   · record ⇒ 写**翻转后的**方向；
         //   · 未知（没有记录 / 脏值 / **读取中** / 读失败）⇒ **作废**（写空串）——宁可退回中性，也不留
@@ -789,7 +763,7 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
         void applied.done; // 落库**不等**（`done` 绝不 reject；它挂住也不该把面板卡在 toggling）
         if (!aliveRef.current) return;
         setCurrent(swapped);
-        setBody(swapped.body);
+        setBody((value) => value === body ? swapped.body : value);
         // 本地态与落库值同源（**同一个决策、同一个值**）：屏上的标注与下一次读回来的记录必然一致。
         if (applied.write === "persist") setStoredDirection(applied.next);
         else if (applied.write === "clear") setStoredDirection(undefined);
@@ -829,7 +803,7 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
   const labels = compareLabelKeys(direction);
   const currentBodyShown = current === null ? "" : current.body;
   const counterpartBody = current === null ? "" : (current.sourceBody ?? "");
-  const busyButton = blankBody || busy !== "idle";
+  const saveDisabled = blankBody || pending || (current !== null && !hasChanges);
 
   return (
     <>
@@ -903,9 +877,9 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
         </button>
         <button
           type="button"
-          style={{ ...primaryButton, opacity: busyButton ? 0.6 : 1, cursor: busyButton ? "default" : "pointer" }}
+          style={{ ...primaryButton, opacity: saveDisabled ? 0.6 : 1, cursor: saveDisabled ? "default" : "pointer" }}
           aria-busy={busy === "saving"}
-          disabled={busyButton}
+          disabled={saveDisabled}
           onClick={save}
         >
           {busy === "saving" ? t("manager.edit.saving") : t("manager.edit.save")}
@@ -928,12 +902,13 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
           <span style={muted}>
             {t(labels.neutral ? "manager.compare.unknownDirection" : "manager.compare.directionPersisted")}
           </span>
+          {hasChanges && <span role="status" style={muted}>{t("manager.compare.saveBeforeToggle")}</span>}
           <div style={actions}>
             <button
               type="button"
-              style={{ ...primaryButton, opacity: busy === "idle" ? 1 : 0.6 }}
+              style={{ ...primaryButton, opacity: pending || hasChanges ? 0.6 : 1 }}
               aria-busy={busy === "toggling"}
-              disabled={busy !== "idle"}
+              disabled={pending || hasChanges}
               onClick={toggle}
             >
               {busy === "toggling" ? t("manager.compare.toggling") : t("manager.compare.toggle")}

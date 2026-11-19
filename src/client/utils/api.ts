@@ -193,7 +193,7 @@ export const api = {
   deleteMeta: (key: string) =>
     call<{ key: string; deleted: boolean }>("DELETE", `/meta/${encodeURIComponent(key)}`, undefined, CLEAR_TIMEOUT_MS),
 
-  createPrompt: (input: PromptInput) =>
+  createPrompt: (input: PromptInput & { approvedEvictions?: string[] }) =>
     call<{ prompt: Prompt; evicted: string[] }>("POST", "/prompts", input),
   /**
    * 宿主 PUT 只认白名单字段（事实见 `src/host/routes.ts` 的 PUT 分发：title | body | tags |
@@ -203,9 +203,10 @@ export const api = {
    * `aiWriteBack` 是写回 `sourceBody` 的唯一路径（§4.4），它不是记录字段（store.updatePrompt
    * 的选项目志），用交叉类型补上。
    */
-  updatePrompt: (id: string, patch: PromptWritablePatch & { aiWriteBack?: boolean }) =>
+  updatePrompt: (id: string, patch: PromptWritablePatch & { aiWriteBack?: boolean; contentVersion?: string }) =>
     call<Prompt>("PUT", "/prompts/" + encodeURIComponent(id), patch),
-  rollbackPrompt: (id: string) => call<Prompt>("POST", "/prompts/" + encodeURIComponent(id) + "/rollback"),
+  rollbackPrompt: (id: string, contentVersion?: string) =>
+    call<Prompt>("POST", "/prompts/" + encodeURIComponent(id) + "/rollback", contentVersion ? { contentVersion } : undefined),
   /** 探测（T7-7）：`probe = true` ⇒ 到点抛**带标记**的 ApiError，分类器据此给「探测超时」专属文案。 */
   listAiProviders: () =>
     call<AiSelectable[]>("GET", "/ai/providers", undefined, AI_PROBE_TIMEOUT_MS, true),

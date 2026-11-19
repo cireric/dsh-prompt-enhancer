@@ -57,10 +57,11 @@ export function needsWriteBack(refinedBody: string, originalDraft: string): bool
 // ── §4.4 写回缝（P7 T4 修复轮 1：方向**真正可知**之处，顺手播种）────────────────────
 
 /** `updatePrompt` 的窄接口（真实现 = `api.updatePrompt`；本模块不 import 它的运行期值）。 */
-export type PromptUpdater = (id: string, patch: PromptWritablePatch & { aiWriteBack?: boolean }) => Promise<Prompt>;
+export type PromptUpdater = (id: string, patch: PromptWritablePatch & { aiWriteBack?: boolean; contentVersion?: string }) => Promise<Prompt>;
 
 export interface WriteBackInput {
   promptId: string;
+  contentVersion?: string;
   /** 写回的正文（= AI 优化稿）。 */
   body: string;
   variables?: TemplateVariable[];
@@ -87,6 +88,7 @@ export async function writeBackRefined(input: WriteBackInput): Promise<Prompt> {
   const updated = await input.update(input.promptId, {
     body: input.body,
     aiWriteBack: true,
+    ...(input.contentVersion ? { contentVersion: input.contentVersion } : {}),
     ...(input.variables?.length ? { variables: input.variables } : {}),
   });
   try {

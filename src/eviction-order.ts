@@ -38,3 +38,8 @@ export function compareEvictionOrder(a: Prompt, b: Prompt): number {
     (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
   );
 }
+
+/** Select eligible entries using the shared eviction order. */
+export function selectEvictions(prompts: readonly Prompt[], count: number): Prompt[] {
+  return count <= 0 ? [] : [...prompts].sort(compareEvictionOrder).slice(0, count);
+}

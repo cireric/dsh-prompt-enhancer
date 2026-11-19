@@ -16,8 +16,7 @@
  *
  * 提示文案（title/message/confirmLabel/cancelLabel）是 i18n 键，由唯一渲染点
  * `PromptSurfaceHost` 翻译——本模块不引 react、不知道 locale（见 confirm.ts 头部）。
- * 淘汰结果以宿主响应里的 `evicted` 为准（客户端预检只是「事先问一次」，
- * 真正的受害者名单由 `store.enforceMaxCount` 决定）。
+ * 客户端提交用户批准的 ID，宿主在创建事务内重新计算并核对名单。
  */
 import { clampTitle, type Prompt, type PromptInput } from "../../types.ts";
 import { firstNonEmptyLine } from "../../first-line.ts";
@@ -85,6 +84,7 @@ export async function createFromCapture(input: CaptureInput): Promise<CaptureOut
     tags: input.tags,
     summary: input.summary,
     variables: input.variables,
+    ...(victims.length ? { approvedEvictions: victims.map(({ id }) => id) } : {}),
   });
   notifyDataChanged();
 

@@ -86,6 +86,8 @@ export type PromptDraftResult =
 /** 一条提示词。 */
 export interface Prompt {
   id: string;
+  /** Host-issued revision for optimistic content edits. */
+  contentVersion?: string;
   title: string;
   body: string;
   tags: string[];
@@ -219,8 +221,4 @@ export interface ImportResult {
 }
 
 /** 回滚结果：`sourceBody` 为空时拒绝（不得清空正文）。 */
-export interface RollbackResult {
-  ok: boolean;
-  error?: string;
-  prompt?: Prompt;
-}
+export type RollbackResult = { ok: true; prompt: Prompt } | { ok: false; error: string };
