@@ -8,7 +8,8 @@
  * 本模块不 import store：目录归属判定所需的「这个技能名属于哪条提示词」由路由层查库后传入（P3-D8），
  * 因此它可以脱离宿主与数据库单测。
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dshHome } from "./paths.ts";
 import type { SkillDescriptor } from "./ai.ts";
@@ -65,6 +66,26 @@ export function skillExists(name: string): boolean {
   return existsSync(skillFilePath(name));
 }
 
+function replaceSkillFile(path: string, contents: string): void {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const fd = openSync(temporary, "wx", 0o600);
+  try {
+    try {
+      writeFileSync(fd, contents, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temporary, path);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch (cleanupError) {
+      console.warn("[prompt-enhancer] 未能清理技能导出的临时文件", cleanupError);
+    }
+    throw error;
+  }
+}
+
 export interface SkillExportInput {
   prompt: SkillPromptLike;
   /** 目标技能名（AI 生成或用户指定）；与 `descriptor.name` 二选一。 */
@@ -72,7 +93,7 @@ export interface SkillExportInput {
   descriptor?: SkillDescriptor;
   /** 该技能名当前在**本插件内**归属的提示词 id（由路由查库传入）；用于区分「我们的」与「用户手写的」。 */
   ownerPromptId?: string;
-  /** 目标目录已存在且不属于本插件时，路由确认后的重试标记。 */
+  /** 目标目录已有其他归属时，路由确认后的重试标记。 */
   conflictConfirmed?: boolean;
 }
 
@@ -81,7 +102,7 @@ export interface SkillExportResult {
   name?: string;
   path?: string;
   error?: string;
-  /** 需要用户先确认同名冲突（目标目录已存在，且不属于本插件任何提示词）。 */
+  /** 目标文件已存在，替换需要用户确认。 */
   conflict?: boolean;
 }
 
@@ -105,22 +126,19 @@ export function exportSkill(input: SkillExportInput): SkillExportResult {
       ok: false,
       conflict: true,
       name,
-      error: `技能目录 ${name} 已存在，且不属于本插件的任何提示词（可能是你手写的技能）`,
+      error: `技能目录 ${name} 已存在，覆盖需要确认`,
     };
   }
 
   try {
+    const contents = renderSkillFile({
+      name,
+      description,
+      whenToUse: input.descriptor?.whenToUse,
+      body: input.prompt.body,
+    });
     mkdirSync(skillDir(name), { recursive: true });
-    writeFileSync(
-      path,
-      renderSkillFile({
-        name,
-        description,
-        whenToUse: input.descriptor?.whenToUse,
-        body: input.prompt.body,
-      }),
-      "utf8",
-    );
+    replaceSkillFile(path, contents);
   } catch (e) {
     return { ok: false, name, error: "写入技能文件失败：" + String(e) };
   }

@@ -867,7 +867,10 @@ function PromptDetail({ t, target, onBack }: PromptDetailProps): React.ReactElem
               console.warn("[prompt-enhancer] 重导回执缺少 prompt（契约漂移），详情页无法就地刷新技能状态", receipt);
               return;
             }
-            setCurrent(receipt.prompt);
+            const savedSkill = receipt.prompt;
+            setCurrent((previous) => previous && {
+              ...previous, skillName: savedSkill.skillName, skillExportedAt: savedSkill.skillExportedAt,
+            });
           }}
         />
       )}

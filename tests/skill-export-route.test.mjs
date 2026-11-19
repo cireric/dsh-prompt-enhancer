@@ -15,7 +15,9 @@
  *
  * 隔离：临时 `DSH_HOME`（`skills.exportSkill` 会真的写盘），绝不碰用户真实技能目录。
  */
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, after } from "node:test";
@@ -148,4 +150,52 @@ test("D-1 宿主端：未导出条目（无 skillName）仍按 AI 名建目录�
   assert.equal(res.envelope.data.name, "ai-first-name");
   assert.equal(existsSync(skillFile("ai-first-name")), true);
   assert.equal(store.getPrompt(created.id).skillName, "ai-first-name", "首次导出的名字进库，此后即锁定");
+});
+
+test("confirmed skill overwrite transfers ownership and requires confirmation from the previous prompt", async () => {
+  const a = store.createPrompt({ title: "first owner", body: "body A" });
+  const b = store.createPrompt({ title: "second owner", body: "body B" });
+  const name = "confirmed-transfer";
+  assert.equal((await post("/skills/export", { promptId: a.id, name })).status, 200);
+  assert.equal((await post("/skills/export", { promptId: b.id, name })).status, 409);
+  assert.equal((await post("/skills/export", { promptId: b.id, name, conflictConfirmed: true })).status, 200);
+  assert.deepEqual(store.listPrompts().filter((p) => p.skillName === name).map((p) => p.id), [b.id]);
+  assert.equal(store.getPrompt(a.id).skillExportedAt, 0);
+  assert.equal((await post("/skills/export", { promptId: a.id, name })).status, 409);
+  assert.match(readFileSync(skillFile(name), "utf8"), /body B/);
+});
+
+test("invalid skill descriptor fields return 400 before creating the target directory", async () => {
+  const prompt = store.createPrompt({ title: "descriptor", body: "body" });
+  for (const [key, name] of [["whenToUse", "nonstring-when"], ["description", "nonstring-description"]]) {
+    const invalid = await post("/skills/export", { promptId: prompt.id, name, descriptor: { [key]: 17 } });
+    assert.equal(invalid.status, 400);
+    assert.equal(existsSync(skillDir(name)), false);
+  }
+});
+
+test("a partial skill write preserves the previous file and owner", async (t) => {
+  const a = store.createPrompt({ title: "prior owner", body: "original skill" });
+  const b = store.createPrompt({ title: "candidate owner", body: "updated skill" });
+  const name = "failed-transfer";
+  assert.equal((await post("/skills/export", { promptId: a.id, name })).status, 200);
+  const original = readFileSync(skillFile(name), "utf8");
+  const writeFile = fs.writeFileSync;
+  const write = t.mock.method(fs, "writeFileSync", (target) => {
+    writeFile(target, "partial skill", "utf8");
+    throw new Error("simulated disk failure");
+  });
+  syncBuiltinESMExports();
+  try {
+    const failed = await post("/skills/export", { promptId: b.id, name, conflictConfirmed: true });
+    assert.equal(failed.status, 400);
+    assert.match(failed.envelope.error, /simulated disk failure/);
+    assert.equal(store.getPrompt(a.id).skillName, name);
+    assert.equal(store.getPrompt(b.id).skillName, undefined);
+    assert.equal(readFileSync(skillFile(name), "utf8"), original);
+    assert.deepEqual(readdirSync(skillDir(name)), ["SKILL.md"]);
+  } finally {
+    write.mock.restore();
+    syncBuiltinESMExports();
+  }
 });

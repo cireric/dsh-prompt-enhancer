@@ -61,6 +61,19 @@ function requestVariables(value: unknown) {
   return variables;
 }
 
+function requestSkillDescriptor(value: unknown): ai.SkillDescriptor | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new BadRequest("技能描述符必须是对象");
+  }
+  const { name = "", description = "", whenToUse } = value as Record<string, unknown>;
+  if (typeof name !== "string" || typeof description !== "string" ||
+      (whenToUse !== undefined && typeof whenToUse !== "string")) {
+    throw new BadRequest("技能描述符字段必须是字符串");
+  }
+  return { name, description, whenToUse };
+}
+
 // ── 信封与工具 ─────────────────────────────────────────────────────────────
 
 function json(res: ServerResponse, status: number, payload: unknown): void {
@@ -701,51 +714,23 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       const prompt = store.getPrompt(promptId);
       if (!prompt) return fail(res, 404, "提示词不存在");
 
-      const descriptor =
-        typeof body.descriptor === "object" && body.descriptor !== null
-          ? (body.descriptor as ai.SkillDescriptor)
-          : undefined;
-      /**
-       * 名字候选序（A / 重要-1）：**已导出条目（`skillName` 非空）的目录名只能由 `skillName` 决定**。
-       * 它是这个技能在官方根下的**身份**，`body.name` / `descriptor.name` 只在**首次导出**
-       * （`skillName` 为空）时参与。这条不变量**必须落在权威层**：客户端只是「尽量说对」，
-       * 任何入口（同一次会话里的陈旧列表 / 徽标重导 / 旧版本页面）都可能送来一个与库里不一致的
-       * 名字，只有这里能保证「旧目录不会变成无主孤儿、下次对旧名 409」——与 R55 的教训同形
-       * （承重不变量放权威层，而不是在每个调用点的边沿上）。
-       * 空白串不算名字（与客户端 `exportNameLocked` 同口径）：只判「非 undefined」会把 `"  "`
-       * 当成锁定名，`toKebab` 之后算出空名 ⇒ 400。
-       */
-      const locked = prompt.skillName !== undefined && prompt.skillName.trim() !== "" ? prompt.skillName : undefined;
-      const name = skills.toKebab(locked ?? asString(body.name) ?? descriptor?.name ?? "");
+      const descriptor = requestSkillDescriptor(body.descriptor);
+      const name = skills.toKebab(prompt.skillName?.trim() || (asString(body.name) ?? descriptor?.name ?? ""));
       if (!skills.isValidSkillName(name)) return fail(res, 400, "技能名非法：需要小写 kebab-case");
 
-      /**
-       * 目录归属：查库看这个技能名是否属于本插件的某条提示词（P3-D8）。
-       *
-       * **自持优先（T7-2 / P7 §10.4-2）**：先认**自己**（本次导出的这条），再认别人。
-       * 两条提示词 `skillName` 相同是**可达状态**（同名目录确认后覆盖 / 导入备份），普通 `find`
-       * 取的是**首条**——首条不是本条时，本插件自己的目录就被判成「用户手写的」，对自有目录**误报 409**
-       * （用户被迫确认覆盖自己的技能，或干脆导不出去）。自持优先把这个窄口封在查询里：
-       * 只要这条提示词自己就是这个技能名的归属者，归属判定必须落在它身上。
-       */
-      const all = store.listPrompts();
-      const owner = all.find((x) => x.skillName === name && x.id === promptId) ?? all.find((x) => x.skillName === name);
-      const result = skills.exportSkill({
-        prompt,
-        name,
-        descriptor,
-        ownerPromptId: owner?.id,
-        conflictConfirmed: body.conflictConfirmed === true,
+      const confirmed = body.conflictConfirmed === true;
+      const updated = store.recordSkillExport(promptId, name, confirmed, (current, owned) => {
+        const result = skills.exportSkill({
+          prompt: current, name, descriptor, ownerPromptId: owned ? current.id : undefined, conflictConfirmed: confirmed,
+        });
+        if (result.ok) return;
+        const message = result.error ?? "导出失败";
+        if (result.conflict) throw new store.PromptConflict(message);
+        throw new BadRequest(message);
       });
-      if (!result.ok) {
-        // 409 专用于「同名目录不属于本插件」——前端据此弹确认后再带 conflictConfirmed 重试
-        return fail(res, result.conflict ? 409 : 400, result.error ?? "导出失败");
-      }
-      const updated = store.updatePrompt(promptId, {
-        skillName: result.name,
-        skillExportedAt: Date.now(),
-      });
-      return ok(res, { name: result.name, path: result.path, prompt: updated });
+      return updated
+        ? ok(res, { name, path: skills.skillFilePath(name), prompt: versioned(updated) })
+        : fail(res, 404, "提示词不存在");
     },
   },
 ];

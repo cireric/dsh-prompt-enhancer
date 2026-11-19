@@ -589,6 +589,28 @@ function updateStoredPrompt(
   return next;
 }
 
+/** Record a single owner, rolling the database changes back if the file write fails. */
+export function recordSkillExport(
+  id: string, name: string, confirmed: boolean, write: (prompt: Prompt, owned: boolean) => void,
+): Prompt | undefined {
+  const cur = getDb();
+  return inTransaction(cur, () => {
+    const prompt = selectPrompt(id);
+    if (!prompt) return undefined;
+    const otherOwner = cur.prepare(
+      "SELECT 1 FROM prompts WHERE skillName = ? AND id <> ? UNION ALL SELECT 1 FROM trash WHERE skillName = ? AND id <> ? LIMIT 1",
+    ).get(name, id, name, id);
+    if (otherOwner && !confirmed) throw new PromptConflict("同名技能已归另一条提示词，覆盖需要确认");
+
+    const now = Date.now();
+    cur.prepare("UPDATE prompts SET skillName = ?, skillExportedAt = ? WHERE id = ?").run(name, now, id);
+    cur.prepare("UPDATE prompts SET skillName = NULL, skillExportedAt = 0 WHERE skillName = ? AND id <> ?").run(name, id);
+    cur.prepare("UPDATE trash SET skillName = NULL, skillExportedAt = 0 WHERE skillName = ?").run(name);
+    write(prompt, !otherOwner && prompt.skillName === name);
+    return { ...prompt, skillName: name, skillExportedAt: now };
+  });
+}
+
 /** 记一次使用（插入 / 覆盖 / 插入并发送 / `#` 选中 都要调）。 */
 export function recordUsage(id: string): Prompt | undefined {
   const cur = getDb();

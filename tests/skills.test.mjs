@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { setTimeout as sleep } from "node:timers/promises";
 import { makeDispatch } from "./helpers/fake-http.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "dpe-skills-"));
@@ -206,55 +205,21 @@ test("isSkillStale：导出后改动才算过期；从未导出不算", () => {
   assert.equal(skills.isSkillStale({ skillName: "", updatedAt: 999, skillExportedAt: 0 }), false);
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// T7-2：归属查询「自持优先」（**路由层**）——同名的两条各自都能导出，不误报 409
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// 修前 `routes.ts` 用 `store.listPrompts().find((p) => p.skillName === name)` 定归属，取的是**首条**。
-// 两条提示词同名是**可达状态**（同名目录确认后覆盖 / 导入备份），首条不是本次导出的那条时，
-// `exportSkill` 就把本插件自己的目录判成「用户手写的」⇒ 对自有目录**误报 409**。
-// 这条用例必须走**真实分发**（真建目录、真写库）：缺陷在路由的归属查询里，纯 `exportSkill` 看不到它。
-//
-// **变异靶**：把归属查询退回单个 `find` ⇒ 第二次导出必红（409）。
-
-/** 真跑一次分发的调用器（假 req/res 在 tests/helpers/fake-http.mjs）。 */
 const dispatch = makeDispatch({ makeRoutes, API_PREFIX });
 
-/** 真的走一遍 POST /skills/export 的分发（单条 prefix 路由）。 */
-const postSkillExport = (body) => dispatch("POST", "/skills/export", body);
+test("历史同名技能需确认归属，确认后只保留一个所有者", async () => {
+  const name = "dup-owner";
+  const a = store.createPrompt({ title: "同名甲", body: "甲正文" });
+  const b = store.createPrompt({ title: "同名乙", body: "乙正文" });
+  store.updatePrompt(a.id, { skillName: name });
+  store.updatePrompt(b.id, { skillName: name });
+  assert.equal(skills.exportSkill({ prompt: a, name }).ok, true);
 
-test("T7-2：两条提示词同名（目录属于本插件）⇒ 各自导出都不 409，且写在同一个目录", async () => {
-  const NAME = "dup-owner";
-  // 先建「第二次导出」的那条（`mine`），隔开 5ms 再建「第一次导出」的那条（`other`）：
-  // default 排序是**新建在前**（`createdAt` 降序，FRESH_MS = 7 天），故列表里 other 在 mine 之前——
-  // 普通 `find` 取首条会拿到 other，于是第二次导出（mine）就被判成「目录属于别人」⇒ 误报 409。
-  const mine = store.createPrompt({ title: "同名（本次导出）", body: "mine 的正文" });
-  store.updatePrompt(mine.id, { skillName: NAME });
-  await sleep(5); // 保证两条 createdAt 不同 ⇒ 上面的排序确定（不依赖并列时 sort 的稳定性）
-  const other = store.createPrompt({ title: "同名（另一条）", body: "other 的正文" });
-  store.updatePrompt(other.id, { skillName: NAME });
-
-  // 前提：普通 `find`（缺陷形态）取到的首条**不是**本次导出的那条——否则本用例抓不到任何东西。
-  const sameName = store.listPrompts().filter((p) => p.skillName === NAME);
-  assert.equal(sameName.length, 2, "前提：库里确实有两条同名（skillName 相同）的提示词");
-  assert.deepEqual(sameName.map((p) => p.id), [other.id, mine.id], "前提：default 排序把后建的那条排在前");
-  assert.notEqual(sameName[0].id, mine.id, "前提：首条 ≠ 本次要导出的那条（find 取首条会误判归属）");
-
-  // 第一次导出：目录还不存在 ⇒ 与归属判定无关，先把本插件自己的目录建出来。
-  const first = await postSkillExport({ promptId: other.id });
-  assert.equal(first.status, 200, "首次导出应 200：" + JSON.stringify(first.envelope));
-  const file = join(dshHome(), "skills", NAME, "SKILL.md");
-  assert.equal(existsSync(file), true, "技能目录已建出（后续导出都落在它上面）");
-
-  // 第二次导出：目录已存在，归属查询必须认出「它是本插件自己的（就是这条提示词）」⇒ 不得 409。
-  const second = await postSkillExport({ promptId: mine.id });
-  assert.equal(
-    second.status,
-    200,
-    "同名目录属于本插件自己的另一条提示词 ⇒ 不得 409：" + JSON.stringify(second.envelope),
-  );
-  assert.equal(second.envelope.data.name, NAME, "回执的名字就是那个同名目录");
-  assert.equal(second.envelope.data.path, file, "两条同名提示词落在**同一个目录**（没有另建）");
-  assert.equal(store.getPrompt(mine.id).skillName, NAME);
-  assert.equal(store.listPrompts().filter((p) => p.skillName === NAME).length, 2, "两条都还挂着这个名字");
+  const unconfirmed = await dispatch("POST", "/skills/export", { promptId: b.id });
+  assert.equal(unconfirmed.status, 409);
+  assert.match(readFileSync(skills.skillFilePath(name), "utf8"), /甲正文/);
+  const confirmed = await dispatch("POST", "/skills/export", { promptId: b.id, conflictConfirmed: true });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.envelope.data.path, skills.skillFilePath(name));
+  assert.deepEqual(store.listPrompts().filter((p) => p.skillName === name).map((p) => p.id), [b.id]);
 });
