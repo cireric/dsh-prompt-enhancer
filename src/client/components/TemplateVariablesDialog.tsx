@@ -27,6 +27,7 @@ export type TemplateVariablesDialogProps = {
   /** 确认：回传填充后的正文；由调用方卸载本组件并落草稿。 */
   onFilled?: (filledBody: string) => void;
   confirmLabel?: string;
+  applyNotice?: string;
   panelSize?: Pick<React.CSSProperties, "width" | "height">;
   /** 应用到草稿前，未填项需要显式选择保留。 */
   confirmUnfilled?: boolean;
@@ -64,6 +65,7 @@ export function TemplateVariablesDialog({
   onCancel,
   onFilled,
   confirmLabel,
+  applyNotice,
   panelSize,
   confirmUnfilled = false,
   promptId,
@@ -84,12 +86,18 @@ export function TemplateVariablesDialog({
   const restoreDefaults = React.useRef(false);
   const savingRef = React.useRef(false);
   const active = React.useRef(false);
+  const latestOnFilled = React.useRef(onFilled);
+  const savedMemory = React.useRef<{ key: string; value: string | null } | null>(null);
   const memoryKey = promptId === undefined ? undefined : templateMemoryKey(promptId);
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     active.current = true;
     return () => { active.current = false; };
   }, []);
+
+  React.useLayoutEffect(() => {
+    latestOnFilled.current = onFilled;
+  }, [onFilled]);
 
   React.useEffect(() => {
     if (!memoryKey) return;
@@ -117,15 +125,22 @@ export function TemplateVariablesDialog({
       return;
     }
 
+    const value = rememberValues ? JSON.stringify(pickRemembered(body, filledValues)) : null;
+    if (savedMemory.current?.key === memoryKey && savedMemory.current.value === value) {
+      onFilled(filled);
+      return;
+    }
+
     savingRef.current = true;
     setSaving(true);
     setSaveFailed(false);
     try {
-      if (rememberValues) {
-        await api.setMeta(memoryKey, JSON.stringify(pickRemembered(body, filledValues)), CLEAR_TIMEOUT_MS);
-      } else {
+      if (value === null) {
         await api.deleteMeta(memoryKey);
+      } else {
+        await api.setMeta(memoryKey, value, CLEAR_TIMEOUT_MS);
       }
+      savedMemory.current = { key: memoryKey, value };
     } catch (error) {
       console.warn("[prompt-enhancer] 保存模板变量记忆失败", error);
       if (active.current) setSaveFailed(true);
@@ -134,7 +149,7 @@ export function TemplateVariablesDialog({
       savingRef.current = false;
       if (active.current) setSaving(false);
     }
-    if (active.current) onFilled(filled);
+    if (active.current) latestOnFilled.current?.(filled);
   };
 
   return (
@@ -199,6 +214,7 @@ export function TemplateVariablesDialog({
             }}>{tr("vars.restoreDefaults")}</button>
           </div>
         )}
+        {applyNotice && <div role="alert" style={HINT}>{applyNotice}</div>}
         {saveFailed && (
           <div role="alert" style={MEMORY_ACTIONS}>
             <span style={HINT}>{tr("vars.memoryFailed")}</span>

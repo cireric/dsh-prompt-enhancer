@@ -17,7 +17,7 @@
  *  · **不参与 overlay-claim**（D-P8-6）：本行常驻在 composer 上方，不是浮层，不进 `overlay-claim.ts`
  *    的互斥寄存器、不改它的枚举；
  *  · 点击 ⇒ 含变量的提示词走宿主**既有**的 `TemplateVariablesDialog`（**不重写第二份**），确认后
- *    **先** `api.recordUsage(p.id)`（`POST /prompts/:id/use`）**再** `inputActions.setDraft(...)`（D-P8-9）；
+ *    通过宿主动作写入草稿，成功后调用 `api.recordUsage(p.id)`（`POST /prompts/:id/use`）；
  *    无变量的直接插入并计用量；
  *  · 零 DOM 写入、零 keydown|keyup|keypress 监听（§7.3 / §13.9-四）：读草稿只经座位注入的 `useInput`；
  *    悬停反馈（如需）走 React state 重渲染（`setState` 不写宿主 DOM），
@@ -31,7 +31,7 @@ import { api } from "../utils/api.ts";
 import { recentUserText, recommend } from "../utils/context-recommend.ts";
 import { useConversationTargetSnapshot } from "../utils/conversation-targets.ts";
 import { useDataChanged } from "../utils/data-sync.ts";
-import { composeDraft } from "../utils/insert.ts";
+import { insertPromptDraft } from "../utils/insert.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN } from "../utils/theme.ts";
@@ -88,12 +88,14 @@ export function ContextRecommendations({
   t,
 }: ContextRecommendationsProps): React.ReactElement | null {
   const settings = useSettings();
-  const draft = useInput((s) => s.draft);
+  const input = useInput((s) => s);
+  const { draft } = input;
   const chat = useConversationTargetSnapshot<ChatSnapshotLike>(session.sessionId, "chat");
   /** null = 还没拉回来（此时不渲染：常驻条不该用加载态占位）。 */
   const [prompts, setPrompts] = React.useState<readonly Prompt[] | null>(null);
   /** 已点击的含变量提示词：非空即变量填窗打开（列表让位给弹窗）。 */
   const [pending, setPending] = React.useState<Prompt | null>(null);
+  const [applyFailed, setApplyFailed] = React.useState(false);
 
   /** 重拉词库快照（不阻塞渲染；失败可见：留 console 痕迹 + 按空列表处理）。 */
   const load = (): void => {
@@ -117,23 +119,22 @@ export function ContextRecommendations({
     ? recommend({ draft, contextText: recentUserText(userMessageTexts(chat)), prompts: prompts ?? [], now: Date.now() })
     : [];
 
-  /**
-   * 落草稿 + 上报用量（D-P8-9：**先**计用量、**再**写草稿）。
-   *
-   * 用量上报不阻塞 UI；失败必须可见（console 留痕），与词库面板 / `#` 浮层同款处理。
-   * 插入语义复用 `composeDraft(..., "insert")`（本仓库唯一的一份插入语义：草稿非空换行追加、
-   * 空草稿直接写入），不另抄一份三元表达式。
-   */
+  /** 草稿写入成功后计用量。上报不阻塞 UI，失败留痕。 */
   const apply = (prompt: Prompt, body: string): void => {
+    if (!insertPromptDraft(inputActions, input, body, "insert")) {
+      setApplyFailed(true);
+      return;
+    }
+    setApplyFailed(false);
     setPending(null);
     void api.recordUsage(prompt.id).catch((err: unknown) => {
       console.warn("[prompt-enhancer] " + t("error.use"), err);
     });
-    inputActions.setDraft(composeDraft(draft, body, "insert").draft);
   };
 
   /** 有变量先填变量（复用任务 5 的变量填窗），填完再走 apply。 */
   const choose = (prompt: Prompt): void => {
+    setApplyFailed(false);
     if (needsValues(prompt.body)) setPending(prompt);
     else apply(prompt, prompt.body);
   };
@@ -155,7 +156,8 @@ export function ContextRecommendations({
             variables={pending.variables}
             promptId={pending.id}
             t={t}
-            onCancel={() => setPending(null)}
+            applyNotice={applyFailed ? t("error.insert") : undefined}
+            onCancel={() => { setApplyFailed(false); setPending(null); }}
             onFilled={(filled) => apply(pending, filled)}
           />
         </div>
@@ -177,6 +179,7 @@ export function ContextRecommendations({
       data-prompt-enhancer-recommend={hits.length}
     >
       <span style={LABEL}>{t("recommend.title")}</span>
+      {applyFailed && <span role="alert" style={LABEL}>{t("error.insert")}</span>}
       {hits.map((hit) => (
         <button
           key={hit.id}

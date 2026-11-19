@@ -7,11 +7,11 @@ import { matchRank, normalizeQuery } from "../../search-match.ts";
  * ⚠️ D2 约定：`InputState` 不暴露 caret，因此只识别**末尾**令牌；
  * `#` 必须位于行首或前面是空白，且令牌内不得含空白。
  */
-export function readHashToken(draft: string): { query: string; start: number } | null {
+export function readHashToken(draft: string, editableFrom = 0): { query: string; start: number } | null {
   const m = draft.match(/(^|\s)#([^\s#]*)$/);
   if (!m) return null;
   const start = m.index! + m[1]!.length;
-  return { query: m[2] ?? "", start };
+  return start < editableFrom ? null : { query: m[2] ?? "", start };
 }
 
 /**
@@ -44,12 +44,13 @@ export function nextDismissedKey(open: boolean, dismissedKey: string | null): st
   return open ? dismissedKey : null;
 }
 
-/** 用正文替换尾令牌（保留令牌之前的文本，令牌与正文之间保留一个空格）。 */
-export function replaceHashToken(draft: string, body: string): string {
-  const token = readHashToken(draft);
-  if (!token) return draft;
-  const head = draft.slice(0, token.start).replace(/\s+$/, "");
-  return head ? `${head} ${body}` : body;
+/** 从尾令牌前的空白开始替换，保留既有引用卡片及正文前的一个分隔空格。 */
+export function hashTailEdit(draft: string, body: string, editableFrom: number): { start: number; text: string } | null {
+  const token = readHashToken(draft, editableFrom);
+  if (!token) return null;
+  const start = Math.max(editableFrom, draft.slice(0, token.start).trimEnd().length);
+  const head = draft.slice(0, start);
+  return { start, text: head && !/\s$/.test(head) ? ` ${body}` : body };
 }
 
 /**

@@ -4,7 +4,7 @@
  * 注册在 `conversation.input.left`；props 由 `PropsRuntime`（session 标准 props
  * 已内含 `useInput` / `inputActions`）与 `PropsLocale` 组成。
  *
- * 副作用都在官方动作面上：读草稿走 `useInput`，写草稿走 `inputActions.setDraft`，
+ * 副作用都在官方动作面上：读草稿走 `useInput`，写草稿走 `inputActions`，
  * 发送走 `inputActions.submit`（规格 §7.2）；过滤/替换/插入语义一律复用
  * `src/client/utils/` 的纯函数，组件不重复实现。
  */
@@ -17,7 +17,7 @@ import { showsLabel } from "../utils/icon-only.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { filterPrompts } from "../utils/hash-token.ts";
-import { composeDraft, promptSummary, recentPrompts, type InsertMode } from "../utils/insert.ts";
+import { insertPromptDraft, needsInsertionConfirmation, promptSummary, recentPrompts, type DraftVersion, type InsertMode } from "../utils/insert.ts";
 import { needsValues, parseVariables } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 import {
@@ -38,9 +38,10 @@ export type PromptLibraryButtonProps =
   PropsRuntime<"conversation.input.left"> & PropsLocale<"prompt-enhancer">;
 
 /** 已点动作、正等变量填窗回填的那一次插入。 */
-interface PendingUse {
+interface PendingUse extends DraftVersion {
   prompt: Prompt;
   mode: InsertMode;
+  reconfirm?: boolean;
 }
 
 /** 三种插入模式的动作文案。 */
@@ -89,7 +90,8 @@ export function PromptLibraryButton({
   useInput,
   inputActions,
 }: PromptLibraryButtonProps): React.ReactElement | null {
-  const draft = useInput((s) => s.draft);
+  const input = useInput((s) => s);
+  const { draft, draftRev } = input;
   /**
    * R53：`#` 候选浮层**此刻是否真的可见**——由浮层自己发布到 `ui-state.ts` 的共享信号，
    * 本组件订阅它（P8 把 `hashTriggerEnabled` 接进浮层时，两侧自动同改，无需再维护第二个判定）。
@@ -247,9 +249,11 @@ export function PromptLibraryButton({
 
   /** 真正落草稿 + 上报用量（上报不阻塞 UI，但失败必须可见）。 */
   const apply = (prompt: Prompt, body: string, mode: InsertMode): void => {
-    const next = composeDraft(draft, body, mode);
-    inputActions.setDraft(next.draft);
-    if (next.send) inputActions.submit();
+    if (!insertPromptDraft(inputActions, input, body, mode)) {
+      setNotice((prev) => ({ text: t("error.insert"), seq: (prev?.seq ?? 0) + 1 }));
+      return;
+    }
+    if (mode === "insert-send") inputActions.submit();
     close();
     void api.recordUsage(prompt.id).then(() => setUsageRevision((revision) => revision + 1)).catch((err: unknown) => {
       console.warn("[prompt-enhancer] " + t("error.use"), err);
@@ -264,7 +268,7 @@ export function PromptLibraryButton({
 
   /** 有变量先填变量，填完再走 apply。 */
   const choose = (prompt: Prompt, mode: InsertMode): void => {
-    if (needsValues(prompt.body)) setPending({ prompt, mode });
+    if (needsValues(prompt.body)) setPending({ prompt, mode, draft, draftRev });
     else apply(prompt, prompt.body, mode);
   };
 
@@ -412,7 +416,14 @@ export function PromptLibraryButton({
             t={t}
             confirmLabel={t(ACTION_LABELS[pending.mode])}
             onCancel={() => setPending(null)}
-            onFilled={(filled) => apply(pending.prompt, filled, pending.mode)}
+            applyNotice={pending.reconfirm ? t("vars.draftChanged") : undefined}
+            onFilled={(filled) => {
+              if (needsInsertionConfirmation(pending.mode, pending, { draft, draftRev })) {
+                setPending({ ...pending, draft, draftRev, reconfirm: true });
+                return;
+              }
+              apply(pending.prompt, filled, pending.mode);
+            }}
           />
         </div>
       )}

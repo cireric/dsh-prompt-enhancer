@@ -11,14 +11,17 @@ test("readHashToken：只认草稿末尾的 #令牌（无 caret 可用，这是 
   assert.deepEqual(h.readHashToken("换行\n#翻"), { query: "翻", start: 3 });
 });
 
-test("replaceHashToken：用正文替换尾令牌，保留令牌之前的文本", () => {
-  assert.equal(h.replaceHashToken("帮我 #周报", "生成周报"), "帮我 生成周报");
-  assert.equal(h.replaceHashToken("#周", "生成周报"), "生成周报");
+test("hashTailEdit：规范化尾令牌前空白，保留前文", () => {
+  assert.deepEqual(h.hashTailEdit("帮我  #周报", "生成周报", 0), { start: 2, text: " 生成周报" });
+  assert.deepEqual(h.hashTailEdit("#周", "生成周报", 0), { start: 0, text: "生成周报" });
 });
 
-test("replaceHashToken：草稿里没有令牌时原样返回（不得吞掉/改写正文）", () => {
-  assert.equal(h.replaceHashToken("没有令牌", "正文"), "没有令牌");
-  assert.equal(h.replaceHashToken("", "正文"), "");
+test("hashTailEdit：遇到引用卡片边界时保留引用文本和其空白", () => {
+  assert.deepEqual(h.hashTailEdit("@报告  #周", "生成周报", 4), { start: 4, text: "生成周报" });
+  assert.equal(h.readHashToken("@报告 #别名", 7), null);
+  assert.equal(h.hashTailEdit("@报告 #别名", "正文", 7), null);
+  assert.equal(h.hashTailEdit("没有令牌", "正文", 0), null);
+  assert.equal(h.hashTailEdit("", "正文", 0), null);
 });
 
 test("filterPrompts：标题/标签/正文子串匹配，标题命中优先，limit 生效", () => {

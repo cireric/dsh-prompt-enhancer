@@ -32,10 +32,9 @@ import {
   filterPrompts,
   nextDismissedKey,
   readHashToken,
-  replaceHashToken,
   shouldShowSuggest,
 } from "../utils/hash-token.ts";
-import { promptSummary } from "../utils/insert.ts";
+import { editableTailStart, insertPromptDraft, promptSummary } from "../utils/insert.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import { needsValues } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
@@ -63,13 +62,14 @@ export function HashSuggestOverlay({
   useInput,
   inputActions,
 }: HashSuggestOverlayProps): React.ReactElement | null {
-  const draft = useInput((s) => s.draft);
+  const input = useInput((s) => s);
+  const { draft } = input;
   /**
    * 设置改读**订阅式** store（P8 T1 的唯一真源）：宿主 scope 每次已提交变更都推一次快照 ⇒ 关掉
    * `#` 触发开关时本组件下一次渲染就读到新值（验收 12 的「不刷新页面即时生效」）。
    */
   const settings = useSettings();
-  const token = readHashToken(draft);
+  const token = readHashToken(draft, editableTailStart(input));
   const open = token !== null;
   /** 令牌身份（start + 查询词）：用它记住「这一次打开被点浮层外部关掉了」。 */
   const tokenKey = token === null ? null : `${token.start}:${token.query}`;
@@ -111,7 +111,8 @@ export function HashSuggestOverlay({
   const [prompts, setPrompts] = React.useState<Prompt[] | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   /** 已点击的含变量提示词：非空即变量填窗打开（列表让位给弹窗）。 */
-  const [pending, setPending] = React.useState<Prompt | null>(null);
+  const [pending, setPending] = React.useState<{ prompt: Prompt; tokenKey: string } | null>(null);
+  const [applyFailed, setApplyFailed] = React.useState(false);
 
   // 每次打开拉一次并缓存：查询词变化只走本地 filterPrompts，不再请求宿主。
   // 只依赖 open（布尔）：失败文案的本地化由渲染期的 t 负责，把 t 放进依赖会让
@@ -120,6 +121,7 @@ export function HashSuggestOverlay({
   React.useEffect(() => {
     if (!open) {
       setPending(null);
+      setApplyFailed(false);
       // R48：令牌消失必须把「已收起」一并复位，否则「收起 → 删光令牌 → 在同一起点重打同一查询词」
       // 会复现同一个 tokenKey，浮层被**永久静默**抑制（同一状态值重复设置会被 React 跳过，无渲染环）。
       setDismissedKey((prev) => nextDismissedKey(open, prev));
@@ -159,7 +161,11 @@ export function HashSuggestOverlay({
 
   /** 落草稿（替换尾令牌）+ 上报用量（规格 §4.4：「# 选中」也算一次使用）。 */
   const apply = (prompt: Prompt, body: string): void => {
-    inputActions.setDraft(replaceHashToken(draft, body));
+    if (!insertPromptDraft(inputActions, input, body, "replace-hash")) {
+      setApplyFailed(true);
+      return;
+    }
+    setApplyFailed(false);
     setPending(null);
     // 选中后浮层立即随令牌消失，故失败只能留痕迹（没有可显示提示的行）。
     void api.recordUsage(prompt.id).catch((err: unknown) => {
@@ -249,19 +255,27 @@ export function HashSuggestOverlay({
   // R47：被点外部收起之后（仅当前这个令牌）不再渲染；令牌消失或变化即自动复位。
   // T1：另一个条件由 claim 提供（想在场 ≠ 屏在本面手里），见上面的 `onScreen`。
   // `token === null` 那半是给 TS 的收窄（`visible` 为假已覆盖它，P6 的原行同样这么写）——不是第三条判定。
-  if (token === null || !onScreen) return null;
+  if (token === null || tokenKey === null || !onScreen) return null;
 
   // 含变量的提示词：先开任务 5 的变量填窗，填完再落草稿。
   if (pending !== null) {
     return (
       <div ref={rootRef} style={ANCHOR}>
         <TemplateVariablesDialog
-          body={pending.body}
-          variables={pending.variables}
-          promptId={pending.id}
+          body={pending.prompt.body}
+          variables={pending.prompt.variables}
+          promptId={pending.prompt.id}
+          applyNotice={applyFailed ? t("error.insert") : undefined}
           t={t}
-          onCancel={() => setPending(null)}
-          onFilled={(filled) => apply(pending, filled)}
+          onCancel={() => { setApplyFailed(false); setPending(null); }}
+          onFilled={(filled) => {
+            if (pending.tokenKey !== tokenKey) {
+              setPending(null);
+              setApplyFailed(true);
+              return;
+            }
+            apply(pending.prompt, filled);
+          }}
         />
       </div>
     );
@@ -277,6 +291,7 @@ export function HashSuggestOverlay({
     <div ref={rootRef} style={ANCHOR}>
       <div role="group" aria-label={t("hash.title")} style={PANEL}>
         <div style={HEADER}>{t("hash.title")}</div>
+        {applyFailed && <div role="alert" style={ERROR}>{t("error.insert")}</div>}
         {loadError !== null && (
           <div role="alert" style={ERROR} title={loadError}>
             {t("error.load")}
@@ -295,7 +310,8 @@ export function HashSuggestOverlay({
               title={prompt.title}
               aria-label={prompt.title}
               onClick={() => {
-                if (needsValues(prompt.body)) setPending(prompt);
+                setApplyFailed(false);
+                if (needsValues(prompt.body)) setPending({ prompt, tokenKey });
                 else apply(prompt, prompt.body);
               }}
             >
