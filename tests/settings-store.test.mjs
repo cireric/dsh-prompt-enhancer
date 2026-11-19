@@ -289,3 +289,50 @@ test("settings-store：resolveNsFromDescribe 按 13 键签名认出本条目，�
   assert.equal(store.resolveNsFromDescribe({ namespaces: [{ ns: "x", value: { a: 1 } }] }), undefined, "无命中 undefined");
   assert.equal(store.resolveNsFromDescribe(undefined), undefined, "坏视图安全");
 });
+
+test("bindSettingsForms resolves a random entry on the first describe snapshot, before any write", async () => {
+  let namespaces = [];
+  let emitDescribe;
+  const received = [];
+  const changes = new Set();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ ok: true, data: DEFAULT_SETTINGS });
+  const bind = store.bindSettingsForms({
+    describe: () => ({
+      getSnapshot: () => ({ view: { namespaces } }),
+      subscribe: (listener) => {
+        emitDescribe = listener;
+        return () => { emitDescribe = undefined; };
+      },
+    }),
+    get: (ns) => ({
+      getSnapshot: () => ns === "random-id"
+        ? { status: "ready", value: { ...DEFAULT_SETTINGS, maxPromptCount: 20 } }
+        : { status: "unavailable", value: undefined },
+      subscribe: (listener) => {
+        changes.add(listener);
+        return () => changes.delete(listener);
+      },
+      async set(field, value) {
+        received.push({ ns, field, value });
+        return ns === "random-id";
+      },
+    }),
+  });
+  try {
+    assert.equal(store.isSettingsReady(), false);
+    namespaces = [{ ns: "random-id", value: DEFAULT_SETTINGS }];
+    emitDescribe();
+    assert.equal(store.isSettingsReady(), true);
+    assert.equal(store.getSettingsSnapshot().maxPromptCount, 20);
+    assert.equal(changes.size, 1);
+    await store.updateSettings({ maxPromptCount: 25 });
+    assert.deepEqual(received, [{ ns: "random-id", field: "maxPromptCount", value: 25 }]);
+  } finally {
+    bind();
+    await new Promise((resolve) => setImmediate(resolve));
+    globalThis.fetch = previousFetch;
+  }
+  assert.equal(emitDescribe, undefined);
+  assert.equal(changes.size, 0);
+});

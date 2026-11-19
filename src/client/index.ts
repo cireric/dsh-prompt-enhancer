@@ -30,8 +30,6 @@ import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
 // ctx.uiWorkspace 的 Context 增强（目录选择能力）由 ui-workspace 的 client 半声明
 import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
-// ctx.configForms 的 Context 增强与 ConfigForm 类型（0.2.0 设置真源的入口）
-import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import { AIPolishButton } from "./components/AIPolishButton.tsx";
 import { ContextRecommendations } from "./components/ContextRecommendations.tsx";
 import { HashSuggestOverlay } from "./components/HashSuggestOverlay.tsx";
@@ -41,18 +39,8 @@ import { SettingsSection } from "./components/settings/SettingsSection.tsx";
 import { SidebarPromptEntry } from "./components/SidebarPromptEntry.tsx";
 import { setUiConversation, type UiConversationService } from "./utils/conversation-targets.ts";
 import { en, NS, zh, type PromptEnhancerKey } from "./utils/i18n.ts";
-import { resolveNsFromDescribe, setSettingsNsResolver, setSettingsScope } from "./utils/settings-store.ts";
+import { bindSettingsForms, setSettingsScope, type ClientConfigForms } from "./utils/settings-store.ts";
 import { setDirectoryCapability } from "./utils/workspace-dir.ts";
-/**
- * 设置命名空间：**取零依赖共用模块的导出**（P8 二审 I3），不再在此重述字面量。
- *
- * 「不 import `host/settings.ts`（它会拉 `@deepseek-ai/schemastery`、把 host 侧代码带进 client
- * bundle）」这条理由对 `../settings-shape.ts` **不成立**——那正是 D-P8-1 建出的零依赖共用模块，
- * 本侧（`utils/settings-store.ts`）与宿主均已在 import。两份字面量的漂移是**静默**的：写落进宿主
- * 不认识的命名空间，UI 反而显示写成功、设置完全不生效。
- */
-import { SETTINGS_NAMESPACE } from "../settings-shape.ts";
-
 declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface LocaleNamespaceMap {
     "prompt-enhancer": PromptEnhancerKey;
@@ -149,70 +137,10 @@ export function apply(ctx: ClientContext): void {
     };
   }, "prompt-enhancer: lifecycle");
 
-  // 设置唯一真源（P8 T1 建立，dsh 0.2.0 重接线）：服务缺席时 store 回落默认值 + HTTP 降级。
-  //
-  // 0.2.0 起客户端设置面是 `ctx.configForms`（ui-settings 的 ConfigForms 服务）：
-  // `get(entryId)` 返回该条目的 `ConfigForm`（getSnapshot / subscribe / set）——语义与 0.1.5
-  // 的 `settingsScope.bind({ namespace })` 同形，只是入口改名、命名空间即 loader 条目 id。
-  //
-  // **条目 id 不能写死**：官方 bundles 装配下 id = patch insert 行的 id（本插件 = prompt-enhancer），
-  // 但 super-injector 的 `loader.create({ name })` 注入路径给**随机 id**——固定 ns 会写不中
-  // （No configurable plugin entry）。故这里包一层**自解析 form 代理**：先按 SETTINGS_NAMESPACE
-  // 试；写被拒时经 `configForms.describe()` 按 13 键签名认出真实条目，换绑 form 后由 store 重试。
-  // smoke 的假 ctx 没有该服务（真宿主里 ctx.inject 保证在场），故仍按可选面处理、缺席即 null。
   ctx.inject(["configForms"], (scope: ClientContext) => {
-    const forms = (scope as unknown as {
-      configForms?: {
-        get<T>(entryId: string): ConfigForm<T>;
-        describe(): { getSnapshot(): { status: string; view?: { namespaces?: readonly { ns: string; value?: unknown; schema?: unknown }[] } } };
-      };
-    }).configForms;
-    if (!forms) {
-      setSettingsScope(null);
-      return () => setSettingsScope(null);
-    }
-
-    let ns: string = SETTINGS_NAMESPACE;
-    let form: ConfigForm<Record<string, unknown>> = forms.get(ns);
-    let subscribers: Set<() => void> | undefined;
-    let unsubscribe: (() => void) | undefined;
-
-    const rebind = (next: string): void => {
-      if (next === ns) return;
-      ns = next;
-      unsubscribe?.();
-      form = forms.get(ns);
-      const subs = subscribers;
-      if (subs && subs.size > 0) unsubscribe = form.subscribe(() => { for (const fn of [...subs]) fn(); });
-    };
-
-    /** describe → 13 键签名 → 真实条目 id（settings-store 的 resolveNsFromDescribe）。 */
-    const resolveNs = (): string | undefined => {
-      const snap = forms.describe().getSnapshot();
-      const found = resolveNsFromDescribe(snap.view);
-      if (found) rebind(found);
-      return found;
-    };
-    setSettingsNsResolver(resolveNs);
-
-    // 代理面：对 settings-store 完全透明（ClientSettingsScope 同形）。
-    setSettingsScope({
-      getSnapshot: () => form.getSnapshot(),
-      subscribe: (fn: () => void) => {
-        subscribers ??= new Set<() => void>();
-        const subs = subscribers;
-        if (subs.size === 0) unsubscribe = form.subscribe(() => { for (const f of [...subs]) f(); });
-        subs.add(fn);
-        return () => {
-          subs.delete(fn);
-          if (subs.size === 0) { unsubscribe?.(); unsubscribe = undefined; }
-        };
-      },
-      set: (field: string, value: unknown) => form.set(field, value),
-    });
-    return () => {
-      setSettingsNsResolver(undefined);
-      setSettingsScope(null);
-    };
+    const forms = (scope as unknown as { configForms?: ClientConfigForms }).configForms;
+    if (forms) return bindSettingsForms(forms);
+    setSettingsScope(null);
+    return () => setSettingsScope(null);
   });
 }

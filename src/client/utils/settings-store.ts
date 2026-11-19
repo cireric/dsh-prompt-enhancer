@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS, type PluginSettings } from "../../types.ts";
-import { SETTINGS_KEYS, normalizeSettings } from "../../settings-shape.ts";
+import { SETTINGS_KEYS, SETTINGS_NAMESPACE, normalizeSettings } from "../../settings-shape.ts";
 import { api } from "./api.ts";
 import { hooks } from "./react-hooks.ts";
 import { reasonOf } from "../../err-text.ts";
@@ -31,14 +31,19 @@ export type SettingsNsResolver = () => string | undefined;
 export function resolveNsFromDescribe(view: unknown): string | undefined {
   const namespaces = (view as { namespaces?: readonly { ns?: unknown; value?: unknown; schema?: unknown }[] })?.namespaces;
   if (!Array.isArray(namespaces)) return undefined;
+  let match: string | undefined;
   for (const row of namespaces) {
+    if (typeof row?.ns !== "string") continue;
     const dict = (row.schema as { dict?: Record<string, unknown> } | undefined)?.dict
       ?? (row.value as Record<string, unknown> | undefined);
     if (!dict || typeof dict !== "object") continue;
     const keys = Object.keys(dict);
-    if (SETTINGS_KEYS.every((k) => keys.includes(k))) return typeof row.ns === "string" ? row.ns : undefined;
+    if (SETTINGS_KEYS.every((key) => keys.includes(key))) {
+      if (row.ns === SETTINGS_NAMESPACE) return row.ns;
+      match ??= row.ns;
+    }
   }
-  return undefined;
+  return match;
 }
 
 let scope: ClientSettingsScope | null = null;
@@ -146,6 +151,37 @@ export function setSettingsScope(next: ClientSettingsScope | null): void {
     fallbackLanded = false;
     tryFallbackRead();
   }
+}
+
+export interface ClientConfigForms {
+  get(entryId: string): ClientSettingsScope;
+  describe(): {
+    getSnapshot(): { view?: unknown };
+    subscribe(listener: () => void): () => void;
+  };
+}
+
+/** Rebind as soon as the host publishes its configurable entries. */
+export function bindSettingsForms(forms: ClientConfigForms): () => void {
+  const describe = forms.describe();
+  let bound: string | undefined;
+  const resolve = (): string | undefined => {
+    const found = resolveNsFromDescribe(describe.getSnapshot().view);
+    const next = found ?? SETTINGS_NAMESPACE;
+    if (next !== bound) {
+      bound = next;
+      setSettingsScope(forms.get(next));
+    }
+    return found;
+  };
+  setSettingsNsResolver(resolve);
+  const unsubscribe = describe.subscribe(resolve);
+  resolve();
+  return () => {
+    unsubscribe();
+    setSettingsNsResolver(undefined);
+    setSettingsScope(null);
+  };
 }
 
 /** 当前快照（副本语义：调用方改它不影响 store）。**首次消费**即触发那一次降级读。 */

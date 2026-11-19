@@ -90,7 +90,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 ### 4.2 设置（13 键，dsh 0.2.0 契约）
 
-设置即**插件 Config**：`export const Config = PromptEnhancerSettingsSchema`（`src/index.ts:44`），宿主按 patch 条目 id 投影设置页并写回 profile；volatile 变更经 `loader/volatile-update` 到达运行中的 fiber（不重挂载）。客户端读的是 `ctx.configForms`，条目 id 由 13 键签名自解析（super-injector 注入路径给随机 id，写死会写不中）。
+设置即**插件 Config**：`export const Config = PromptEnhancerSettingsSchema`（`src/index.ts:44`），宿主按 patch 条目 id 投影设置页并写回 profile；volatile 变更经 `loader/volatile-update` 到达运行中的 fiber（不重挂载）。客户端订阅 `ctx.configForms.describe()`，镜像就绪时按 13 键签名解析条目 id。固定条目 ID 优先，支持 super-injector 的随机 ID。
 
 `src/settings-shape.ts:25-33` 是**唯一真源**：`aiProvider` `aiModel` `panelWidth` `panelHeight` `showComposerButton` `composerButtonIconOnly` `showAIPolishButton` `aiPolishButtonIconOnly` `hashTriggerEnabled` `contextRecommendEnabled` `selectionAddEnabled` `showSidebarButton` `maxPromptCount`。归一化逐字段回落默认值（深拷贝式 `normalizeSettings`），键集 zh/en 在 i18n 类型面同值。
 

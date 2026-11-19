@@ -36,6 +36,7 @@ import {
   CONFIG_NAMESPACE,
   PromptEnhancerSettingsSchema,
   type PluginRuntimeConfig,
+  type SettingsHostLike,
 } from "./host/settings.ts";
 
 export const name = "prompt-enhancer";
@@ -52,9 +53,9 @@ function onSettingsChanged(): void {
 }
 
 export function apply(ctx: Context, config: PluginRuntimeConfig): void {
-  // 装配期绑定：读写面（host/settings.ts）持有宿主 ctx（定位 ctx.settings）与 Config 引用
-  // （读当前值）。传 undefined 的注销分支对应 fiber 卸载——宿主重挂载时 apply 重跑再绑定。
-  bindSettingsHost(ctx as never, config);
+  bindSettingsHost({
+    get settings() { return ctx.get?.("settings") as SettingsHostLike["settings"]; },
+  }, config);
   onSettingsChanged();
 
   ctx.inject(["llm"], (llmCtx) => {

@@ -70,5 +70,5 @@ test("SETTINGS_NAMESPACE：唯一真源在 settings-shape.ts，宿主与客户�
   assert.equal(host.CONFIG_NAMESPACE, shape.SETTINGS_NAMESPACE);
   // 两侧消费点：都从共享模块引入该绑定、且各自文件里没有本地定义。
   assertNamespaceFromSharedModule("src/host/settings.ts");
-  assertNamespaceFromSharedModule("src/client/index.ts");
+  assertNamespaceFromSharedModule("src/client/utils/settings-store.ts");
 });
