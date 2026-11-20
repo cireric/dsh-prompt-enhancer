@@ -101,6 +101,7 @@ const ROUTE_CACHE_TTL_MS = 30_000;
 const SKILL_DESCRIBE_ATTEMPTS = 3;
 
 let llm: LlmRuntime | undefined;
+const llmBindings: Array<{ runtime: LlmRuntime }> = [];
 let catalogCache = new Map<string, { ts: number; models: readonly LlmModelInfo[] }>();
 let llmQueue: Promise<unknown> = Promise.resolve();
 
@@ -132,11 +133,25 @@ function logAI(message: string): void {
 
 // ── 注入与缓存 ─────────────────────────────────────────────────────────────
 
-/** 注入 / 注销 harness LLM；无论哪种情况都清掉路由缓存。 */
-export function registerLlm(runtime: LlmRuntime | undefined): void {
+/** 注册 LLM 并返回本次绑定的释放函数；传 undefined 显式清空所有绑定。 */
+export function registerLlm(runtime: LlmRuntime | undefined): () => void {
+  // 多个实例可能共用同一个 runtime，归属必须按本次绑定区分。
+  const binding = runtime ? { runtime } : undefined;
+  if (binding) llmBindings.push(binding);
+  else llmBindings.length = 0;
   llm = runtime;
   clearRouteCache();
   logAI(runtime ? "llm injected" : "llm removed");
+  return () => {
+    const index = binding ? llmBindings.indexOf(binding) : -1;
+    if (index < 0) return;
+    llmBindings.splice(index, 1);
+    const active = llmBindings.at(-1)?.runtime;
+    if (llm === active) return;
+    llm = active;
+    clearRouteCache();
+    logAI(active ? "llm binding restored" : "llm removed");
+  };
 }
 
 /** 清路由缓存。设置改了 provider/model 之后**必须**调（规格 §6.2 待修缺陷）。 */

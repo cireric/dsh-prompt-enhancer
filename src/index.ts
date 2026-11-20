@@ -59,8 +59,7 @@ export function apply(ctx: Context, config: PluginRuntimeConfig): void {
   onSettingsChanged();
 
   ctx.inject(["llm"], (llmCtx) => {
-    registerLlm(llmCtx.llm);
-    return () => registerLlm(undefined);
+    return registerLlm(llmCtx.llm);
   });
 
   ctx.inject(["web"], (webCtx) => {

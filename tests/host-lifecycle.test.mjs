@@ -29,6 +29,53 @@ async function installHost(services = {}) {
   return { fiber, routes: () => routes };
 }
 
+async function readProviders(host) {
+  const res = fakeRes();
+  await host.routes()[0].handler(fakeReq("GET", API_PREFIX + "/ai/providers"), res);
+  assert.equal(res.statusCode, 200);
+  return JSON.parse(res.body).data;
+}
+
+function catalogRuntime(id) {
+  return {
+    listProviders: () => [{ id }],
+    listModels: async () => [{ id: "chat" }],
+    async *stream() { assert.fail("列出模型不能执行生成请求"); },
+  };
+}
+
+test("卸载旧实例不会清空新实例的模型目录，即使两者绑定同一个 LLM 对象", async () => {
+  const llm = catalogRuntime("shared");
+  const first = await installHost({ llm });
+  const second = await installHost({ llm });
+  try {
+    const expected = await readProviders(second);
+    assert.equal(expected[0].provider, "shared");
+    await first.fiber.dispose();
+    assert.deepEqual(await readProviders(second), expected);
+  } finally {
+    await first.fiber.dispose();
+    await second.fiber.dispose();
+  }
+  const { listAiSelectables } = await import("../src/host/ai.ts");
+  assert.deepEqual(await listAiSelectables(), []);
+});
+
+test("撤回新实例后恢复仍存活旧实例的 LLM，最后一个实例卸载后清空目录", async () => {
+  const first = await installHost({ llm: catalogRuntime("original") });
+  const second = await installHost({ llm: catalogRuntime("replacement") });
+  try {
+    assert.equal((await readProviders(second))[0].provider, "replacement");
+    await second.fiber.dispose();
+    assert.equal((await readProviders(first))[0]?.provider, "original");
+  } finally {
+    await second.fiber.dispose();
+    await first.fiber.dispose();
+  }
+  const { listAiSelectables } = await import("../src/host/ai.ts");
+  assert.deepEqual(await listAiSelectables(), []);
+});
+
 test("unloading the plugin aborts a running generation and prevents fallback", { timeout: 2000 }, async () => {
   const started = Promise.withResolvers();
   const release = Promise.withResolvers();
