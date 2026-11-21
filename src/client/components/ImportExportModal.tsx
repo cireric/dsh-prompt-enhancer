@@ -12,8 +12,7 @@
  *   · **导入**：**React 渲染**的隐藏 `<input type="file">`（不是 `document.createElement` +
  *     `appendChild` 那种 DOM 注入）→ `readBackupFile`（体积 / JSON 解析，见 utils/transfer.ts）→ `api.importBackup(backup, false)` 取**宿主**预览
  *     → 展示 `{added, overwritten, total}` + 一行「同 id 覆盖且不可撤销」→ 确认按钮
- *     → `api.importBackup(backup, true)` → `classifyImportResult` 判 `applied === true`
- *     （A9：宿主只回预览时**不得**渲染成「导入完成」）→ `notifyDataChanged()`。
+ *     → `confirmBackupImport` 确认落库，按宿主回执清理旧元数据并通知其他面板。
  *
  * **信封校验一律委托宿主**：`version !== 1` / `prompts` 非数组 / 元素缺 `id`|`body` 都由宿主
  * `store.ts#validateBackup` 判，客户端**不复制**一份（第二处真源会漂移）；宿主 400 时把它返回的
@@ -22,22 +21,15 @@
  * **P6-4(a)（用户裁定）**：导入**不触发淘汰**——淘汰是物理删除且无回收站，导入后自动删掉用户刚
  * 导入的数据不可接受。故这里只读一次「当前总数 / 上限」并**显式提示**（约束 D3），绝不走淘汰路径。
  *
- * 副作用面只有两处：`api.*`（HTTP）与 `notifyDataChanged()`（D6 同进程数据同步）。零 DOM 注入。
+ * 导入落库后的收尾由 transfer 模块处理，不受面板卸载影响。
  */
 import * as React from "react";
 import type { ImportStats } from "../../types.ts";
 import { api } from "../utils/api.ts";
-import { notifyDataChanged } from "../utils/data-sync.ts";
 import { getSettingsSnapshot, isSettingsReady } from "../utils/settings-store.ts";
 import { actions, button, errorDetail, errorText, muted, primaryButton, toolbar } from "../utils/dialog-style.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
-import {
-  classifyImportResult,
-  clearOverwrittenMetaDetached,
-  readBackupFile,
-  readExistingPromptIds,
-} from "../utils/transfer.ts";
-import { deletePrompts } from "../utils/prompt-meta.ts";
+import { confirmBackupImport, readBackupFile } from "../utils/transfer.ts";
 import { isDirectoryPickerAvailable, pickExportDirectory } from "../utils/workspace-dir.ts";
 import type { ManagerTranslate } from "./PromptManagerModal.tsx";
 import { reasonOf } from "../../err-text.ts";
@@ -163,49 +155,15 @@ export function ImportExportModal({ t }: ImportExportModalProps): React.ReactEle
     setBusy("applying");
     void (async () => {
       try {
-        /**
-         * B（重要-2）+ R-C（修复轮 1）：**覆盖谁必须在导入前算出来**——导入后再读就晚了（那时备份里
-         * 的 id 全都存在，交集等于全部）。覆盖集 = **活跃提示词表 ∪ 回收站**：软删除刻意不清键，故
-         * 「备份含 X → 软删 X → 导入该备份」也会把旧的方向记录继承给恢复后的 X（≙ R-P7-AE 那一类），
-         * 只读活跃表看不见它。读取失败**不得**中止导入（导入才是用户的主操作）：`readExistingPromptIds`
-         * 内部逐来源 warn 并让那一侧少贡献，「少清」只是残留（可再清），「多清」会毁掉一条本来正确、
-         * 用户又无法重建的方向记录。
-         */
-        const existingIds = await readExistingPromptIds(
-          () => api.listPrompts(),
-          () => api.listTrash(),
-        );
-        const result = await api.importBackup(backup, true);
+        const result = await confirmBackupImport(backup);
         if (!aliveRef.current) return;
-        // A9：落库与否由纯函数判定（applied === true）。宿主没落库（只回预览）时**不得**渲染成
-        // 「导入完成」——那是静默假成功。此时保留预览与确认按钮，用户可以再确认一次。
-        const verdict = classifyImportResult(result);
-        if (!verdict.ok) {
-          setFailure({ key: verdict.errorKey, detail: "applied=" + String(result.applied) });
+        if (!result.applied) {
+          setFailure({ key: "manager.transfer.importFailed", detail: result.detail });
           return;
         }
-        /**
-         * B（重要-2）：被本次导入**覆盖**（同 id 已存在）的 id ⇒ 它那两把 per-prompt 键已经不可信
-         * （`sourceBody` 被换掉了，而备份格式里没有 meta）⇒ 清掉：方向回到「不知道」⇒ 中性标注
-         * （**不撒谎**）；descriptor 也回到「不知道」⇒ 徽标重导重新走一次命名（**这是正确的**：
-         * 备份里的 `skillName` 才是权威，meta 里的旧 descriptor 不再可信）。
-         * **导入新 id ⇒ 一把都不清**（`clearOverwrittenMeta` 内部的反面对照）。
-         *
-         * 键名与其清法一律走**既有**入口（`prompt-meta.ts#deletePrompts` 的收尾编排）：不新增 API、
-         * 不在这里重抄一遍键名。清键失败**不得**把一次已经成功的导入报成失败（`deletePrompts` 内部
-         * 逐键 warn + 计数），也绝不静默。
-         *
-         * R-B（修复轮 1）：**派发即返回，不 await**（上一轮那个 await 的裁决被复审推翻——它买不到任何
-         * 性质，还会让一条挂住的 `DELETE /meta` 把面板永久停在 applying；完整理由照录在
-         * `utils/transfer.ts#clearOverwrittenMetaDetached` 上）。返回 `void` ⇒ 这里无从 await。
-         */
-        clearOverwrittenMetaDetached(backup, existingIds, (ids) =>
-          deletePrompts({ ids, irreversible: true, remove: async () => {} }),
-        );
         const done = result.stats ?? stats;
         setPreview(null);
         setApplied(done);
-        notifyDataChanged();
         // 约束 D3：成功导入后读一次「当前总数」与上限，超出则**显式提示**条数与上限的关系。
         // 读数失败不得把「导入成功」变成失败——单列一条可见提示（不静默吞掉）。
         try {

@@ -101,8 +101,11 @@ test("confirmed import counts a trashed ID as overwritten and removes the old co
   store.deletePrompt(original.id);
   const preview = await dispatch("POST", "/import", { backup });
   assert.deepEqual(preview.envelope.data.stats, { added: 0, overwritten: 1, total: 1 });
+  assert.equal(preview.envelope.data.overwrittenIds, undefined);
   assert.equal(store.listTrash().length, 1);
-  assert.equal((await dispatch("POST", "/import", { backup, confirm: true })).status, 200);
+  const applied = await dispatch("POST", "/import", { backup, confirm: true });
+  assert.equal(applied.status, 200);
+  assert.deepEqual(applied.envelope.data.overwrittenIds, [original.id]);
   assert.equal(store.getPrompt(original.id).body, "backup body");
   assert.deepEqual(store.listTrash(), []);
 });

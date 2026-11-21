@@ -218,6 +218,8 @@ export interface ImportResult {
   error?: string;
   stats?: ImportStats;
   applied?: boolean;
+  /** 已确认导入在同一事务内替换的条目 ID（含回收站）；预览不返回。 */
+  overwrittenIds?: string[];
 }
 
 /** 回滚结果：`sourceBody` 为空时拒绝（不得清空正文）。 */

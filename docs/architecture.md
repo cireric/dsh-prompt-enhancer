@@ -162,6 +162,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D29 | 起草的关键假设须引用正文原句，保证只交付正文时仍携带执行默认值。解析器拒绝未落实到正文的假设，沿用候选回退与诊断重试，不自动追加可能冲突的假设。此校验只保证字面交接完整性，不判断假设是否忠实于需求。 | `draft.ts#parseDraftResult`、`ai.ts#draftPromptCore` |
 | D30 | 每次 LLM 注入持有独立绑定，卸载只释放自身；多实例共享同一服务对象时也不相互清空。当前绑定释放后恢复最近仍存活的绑定，最后一个释放后停用 AI。绑定切换时清除模型目录缓存。 | `ai.ts#registerLlm`、`index.ts#apply`、`host-lifecycle.test.mjs` |
 | D31 | Composer 词库选择器在最终确认时按 ID 读未缓存的条目，确认仍在库后才应用已预览或填好的正文。已不存在则保留查询和草稿；无法确认则保留当前操作供重试。关闭或切换会话使本次确认失效。该校验不比较条目版本，也不把库读取与草稿写入当成原子操作；填值记忆仍是独立操作。 | `library-insertion.ts`、`PromptLibraryButton.tsx` |
+| D32 | 确认导入的 `overwrittenIds` 由写入事务确定，覆盖词库和回收站；预览只有统计。客户端只按有效回执在后台清理已有元数据，落库后的清理与通知不依赖面板是否仍挂载。清理与导入不原子；旧宿主缺回执时不猜清理名单。 | `store.ts#importPrompts`、`transfer.ts#confirmBackupImport` |
 
 ---
 

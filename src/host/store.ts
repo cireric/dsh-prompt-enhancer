@@ -887,7 +887,8 @@ export function importPrompts(input: unknown, options: { confirm?: boolean } = {
     const existing = cur.prepare(
       "SELECT 1 FROM prompts WHERE id = ? UNION ALL SELECT 1 FROM trash WHERE id = ? LIMIT 1",
     );
-    const overwritten = prompts.filter(({ id }) => existing.get(id, id) !== undefined).length;
+    const overwrittenIds = prompts.flatMap(({ id }) => existing.get(id, id) !== undefined ? [id] : []);
+    const overwritten = overwrittenIds.length;
     const stats: ImportStats = { added: prompts.length - overwritten, overwritten, total: prompts.length };
     if (!options.confirm) return { ok: true, applied: false, stats };
 
@@ -899,7 +900,7 @@ export function importPrompts(input: unknown, options: { confirm?: boolean } = {
     }
     for (const t of tags) ensureTagWith(cur, t.name);
     syncTagsFromPrompts(cur);
-    return { ok: true, applied: true, stats };
+    return { ok: true, applied: true, stats, overwrittenIds };
   });
 }
 

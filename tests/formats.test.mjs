@@ -128,6 +128,28 @@ test("confirm:false 只预览不落库；confirm:true 同 id 覆盖、新 id 追
   assert.ok(names.includes("新标签"), "导入提示词的新标签必须进字典表");
 });
 
+test("导入回执以确认时为准，只列实际覆盖的词库和回收站条目", () => {
+  const active = store.createPrompt({ title: "活跃", body: "旧正文" });
+  const trashed = store.createPrompt({ title: "回收站", body: "旧正文" });
+  const backup = { version: 1, prompts: [entry({ id: active.id }), entry({ id: trashed.id }), entry({ id: "later" }), entry({ id: "fresh" })] };
+  const preview = store.importPrompts(backup);
+  assert.deepEqual(preview, { ok: true, applied: false, stats: { added: 2, overwritten: 2, total: 4 } });
+  assert.equal(store.getPrompt(active.id).body, "旧正文");
+  assert.equal(store.getPrompt("fresh"), undefined);
+
+  // 预览与确认之间，目标移动到回收站，并有一个新同 ID 条目进入词库。
+  store.deletePrompt(trashed.id);
+  store.importPrompts({ version: 1, prompts: [entry({ id: "later" })] }, { confirm: true });
+
+  const receipt = store.importPrompts(backup, { confirm: true });
+  assert.deepEqual(receipt, {
+    ok: true, applied: true, stats: { added: 1, overwritten: 3, total: 4 },
+    overwrittenIds: [active.id, trashed.id, "later"],
+  });
+  assert.equal(store.getPrompt(trashed.id).body, "b");
+  assert.ok(!store.listTrash().some(({ id }) => id === trashed.id));
+});
+
 test("exportPrompts(ids) 只导出指定条目", () => {
   const p = store.createPrompt({ title: "子集", body: "只导我" });
   const only = store.exportPrompts([p.id]);
