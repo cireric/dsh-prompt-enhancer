@@ -19,6 +19,7 @@ const HOME_BEFORE = process.env.DSH_HOME;
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), "dpe-ai-cache-"));
 
 const ai = await import("../src/host/ai.ts");
+const { startAiBudget } = await import("../src/host/ai-budget.ts");
 const { aiResultCache } = await import("../src/host/ai-cache.ts");
 
 after(() => {
@@ -201,6 +202,47 @@ test("技能描述符：全部轮次失败 → 恰 3 次模型调用（重试预
   const r = await ai.generateSkillDescriptor({ title: "t", body: "正文" }, settings);
   assert.equal(descFake.calls, 3, "3 轮循环 = 恰 3 次模型调用（旧实现叠加诊断重试会到 6）");
   assert.deepEqual(r, { fail: "timeout" });
+});
+
+// ── 阶段 5 · 模型候选验收 ────────────────────────────────────────────────
+
+// 变异靶：把 decode 退回恒等（(text) => ({ value: text })），让坏内容先记 candidate-accepted。
+test("阶段 5：无效文本不被记作 candidate-accepted（内容验收在候选级）", async () => {
+  const events = [];
+  const descFake = countingRuntime([
+    ["不是 JSON 的文本", { type: "finish", reason: { kind: "stop" } }],
+  ]);
+  ai.registerLlm(descFake.runtime);
+  const r = await ai.generateSkillDescriptor({ title: "t", body: "正文" }, settings,
+    startAiBudget(), (event, fields) => events.push({ event, ...fields }));
+  assert.deepEqual(r, { fail: "schema-mismatch" });
+  assert.equal(events.filter((e) => e.event === "candidate-accepted").length, 0,
+    "内容不合格的候选不得记为 candidate-accepted（旧实现在 parse 前就记了）");
+  assert.ok(events.some((e) => e.event === "candidate-rejected" && e.code === "schema-mismatch"),
+    "内容不合格必须记为 candidate-rejected 并带 schema-mismatch");
+});
+
+// 变异靶：候选循环里 decode 失败后 return（而不是继续 for-await），同轮不再换下一个候选。
+test("阶段 5：内容拒绝同轮换下一个候选（与检查/完善/起草路径对齐）", async () => {
+  const stop = { type: "finish", reason: { kind: "stop" } };
+  const calls = [];
+  ai.registerLlm({
+    listProviders: () => [{ id: "primary" }, { id: "backup" }],
+    listModels: async () => [{ id: "chat" }],
+    stream({ provider }) {
+      calls.push(provider);
+      // 首选永远回坏内容，备选永远回好内容：按候选回退 ⇒ 第 1 轮就成功；
+      // 旧实现（按轮回退）会整轮判负、3 轮共 6 次调用后以 schema-mismatch 失败。
+      if (provider === "primary") return fakeStream(["不是 JSON 的文本", stop])();
+      return fakeStream(["{\"name\":\"skill-ok\",\"description\":\"d\"}", stop])();
+    },
+  });
+  const r = await ai.generateSkillDescriptor({ title: "t", body: "正文" },
+    { aiProvider: "primary", aiModel: "chat" });
+  assert.deepEqual(r, { desc: { name: "skill-ok", description: "d", whenToUse: undefined } },
+    "首选内容不合格 → 同轮换备选并采用备选结果");
+  assert.deepEqual(calls, ["primary", "backup"],
+    "同轮恰两次调用（按轮回退的旧实现会扫 3 轮 × 2 候选 = 6 次）");
 });
 test("回退结果可返回，但无法遮蔽配置模型恢复后的结果", async () => {
   const stop = { type: "finish", reason: { kind: "stop" } };

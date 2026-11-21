@@ -108,7 +108,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 调用 | 全局**串行锁**（同时只允许一个 LLM 调用，防并发打爆额度）· 每次尝试超时取单次上限与拿到锁后剩余预算的较小值 · 默认输出 2048 token · `temperature 0.4` | `ai.ts#collectText`、`ai-budget.ts` |
 | 总预算 | 从能力入口计时，目录和模型元数据查询、串行锁排队、候选调用与诊断重试共享 `AiBudget`。到期或取消时请求立即结束。各操作的上限见 D10。 | `ai-budget.ts`、`ai.ts#polishPromptBodyCore` |
 | 失败码 | 7 值枚举 `no-llm` / `route` / `timeout` / `empty-output` / `parse` / `schema-mismatch` / `unknown`，跨层传 code、client 走 i18n 字典（`ai.code.*`） | `ai-errors.ts:14-21` |
-| 重试 | `callPrompt` 轮询候选，允许一轮诊断重试。候选阶段验证结构及内容，格式或截断错误可继续回退或重试。JSON 请求通过同一对象内的 `retryDiagnosis` 字段携带诊断，正文保持原样。技能描述符使用单独的三轮尝试。 | `ai.ts#callPrompt`、`ai-errors.ts#failureDiagnosis` |
+| 重试 | `callPrompt` 轮询候选，允许一轮诊断重试。候选阶段验证结构及内容，格式或截断错误可继续回退或重试。JSON 请求通过同一对象内的 `retryDiagnosis` 字段携带诊断，正文保持原样。技能描述符使用单独的三轮尝试，内容验收在候选级执行：解析通过才记候选接受，不合格记候选拒绝并同轮换下一个候选，不叠加诊断重试。 | `ai.ts#callPrompt`、`ai.ts#attemptAllCandidates`、`ai-errors.ts#failureDiagnosis` |
 | 结果缓存 | 读穿式 LRU + TTL：键 = hash(system + user + route)，TTL 30 分钟、上限 50 条、重启即清。只有首选模型的成功结果填充首选缓存。 | `ai-cache.ts:13-14,48-56` |
 | 输出后处理 | 润色剥离包裹和明确套话，拒绝空稿和截断。润色与模板增强保护原占位符及可识别的命令、路径和权限约束。模板增强另校验必填字段。 | `text.ts:71-123` |
 | 客户端超时 | 模型生成请求的上限见 D10。探测和清键为 15s。`TimeoutError` 按名字判定，探测超时带 `probe` 标记。 | `api.ts` |

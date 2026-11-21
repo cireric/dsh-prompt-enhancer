@@ -855,19 +855,21 @@ export async function generateSkillDescriptor(
     for (let round = 1; round <= SKILL_DESCRIBE_ATTEMPTS; round++) {
       if (attemptTimeoutMs(budget) === 0) return { fail: "timeout" };
       trace?.("round-start", { round, remainingMs: remainingMs(budget) });
+      // 内容验收在候选级执行（阶段 5）：parseSkillJson 作为 decode 传入，只有解析通过才记
+      // candidate-accepted；不合格记 candidate-rejected（schema-mismatch）并同轮换下一个候选，
+      // 与检查 / 完善 / 起草路径对齐。轮间重试语义不变，仍不叠加诊断注入重试。
       const result = await attemptAllCandidates(runtime, candidates(), system, content, budget,
-        (text) => ({ value: text }), {
+        (text) => {
+          const parsed = parseSkillJson(text);
+          trace?.("validation-end", parsed ? { round, result: "descriptor" } : { round, code: "schema-mismatch" });
+          return parsed ? { value: parsed } : { failure: attemptFailure("schema-mismatch", "请输出一个含 name 字段的技能描述符 JSON 对象。") };
+        }, {
           signal: requestSignal,
           trace: trace && ((event, fields) => trace(event, { round, ...fields })),
         });
       if (result.ok) {
-        const parsed = parseSkillJson(result.text);
-        if (parsed) {
-          trace?.("validation-end", { round, result: "descriptor" });
-          return { desc: parsed };
-        }
-        lastCode = "schema-mismatch";
-        trace?.("validation-end", { round, code: lastCode });
+        trace?.("validation-end", { round, result: "descriptor" });
+        return { desc: result.value } as SkillDescribeResult;
       } else {
         lastCode = result.failure.code;
         if (lastCode === "route") break;
