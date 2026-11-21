@@ -1,64 +1,42 @@
 import * as React from "react";
 import type { TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
-import type { PromptDraftContext, PromptDraftQuestion, PromptDraftRequest, PromptDraftSearchResult, PromptDraftSource } from "../../types.ts";
+import type { PromptDraftSource } from "../../types.ts";
 import { DRAFT_FEEDBACK_MAX_LENGTH } from "../../types.ts";
 import { actions, button, muted, primaryButton, textArea, textInput } from "../utils/dialog-style.ts";
+import { draftCheckIsStale, prepareDraftGeneration, prepareDraftHandoff, type DraftEdit, type DraftGeneration, type DraftSession } from "../utils/draft-session.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { TOKEN } from "../utils/theme.ts";
-
-export interface DraftSession {
-  composer: string;
-  idea: string;
-  questions: PromptDraftQuestion[];
-  answers: string[];
-  body: string;
-  understanding?: string;
-  assumptions: string[];
-  missingInputs?: string[];
-  step: "idea" | "questions" | "result";
-  checkedBody?: string;
-  toVerify?: string[];
-  query?: string;
-  executor?: string;
-  references?: string;
-  search?: PromptDraftSearchResult;
-  generatedFrom?: PromptDraftContext;
-  feedback?: string;
-}
 
 interface Props {
   t: TranslateNS<"prompt-enhancer">;
   session: DraftSession;
   busy: boolean;
   error: PromptEnhancerKey | null;
-  update: (next: DraftSession) => void;
-  generate: (request: PromptDraftRequest) => void;
+  update: (edit: DraftEdit) => void;
+  generate: (action: DraftGeneration) => void;
   onSearch: (query: string) => void;
   onBack: () => void;
   onApply: () => void;
   onCheck: () => void;
+  onViewCheck: () => void;
   onEnhance: () => void;
   onCopy: () => void;
   copyLabel: PromptEnhancerKey;
 }
 
 export function PromptDraftForm({
-  t, session, busy, error, update, generate, onSearch, onBack, onApply, onCheck, onEnhance, onCopy, copyLabel,
+  t, session, busy, error, update, generate, onSearch, onBack, onApply, onCheck, onViewCheck, onEnhance, onCopy, copyLabel,
 }: Props): React.ReactElement {
-  const { idea, questions, answers, body, understanding, assumptions, missingInputs = [], step, checkedBody } = session;
-  const { query = "", search, executor = "", references = "", toVerify = [], generatedFrom, feedback = "" } = session;
+  const { idea, questions, answers, body, understanding, assumptions, missingInputs = [], step } = session;
+  const { query = "", search, executor = "", references = "", toVerify = [], generatedFrom, feedback } = session;
   const [initialFeedbackOpen] = React.useState(() => !!feedback.trim());
   const draftSources = generatedFrom?.sources ?? [];
   const sources = search?.status === "found" ? search.sources : [];
   const searchNotice = search?.status === "unavailable" ? "ai.draft.searchUnavailable"
     : search?.status === "empty" ? "ai.draft.searchEmpty"
     : search?.status === "failed" ? "ai.draft.searchFailed" : undefined;
-  const submit = (answers?: PromptDraftRequest["answers"]): void => {
-    generate({ idea, executor, answers, ...(references.trim() ? { references } : {}), ...(sources.length ? { sources } : {}) });
-  };
-  const setAnswer = (index: number, answer: string): void => {
-    update({ ...session, answers: answers.map((previous, position) => position === index ? answer : previous) });
-  };
+  const canGenerate = prepareDraftGeneration(session, "generate") !== undefined;
+  const canHandoff = !busy && prepareDraftHandoff(session) !== undefined;
 
   return (
     <>
@@ -73,13 +51,13 @@ export function PromptDraftForm({
               autoFocus
               readOnly={busy}
               style={EDITOR}
-              onChange={(event) => update({ ...session, idea: event.target.value, questions: [], answers: [] })}
+              onChange={(event) => update({ type: "field", field: "idea", value: event.target.value })}
             />
             <details style={ASSUMPTIONS}>
               <summary>{t("ai.draft.executor")}</summary>
               <textarea aria-label={t("ai.draft.executor")} placeholder={t("ai.draft.executorExample")}
                 value={executor} maxLength={1000} rows={2} style={textArea} readOnly={busy}
-                onChange={(event) => update({ ...session, executor: event.currentTarget.value, questions: [], answers: [] })} />
+                onChange={(event) => update({ type: "field", field: "executor", value: event.currentTarget.value })} />
             </details>
           </>
         )}
@@ -90,7 +68,7 @@ export function PromptDraftForm({
               <div style={OPTIONS}>
                 {options.map((option) => (
                   <button key={option} type="button" style={answers[index] === option ? primaryButton : button}
-                    aria-pressed={answers[index] === option} onClick={() => setAnswer(index, option)}>
+                    aria-pressed={answers[index] === option} onClick={() => update({ type: "answer", index, value: option })}>
                     {option}
                   </button>
                 ))}
@@ -98,7 +76,7 @@ export function PromptDraftForm({
             )}
             <textarea aria-label={question} placeholder={t("ai.draft.answer")}
               value={answers[index] ?? ""} rows={2} style={textArea}
-              onChange={(event) => setAnswer(index, event.target.value)} />
+              onChange={(event) => update({ type: "answer", index, value: event.target.value })} />
           </fieldset>
         ))}
         {step !== "result" && (
@@ -108,7 +86,7 @@ export function PromptDraftForm({
               <div style={OPTIONS}>
                 <input type="text" aria-label={t("ai.draft.query")} placeholder={t("ai.draft.query")}
                   maxLength={240} value={query} disabled={busy} style={{ ...textInput, flex: "1 1 150px" }}
-                  onChange={(event) => update({ ...session, query: event.currentTarget.value, search: undefined })} />
+                  onChange={(event) => update({ type: "field", field: "query", value: event.currentTarget.value })} />
                 <button type="button" style={button} disabled={busy || !query.trim()} onClick={() => onSearch(query)}>
                   {t("ai.draft.search")}
                 </button>
@@ -118,7 +96,7 @@ export function PromptDraftForm({
               {sources.length > 0 && <DraftSources t={t} sources={sources} />}
               <textarea aria-label={t("ai.draft.references")} placeholder={t("ai.draft.references")}
                 value={references} maxLength={4000} rows={2} style={textArea} disabled={busy}
-                onChange={(event) => update({ ...session, references: event.currentTarget.value })} />
+                onChange={(event) => update({ type: "field", field: "references", value: event.currentTarget.value })} />
             </div>
           </details>
         )}
@@ -129,17 +107,17 @@ export function PromptDraftForm({
               <div>{understanding}</div>
             </div>}
             <textarea aria-label={t("ai.draft.result")} value={body} style={EDITOR} readOnly={busy}
-              onChange={(event) => update({ ...session, body: event.target.value })} />
+              onChange={(event) => update({ type: "field", field: "body", value: event.target.value })} />
             {generatedFrom && (
               <details open={initialFeedbackOpen} style={ASSUMPTIONS}>
                 <summary>{t("ai.draft.revise")}</summary>
                 <div style={RESEARCH_FIELDS}>
                   <textarea aria-label={t("ai.draft.feedback")} placeholder={t("ai.draft.feedbackExample")}
                     value={feedback} maxLength={DRAFT_FEEDBACK_MAX_LENGTH} rows={2} style={textArea} readOnly={busy}
-                    onChange={(event) => update({ ...session, feedback: event.currentTarget.value })} />
+                    onChange={(event) => update({ type: "field", field: "feedback", value: event.currentTarget.value })} />
                   <div style={OPTIONS}>
-                    <button type="button" style={button} disabled={busy || !body.trim() || !feedback.trim()}
-                      onClick={() => generate({ ...generatedFrom, revision: { body, feedback } })}>
+                    <button type="button" style={button} disabled={busy || !prepareDraftGeneration(session, "revise")}
+                      onClick={() => generate("revise")}>
                       {t("ai.draft.revise")}
                     </button>
                   </div>
@@ -165,45 +143,38 @@ export function PromptDraftForm({
               </details>
             )}
             {draftSources.length > 0 && <DraftSources t={t} sources={draftSources} />}
-            {checkedBody !== undefined && checkedBody !== body && (
+            {draftCheckIsStale(session) && (
               <span role="status" style={muted}>{t("ai.draft.checkStale")}</span>
             )}
           </>
         )}
       </div>
       <footer style={FOOTER}>
-        {step === "idea" && (
+        {step !== "result" && (
           <>
-            <button type="button" style={button} disabled={busy} onClick={onBack}>{t("ai.backToActions")}</button>
-            {body && <button type="button" style={button} disabled={busy}
-              onClick={() => update({ ...session, step: "result" })}>{t("ai.draft.backToResult")}</button>}
-            <button type="button" style={primaryButton} disabled={busy || !idea.trim()}
-              onClick={() => submit()}>{t("ai.draft.generate")}</button>
-          </>
-        )}
-        {step === "questions" && (
-          <>
-            <button type="button" style={button} disabled={busy}
-              onClick={() => update({ ...session, step: "idea" })}>{t("ai.draft.editIdea")}</button>
-            {body && <button type="button" style={button} disabled={busy}
-              onClick={() => update({ ...session, step: "result" })}>{t("ai.draft.backToResult")}</button>}
-            <button type="button" style={answers.some((answer) => answer.trim()) ? button : primaryButton} disabled={busy}
-              onClick={() => submit(questions.map(({ question }) => ({ question, answer: "" })))}>{t("ai.draft.skip")}</button>
-            <button type="button" style={primaryButton} disabled={busy || !answers.some((answer) => answer.trim())}
-              onClick={() => submit(questions.map(({ question }, index) => ({ question, answer: answers[index] ?? "" })))}>
-              {t("ai.draft.generate")}
-            </button>
+            {step === "idea"
+              ? <button type="button" style={button} disabled={busy} onClick={onBack}>{t("ai.backToActions")}</button>
+              : <button type="button" style={button} disabled={busy}
+                  onClick={() => update({ type: "editIdea" })}>{t("ai.draft.editIdea")}</button>}
+            {generatedFrom && <button type="button" style={button} disabled={busy}
+              onClick={() => update({ type: "returnResult" })}>{t("ai.draft.backToResult")}</button>}
+            {step === "questions" && <button type="button" style={canGenerate ? button : primaryButton} disabled={busy}
+              onClick={() => generate("skip")}>{t("ai.draft.skip")}</button>}
+            <button type="button" style={primaryButton} disabled={busy || !canGenerate}
+              onClick={() => generate("generate")}>{t("ai.draft.generate")}</button>
           </>
         )}
         {step === "result" && (
           <>
-            <button type="button" style={button} disabled={busy} onClick={() => update({ ...session, step: questions.length ? "questions" : "idea" })}>
+            <button type="button" style={button} disabled={busy} onClick={() => update({ type: "editInputs" })}>
               {t(questions.length ? "ai.draft.editAnswers" : "ai.draft.editIdea")}
             </button>
             <button type="button" style={button} disabled={busy || !body.trim()} onClick={onCopy}>{t(copyLabel)}</button>
-            <button type="button" style={button} disabled={busy || !body.trim()} onClick={onCheck}>{t("ai.check")}</button>
-            <button type="button" style={button} disabled={busy || !body.trim()} onClick={onEnhance}>{t("ai.refine")}</button>
-            <button type="button" style={primaryButton} disabled={busy || !body.trim()} onClick={onApply}>{t("ai.apply")}</button>
+            {session.checked && <button type="button" style={button} disabled={busy}
+              onClick={onViewCheck}>{t("ai.draft.viewCheck")}</button>}
+            <button type="button" style={button} disabled={!canHandoff} onClick={onCheck}>{t("ai.check")}</button>
+            <button type="button" style={button} disabled={!canHandoff} onClick={onEnhance}>{t("ai.refine")}</button>
+            <button type="button" style={primaryButton} disabled={!canHandoff} onClick={onApply}>{t("ai.apply")}</button>
           </>
         )}
       </footer>

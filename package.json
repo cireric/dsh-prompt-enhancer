@@ -20,7 +20,7 @@
     "test": "node --test",
     "smoke": "node scripts/smoke.mjs",
     "verify": "npm run typecheck && npm test && npm run build && npm run smoke",
-    "verify:ci": "git ls-files --error-unmatch -- lib/index.js lib/client.js && node --test tests/store.test.mjs tests/store-migration.test.mjs tests/eviction.test.mjs tests/formats.test.mjs tests/template.test.mjs tests/overlay-claim.test.mjs tests/ui-state.test.mjs tests/library-insertion.test.mjs tests/transfer.test.mjs tests/source-hash.test.mjs && npm run build && git diff --exit-code -- lib/index.js lib/client.js"
+    "verify:ci": "git ls-files --error-unmatch -- lib/index.js lib/client.js && node --test tests/store.test.mjs tests/store-migration.test.mjs tests/eviction.test.mjs tests/formats.test.mjs tests/template.test.mjs tests/overlay-claim.test.mjs tests/ui-state.test.mjs tests/draft-session.test.mjs tests/library-insertion.test.mjs tests/transfer.test.mjs tests/source-hash.test.mjs && npm run build && git diff --exit-code -- lib/index.js lib/client.js"
   },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
