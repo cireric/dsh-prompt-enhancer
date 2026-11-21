@@ -59,6 +59,18 @@ test("跳过澄清发送空回答，拒绝再追问；失败、取消与重试�
   assert.equal((await respond(idea, "generate", context, clarify)).step, "questions");
 });
 
+test("澄清后从想法页重新生成并直接出稿，编辑输入不返回旧澄清页", async () => {
+  const questions = await respond(start(), "generate", context, clarify);
+  const answered = editDraftSession(questions, { type: "answer", index: 0, value: "中文" });
+  const first = await respond(answered, "generate", { ...context, answers: [{ question, answer: "中文" }] }, draft);
+  const inputs = editDraftSession(first, { type: "editInputs" });
+  assert.equal(inputs.step, "questions");
+
+  const idea = editDraftSession(inputs, { type: "editIdea" });
+  const direct = await respond(idea, "generate", context, draft);
+  assert.equal(editDraftSession(direct, { type: "editInputs" }).step, "idea");
+});
+
 test("按反馈改写使用当前编辑稿及原生成依据，只有成功才追加历史", async () => {
   const first = await firstDraft();
   const edited = withFields(first, { body: "用中文总结附件访谈。", feedback: "  改为英文。  " });
