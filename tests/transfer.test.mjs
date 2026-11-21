@@ -53,7 +53,7 @@ function observe(t, receipt, deleteResponse = () => Response.json({ ok: true, da
 test("确认导入不预读词库；仅清理回执列出的覆盖 ID，并立即通知变更", { timeout: 500 }, async (t) => {
   const cleanup = Promise.withResolvers();
   t.after(() => cleanup.resolve(Response.json({ ok: true, data: { deleted: true } })));
-  const f = observe(t, { ok: true, applied: true, stats, overwrittenIds: ["overwritten"] },
+  const f = observe(t, { ok: true, applied: true, stats, overwrittenIds: ["overwritten"], preservedSkillIds: [] },
     async () => (await cleanup.promise).clone());
   const receipt = await confirmBackupImport(backup);
   assert.equal(receipt.applied, true);
@@ -77,6 +77,17 @@ for (const applied of [false, undefined, "true", 1]) {
   });
 }
 
+test("导入只删除未保留归属条目的描述符，其余导入相关元数据照常清理", async (t) => {
+  const f = observe(t, { ok: true, applied: true, stats: { added: 0, overwritten: 2, total: 2 },
+    overwrittenIds: ["owned", "unowned"], preservedSkillIds: ["owned"] });
+  await confirmBackupImport(backup);
+  await new Promise(setImmediate);
+  assert.deepEqual(f.requests.filter(({ method }) => method === "DELETE").map(({ url }) => url.split("/meta/")[1]), [
+    "pl:refined-dir:owned", "pl:template-var-memory:owned", "pl:refined-dir:unowned",
+    "pl:skill-descriptor:unowned", "pl:template-var-memory:unowned",
+  ]);
+});
+
 test("明确无覆盖时只广播、不清键", async (t) => {
   const f = observe(t, { ok: true, applied: true, stats: { added: 2, overwritten: 0, total: 2 }, overwrittenIds: [] });
   assert.equal((await confirmBackupImport(backup)).applied, true);
@@ -99,7 +110,7 @@ test("旧宿主缺少覆盖回执或回执无效时不猜清理名单，仍确�
 
 test("清键失败只告警，不改变导入成功结果或广播", async (t) => {
   const warn = t.mock.method(console, "warn", () => {});
-  const f = observe(t, { ok: true, applied: true, stats, overwrittenIds: ["overwritten"] }, () => {
+  const f = observe(t, { ok: true, applied: true, stats, overwrittenIds: ["overwritten"], preservedSkillIds: [] }, () => {
     throw new Error("清键失败");
   });
   assert.equal((await confirmBackupImport(backup)).applied, true);

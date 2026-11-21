@@ -86,7 +86,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 设置 | `GET /settings` · `PUT /settings`（写入后清 AI 路由缓存） |
 | 导入导出 | `POST /export/save`（宿主生成文件名 + 目录来自 `workspaces.pickDirectory`）· `POST /import`（`{backup, confirm}`，未确认只回预览） |
 | meta | `GET/PUT/DELETE /meta/:key`（模板变量记忆等客户端键名的通用通道，宿主不认识键名约定） |
-| 技能 | `POST /skills/export`（覆盖其他条目或手写的同名技能需 `conflictConfirmed`） |
+| 技能 | `POST /skills/export`（可确认的 409 返回 `error.conflict: { name, token }`；重试携带 `conflictToken`） |
 
 ### 4.2 设置（13 键，dsh 0.2.0 契约）
 
@@ -135,7 +135,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | §13.10-二 | 客户端预演必须与宿主同键同序（`id` 兜底成全序），否则确认框会撒谎（D-1） | 本文 §3、`src/eviction-order.ts` |
 | §13.10-四 → §13.11-一 | 浮层互斥从「共享信号 + 渲染不变式」升级为 **claim 寄存器** | 本文 §2、`src/overlay-claim.ts` |
 | §13.11-二 | 方向「不猜」：来源未知时切换 ⇒ 作废记录；迟到的读结果若出生在切换之前 ⇒ 丢弃 | 本文 §3（meta 键约定）、`src/client/utils/refined-direction.ts` |
-| §13.11-三 | 技能名身份：已导出条目的目录名只能由 `skillName` 决定，`name` 只在首次导出参与（权威层收口，防孤儿目录） | `src/host/routes.ts:406-429` |
+| §13.11-三 | 技能名身份：有归属的条目以 `skillName` 决定目录，`name` 只参与无归属条目的导出。 | `store.ts#recordSkillExport` |
 | §13.13 | 写回缝在 store 层收口：补丁类型收窄，AI 三字段「传不进来」（而非「靠没人传」） | 本文 §3、`src/types.ts:79-89` |
 | dsh 0.2.0 迁移 | 设置从 `settingsScope` → `configForms` + `Config`；`ctx.settings.update(entryId, patch)` 取代 `register`（旧写法启动即抛，是设置页保存 503 的根因） | `src/index.ts:4-14` |
 | 首包（已交付） | 统一 AI 错误码 + 诊断注入重试 · AI 结果缓存 · 推荐相关性重排（usage ×0.15 封顶 + 草稿词硬门槛） | issues #1–#6（全 CLOSED） |
@@ -155,14 +155,15 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D22 | AI 面板等待时显示已用时长。取消请求返回操作菜单或起草面板，保留用户输入。HTTP 连接提前关闭或插件卸载时，宿主取消请求及排队等待，并停止后续候选和诊断重试。 | `AIPolishButton.tsx`、`routes.ts#dispatch`、`ai.ts#attemptAllCandidates` |
 | D23 | 写入冲突保护。管理器仅提交改动字段，保存和换稿携带宿主签发的 `contentVersion`。旧调用仍可省略该字段。创建需要淘汰时必须提交已确认的 ID，名单过期返回 409。确认导入按同 ID 覆盖在用条目或回收站条目，恢复遇到历史同 ID 冲突时保留两份并返回 409。 | `store.ts#createPromptWithEvictions`、`store.ts#importPrompts`、`prompt-edit.ts` |
 | D24 | 填值记忆完成后复核草稿版本。草稿变化时，追加使用当前内容，覆盖和发送需要重新确认。覆盖使用宿主整体替换；追加和替换尾部令牌使用区间插入以保留内联引用。公开输入状态未暴露引用选区卡片的完整坐标，含此类卡片的尾部编辑可能被宿主拒绝，界面保留草稿并提示失败。 | `TemplateVariablesDialog.tsx`、`insert.ts` |
-| D25 | 确认覆盖同名技能会转移唯一归属，包括撤销回收站中的旧归属。历史同名归属需要重新确认。技能内容写入失败时回滚归属变更。 | `store.ts#recordSkillExport`、`skills.ts#exportSkill` |
+| D25 | 按实际落盘名识别同名归属，历史重复项不自动选主。宿主将确认凭据绑定到目标名、待导出内容、竞争归属和目标文件版本；状态变化时旧凭据不可写盘，旧布尔标记不授权覆盖。确认后转移唯一归属并撤销回收站旧归属。写盘失败回滚数据库归属；SQLite 与文件系统不共享原子提交。 | `routes.ts`、`store.ts#recordSkillExport`、`skills.ts#exportSkill` |
 | D26 | 起草接收可选的下游执行环境，按模型能看到的上下文及可用工具生成自包含正文，交付前检查约束、能力和验收条件。按反馈改写时，同一接口携带生成本稿的输入、当前编辑稿及反馈，直接返回新版。失败或取消保留正文和反馈。 | `PromptDraftForm.tsx`、`draft.ts`、`ai.ts#draftPromptCore` |
 | D27 | 起草从已有信息补齐交付要求和验收条件，在正文写明影响执行的默认值和待补材料。一轮澄清只处理会改变任务的用户选择。结论依赖外部事实时，正文按需增加一手来源溯源、适用性检查和证据强度约束。 | `ai.ts#draftPromptCore` |
 | D28 | 起草按单次任务、可复用工作流或长期角色组织正文，并展示生成时理解的目标和执行前待补材料。起草面板触发的检查对照该稿的原始输入、澄清和按顺序采用的反馈。可把当前检查报告中的单条建议带回反馈框，由用户编辑并提交。 | `draft.ts`、`ai.ts#checkPromptCore`、`AIPolishButton.tsx` |
 | D29 | 起草的关键假设须引用正文原句，保证只交付正文时仍携带执行默认值。解析器拒绝未落实到正文的假设，沿用候选回退与诊断重试，不自动追加可能冲突的假设。此校验只保证字面交接完整性，不判断假设是否忠实于需求。 | `draft.ts#parseDraftResult`、`ai.ts#draftPromptCore` |
 | D30 | 每次 LLM 注入持有独立绑定，卸载只释放自身；多实例共享同一服务对象时也不相互清空。当前绑定释放后恢复最近仍存活的绑定，最后一个释放后停用 AI。绑定切换时清除模型目录缓存。 | `ai.ts#registerLlm`、`index.ts#apply`、`host-lifecycle.test.mjs` |
 | D31 | Composer 词库选择器在最终确认时按 ID 读未缓存的条目，确认仍在库后才应用已预览或填好的正文。已不存在则保留查询和草稿；无法确认则保留当前操作供重试。关闭或切换会话使本次确认失效。该校验不比较条目版本，也不把库读取与草稿写入当成原子操作；填值记忆仍是独立操作。 | `library-insertion.ts`、`PromptLibraryButton.tsx` |
-| D32 | 确认导入的 `overwrittenIds` 由写入事务确定，覆盖词库和回收站；预览只有统计。客户端只按有效回执在后台清理已有元数据，落库后的清理与通知不依赖面板是否仍挂载。清理与导入不原子；旧宿主缺回执时不猜清理名单。 | `store.ts#importPrompts`、`transfer.ts#confirmBackupImport` |
+| D32 | 确认导入的 `overwrittenIds` 由写入事务确定，覆盖词库和回收站；预览只有统计。客户端只按有效回执在后台清理已有元数据，落库后的清理与通知不依赖面板是否仍挂载。回执中的 `preservedSkillIds` 标出应保留重导描述符的覆盖项；缺少此字段时不删描述符。清理与导入不原子；旧宿主缺覆盖回执时不猜清理名单。 | `store.ts#importPrompts`、`transfer.ts#confirmBackupImport` |
+| D33 | 普通提示词 PUT 带归属名或导出时间返回 400，整次不写。备份仍可携带旧字段，但导入不使用它们认领技能，也不写技能文件。同 ID 覆盖保留本机归属并标为待重导；词库和回收站有同 ID 且分别绑定不同技能时，整批导入返回 409，保留两份。导入的创建和编辑时间最多取本机确认导入时间，避免来源时钟偏快导致后续导出仍显示过期。 | `routes.ts`、`store.ts#importPrompts` |
 
 ---
 
@@ -208,7 +209,8 @@ npm run smoke       # 真实执行 client bundle：注册 id、7 个插槽的账
 | 写回缝 | 把 AI 结果写回提示词正文的**唯一**路径（`aiWriteBack: true`） |
 | 悬浮层三面 | 词库面板 / AI 结果面板 / `#` 候选浮层，由 `overlay-claim.ts` 的 claim 寄存器保证同屏互斥 |
 | 方向记录 | meta `pl:refined-dir:<id>`，值为裸的 `original` / `refined`；空串 = 无记录 |
-| 技能过期 | `skillName` 非空且 `skillExportedAt < updatedAt` |
+| 技能归属 | 本机提示词与技能目录之间的绑定。词库条目移入回收站后仍持有绑定；备份中的同名记录不构成本机归属。 |
+| 技能过期 | 有技能归属，且尚待重导或提示词在技能导出后又有改动。判定见 `src/skill-badge.ts#isSkillStale`。 |
 | 沉淀三入口 | 管理面板新建/编辑 · 选中文字存为提示词 · 当前草稿存为提示词 |
 | 淘汰预演 | 客户端按共享键序预演受害者并确认。宿主在创建事务内核对已批准的 ID |
 

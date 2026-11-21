@@ -226,11 +226,11 @@ export async function describeEach(
 
 // ── 导出编排 ─────────────────────────────────────────────────────────────────
 
-/** 每次 `POST /skills/export` 的入参（`conflictConfirmed` 由编排决定，UI 不自己拼）。 */
+/** 每次 `POST /skills/export` 的入参（确认凭据由宿主签发）。 */
 export interface SkillExportRequest {
   name: string;
   descriptor?: SkillDescriptorPayload;
-  conflictConfirmed: boolean;
+  conflictToken?: string;
 }
 
 /** 成功：名字与**目标文件路径**都取宿主回执（客户端不拼路径）。 */
@@ -289,8 +289,7 @@ export interface ExportEachInput {
  *
  *  1. **预校验先行**：`precheckExport` 不通过就**不发出请求**（名字非法 / 描述兜底链全空），
  *     结果是带 errorKey 的 failed——宿主的 400 是最终判定，但客户端不该先白跑一趟。
- *  2. **409 才问，且重试必须带 `conflictConfirmed: true`**：宿主 409 专用于「同名目录不属于本插件
- *     （可能是你手写的技能）」（routes.ts）；用户取消 → `declined`（不覆盖、不算失败）；
+ *  2. **只确认带凭据的 409**：展示宿主返回的目标名，重试必须带回凭据；取消不覆盖。
  *     确认后重试仍失败 → failed（**不再二次询问**，否则用户确认一次就够，不该陷入循环）。
  *  3. **目标目录只取宿主回执**：`receipt.path` 缺席时显式报 `manager.skill.pathMissing`——
  *     客户端不知道 `DSH_HOME`，**不得**自己拼路径（这条同时挡住「假成功」）。
@@ -319,31 +318,32 @@ async function exportOne(prompt: SkillCandidate, input: ExportEachInput): Promis
     return { status: "failed", id: prompt.id, title: prompt.title, errorKey: pre.errorKey, detail: pre.detail };
   }
 
-  const request: SkillExportRequest = { name: pre.name, descriptor, conflictConfirmed: false };
+  const request: SkillExportRequest = { name: pre.name, descriptor };
   let receipt: SkillExportReceipt;
   try {
     receipt = await input.send(prompt, request);
   } catch (err) {
-    if (!isConflict(err)) return failedOutcome(prompt, err);
+    if (!(err instanceof ApiError) || err.status !== 409 || !err.skillConflict) return failedOutcome(prompt, err);
+    const { name, token } = err.skillConflict;
     /**
      * 要求 3：用户已离开技能页 ⇒ **不弹**同名冲突确认。此刻弹出来的框没有任何上下文来源
      * （技能页已卸载，用户不知道它在问哪一条），故按「没有确认 ⇒ 不覆盖」落地成 `declined`：
      * 事实与「用户点了取消」逐字相同（未确认 ⇒ 未覆盖），且该条此刻无处渲染。
      */
     if (input.run?.cancelled) {
-      return { status: "declined", id: prompt.id, title: prompt.title, name: pre.name, detail: reasonOf(err) };
+      return { status: "declined", id: prompt.id, title: prompt.title, name, detail: reasonOf(err) };
     }
     const approved = await input.confirmConflict({
       id: prompt.id,
       title: prompt.title,
-      name: pre.name,
+      name,
       detail: reasonOf(err),
     });
-    if (!approved) {
-      return { status: "declined", id: prompt.id, title: prompt.title, name: pre.name, detail: reasonOf(err) };
+    if (!approved || input.run?.cancelled) {
+      return { status: "declined", id: prompt.id, title: prompt.title, name, detail: reasonOf(err) };
     }
     try {
-      receipt = await input.send(prompt, { ...request, conflictConfirmed: true });
+      receipt = await input.send(prompt, { ...request, conflictToken: token });
     } catch (retryErr) {
       return failedOutcome(prompt, retryErr);
     }
@@ -390,11 +390,6 @@ async function exportOne(prompt: SkillCandidate, input: ExportEachInput): Promis
     await (input.saveDescriptor ?? persistDescriptor)(prompt.id, used);
   }
   return exported;
-}
-
-/** 409 判定按 **HTTP 状态**（不匹配文案；宿主 409 专用于同名目录冲突）。 */
-function isConflict(err: unknown): boolean {
-  return err instanceof ApiError && err.status === 409;
 }
 
 function failedOutcome(prompt: SkillCandidate, err: unknown): ExportOutcome {

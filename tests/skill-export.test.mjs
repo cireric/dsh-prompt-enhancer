@@ -7,7 +7,7 @@
  *
  * 变异验证（报告里逐次给命令与输出）：
  *   ① 预校验（`isValidSkillName`）被绕过 → 「预校验先行的负样本」必红；
- *   ② 409 重试丢掉 `conflictConfirmed` → 「确认后重试必须带标记」必红；
+ *   ② 409 重试丢掉 `conflictToken` → 「确认后重试必须带标记」必红；
  *   ③ AI 失败改成整体中止 → 「单条失败不阻断」必红。
  *
  * 修复轮 1（R-P7-X）追加（在同一批用例里做的变异验证）：
@@ -171,8 +171,8 @@ test("precheckExport 负样本：结构性非法名（../evil）→ nameInvalid�
 test("precheckExport 负样本：名字非空但 kebab 后仍非法（超长 / 归一为空）→ nameInvalid", () => {
   for (const raw of ["a".repeat(65), "___"]) {
     const pre = precheckExport(prompt(), descriptor({ name: raw }));
-    assert.equal(pre.ok, false, raw + " 必须被拒");
-    assert.equal(pre.errorKey, "manager.skill.nameInvalid", raw + " 的键");
+    assert.equal(pre.ok, false, `${raw} 必须被拒`);
+    assert.equal(pre.errorKey, "manager.skill.nameInvalid", `${raw} 的键`);
     assert.doesNotMatch(pre.detail, /[\u4e00-\u9fff]/);
   }
 });
@@ -198,7 +198,7 @@ test("describeEach：单条失败只记在该条上，其余条目照跑（AI �
     async (p) => {
       tried.push(p.id);
       if (p.id === "b") throw new ApiError("AI 生成技能描述失败（no-llm）", 503);
-      return descriptor({ name: "skill-" + p.id });
+      return descriptor({ name: `skill-${p.id}` });
     },
     { onEach: (id, outcome) => seen.push([id, outcome.ok]) },
   );
@@ -240,7 +240,7 @@ test("exportEach：预校验不通过就**不发请求**（负样本：名字非
   assert.equal(outcomes[1].errorKey, "manager.skill.nameMissing");
 });
 
-test("exportEach：成功路径——请求带 kebab 名与 descriptor、conflictConfirmed=false；结果取宿主回执", async () => {
+test("exportEach：成功路径——请求带 kebab 名与 descriptor；结果取宿主回执", async () => {
   const s = scriptedSend([{ name: "weekly-report", path: "/home/u/.dsh/skills/weekly-report/SKILL.md", prompt: { id: "p1" } }]);
   const outcomes = await exportEach({
     prompts: [prompt()],
@@ -254,19 +254,18 @@ test("exportEach：成功路径——请求带 kebab 名与 descriptor、conflic
   assert.deepEqual(s.calls[0].request, {
     name: "weekly-report",
     descriptor: descriptor({ name: "Weekly Report" }),
-    conflictConfirmed: false,
   });
   assert.deepEqual(outcomes, [
     { status: "exported", id: "p1", title: "周报生成", name: "weekly-report", path: "/home/u/.dsh/skills/weekly-report/SKILL.md" },
   ]);
 });
 
-test("exportEach：409 → 弹确认 → 重试**必须带 conflictConfirmed: true**（否则用户白确认一次）", async () => {
-  const conflict = new ApiError("技能目录 mine 已存在，且不属于本插件的任何提示词（可能是你手写的技能）", 409);
+test("exportEach：确认显示宿主目标，重试原样带宿主凭据", async () => {
+  const conflict = new ApiError("技能目录 mine 已存在，且不属于本插件的任何提示词（可能是你手写的技能）", 409, false, undefined, { name: "mine", token: "host-token" });
   const s = scriptedSend([conflict, { name: "mine", path: "/h/.dsh/skills/mine/SKILL.md" }]);
   const asked = [];
   const outcomes = await exportEach({
-    prompts: [prompt({ id: "p1", title: "我的技能", skillName: "mine" })],
+    prompts: [prompt({ id: "p1", title: "我的技能", skillName: "old-name" })],
     descriptors: {},
     send: s.send,
     saveDescriptor: noSave,
@@ -276,8 +275,8 @@ test("exportEach：409 → 弹确认 → 重试**必须带 conflictConfirmed: tr
     },
   });
   assert.equal(s.calls.length, 2, "先失败再重试：恰好两次请求");
-  assert.equal(s.calls[0].request.conflictConfirmed, false);
-  assert.equal(s.calls[1].request.conflictConfirmed, true, "重试必须带 conflictConfirmed: true");
+  assert.equal(s.calls[0].request.conflictToken, undefined);
+  assert.equal(s.calls[1].request.conflictToken, "host-token");
   assert.deepEqual(asked, [
     { id: "p1", title: "我的技能", name: "mine", detail: "技能目录 mine 已存在，且不属于本插件的任何提示词（可能是你手写的技能）" },
   ]);
@@ -286,7 +285,7 @@ test("exportEach：409 → 弹确认 → 重试**必须带 conflictConfirmed: tr
 });
 
 test("exportEach：409 后用户取消 → declined（不覆盖、不算失败、不再发请求）", async () => {
-  const s = scriptedSend([new ApiError("技能目录 mine 已存在", 409)]);
+  const s = scriptedSend([new ApiError("技能目录 mine 已存在", 409, false, undefined, { name: "mine", token: "host-token" })]);
   const outcomes = await exportEach({
     prompts: [prompt({ skillName: "mine" })],
     descriptors: {},
@@ -301,7 +300,7 @@ test("exportEach：409 后用户取消 → declined（不覆盖、不算失败�
 });
 
 test("exportEach：确认后仍 409 → failed，且**不再二次询问**（不得陷入确认循环）", async () => {
-  const conflict = new ApiError("技能目录 mine 已存在", 409);
+  const conflict = new ApiError("技能目录 mine 已存在", 409, false, undefined, { name: "mine", token: "host-token" });
   const s = scriptedSend([conflict, conflict, conflict]);
   let asked = 0;
   const outcomes = await exportEach({
@@ -320,8 +319,8 @@ test("exportEach：确认后仍 409 → failed，且**不再二次询问**（不
   assert.equal(outcomes[0].errorKey, "manager.skill.exportFailed");
 });
 
-test("exportEach：非 409 的宿主错误（400/404）→ failed，不弹确认，detail 是宿主原文", async () => {
-  for (const [status, message] of [[400, "技能名非法：需要小写 kebab-case"], [404, "提示词不存在"]]) {
+test("exportEach：没有可确认凭据的宿主错误 → failed，不弹确认", async () => {
+  for (const [status, message] of [[400, "技能名非法：需要小写 kebab-case"], [404, "提示词不存在"], [409, "旧宿主未提供确认凭据"]]) {
     const s = scriptedSend([new ApiError(message, status)]);
     let asked = 0;
     const outcomes = await exportEach({
@@ -334,7 +333,7 @@ test("exportEach：非 409 的宿主错误（400/404）→ failed，不弹确认
         return true;
       },
     });
-    assert.equal(asked, 0, status + " 不该弹同名冲突确认");
+    assert.equal(asked, 0, `${status} 不该弹同名冲突确认`);
     assert.equal(outcomes[0].status, "failed");
     assert.equal(outcomes[0].errorKey, "manager.skill.exportFailed");
     assert.equal(outcomes[0].detail, message);
@@ -464,7 +463,7 @@ test("exportEach + run（要求 1 + 要求 2）：取消后不再启动新条目
       sent.push(p.id);
       // 第一条在途时用户离开技能页（组件卸载 ⇒ cancel()），但**该条已经落盘**。
       run.cancel();
-      return { name: "skill-" + p.id, path: "/h/skills/skill-" + p.id + "/SKILL.md" };
+      return { name: `skill-${p.id}`, path: `/h/skills/skill-${p.id}/SKILL.md` };
     },
     saveDescriptor: noSave,
     confirmConflict: async () => {
@@ -487,7 +486,7 @@ test("exportEach + run（要求 3）：取消后已发出的 409 不再弹确认
     send: async () => {
       // 请求已发出 → 用户此刻离开 → 宿主才回 409。
       run.cancel();
-      throw new ApiError("技能目录 mine 已存在，且不属于本插件的任何提示词（可能是你手写的技能）", 409);
+      throw new ApiError("技能目录 mine 已存在", 409, false, undefined, { name: "mine", token: "host-token" });
     },
     saveDescriptor: noSave,
     confirmConflict: async () => {

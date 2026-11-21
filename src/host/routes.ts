@@ -18,7 +18,7 @@
  * 状态码：400 参数错误 / 403 跨源写入被拒（见 isCrossSiteWrite）/ 404 未找到 / 409 同名冲突需确认 /
  * 503 AI 或设置服务不可用 / 500 未预期异常。
  */
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, join } from "node:path";
@@ -32,7 +32,7 @@ import { getSettings, isSettingsAvailable, updateSettings } from "./settings.ts"
 import { safeErrorCode, startReviewTrace, type ReviewTrace } from "./review-trace.ts";
 import { readTemplateVariables } from "../template-variables.ts";
 import { IMPORT_REQUEST_OVERHEAD, MAX_REQUEST_BODY_BYTES } from "../backup-transfer.ts";
-import { API_PREFIX, isNonnegativeSafeInteger, type Prompt, type PromptSort, type PromptWritablePatch } from "../types.ts";
+import { API_PREFIX, type Prompt, type PromptSort, type PromptWritablePatch } from "../types.ts";
 
 /** 路由注册对象（与 `@deepseek-ai/dsh-host-webserver` 的 `WebRoute` 对齐）。 */
 export interface PromptEnhancerRoute {
@@ -43,6 +43,16 @@ export interface PromptEnhancerRoute {
 
 /** 请求体不是合法 JSON / 参数缺失时抛出，由分发层映射成 400。 */
 class BadRequest extends Error {}
+
+const skillConflictKey = randomBytes(32);
+
+class SkillConflict extends Error {
+  readonly conflict: { name: string; token: string } | undefined;
+  constructor(message: string, conflict?: { name: string; token: string }) {
+    super(message);
+    this.conflict = conflict;
+  }
+}
 
 function requestVersion(value: unknown): string | undefined {
   if (value === undefined) return undefined;
@@ -374,6 +384,9 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
     handle: async ({ req, res, seg }) => {
       const id = seg[1]!;
       const body = await readBody(req, res);
+      for (const field of ["skillName", "skillExportedAt"]) {
+        if (Object.hasOwn(body, field)) return fail(res, 400, `${field} 只读，请使用技能导出`);
+      }
       const patch: PromptWritablePatch = {};
       if (body.title !== undefined) patch.title = asString(body.title) ?? "";
       if (body.body !== undefined) {
@@ -387,13 +400,6 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       if (body.tags !== undefined) patch.tags = asStringArray(body.tags) ?? [];
       if (body.summary !== undefined) patch.summary = asString(body.summary) ?? "";
       if (body.variables !== undefined) patch.variables = requestVariables(body.variables);
-      if (body.skillName !== undefined) patch.skillName = asString(body.skillName);
-      if (body.skillExportedAt !== undefined) {
-        if (!isNonnegativeSafeInteger(body.skillExportedAt)) {
-          return fail(res, 400, "skillExportedAt 必须是非负安全整数");
-        }
-        patch.skillExportedAt = body.skillExportedAt;
-      }
       const updated = store.updatePrompt(id, patch, {
         aiWriteBack: body.aiWriteBack === true,
         contentVersion: requestVersion(body.contentVersion),
@@ -721,26 +727,37 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       const body = await readBody(req, res);
       const promptId = asString(body.promptId);
       if (!promptId) return fail(res, 400, "缺少 promptId");
-      const prompt = store.getPrompt(promptId);
-      if (!prompt) return fail(res, 404, "提示词不存在");
-
       const descriptor = requestSkillDescriptor(body.descriptor);
-      const name = skills.toKebab(prompt.skillName?.trim() || (asString(body.name) ?? descriptor?.name ?? ""));
-      if (!skills.isValidSkillName(name)) return fail(res, 400, "技能名非法：需要小写 kebab-case");
-
-      const confirmed = body.conflictConfirmed === true;
-      const updated = store.recordSkillExport(promptId, name, confirmed, (current, owned) => {
+      const candidate = asString(body.name) ?? descriptor?.name ?? "";
+      const confirmation = asString(body.conflictToken);
+      const updated = store.recordSkillExport(promptId, candidate, ({ prompt, name, owned, competingClaims }) => {
+        const file = skills.skillFileVersion(name);
+        const conflicts = competingClaims.length > 0 || (!owned && file !== undefined);
+        if (conflicts) {
+          const state = [prompt.id, store.promptContentVersion(prompt), prompt.skillName, prompt.skillExportedAt,
+            name, descriptor, competingClaims, file];
+          const token = createHmac("sha256", skillConflictKey).update(JSON.stringify(state)).digest("hex");
+          if (confirmation !== token) {
+            const message = confirmation === undefined ? "同名技能覆盖需要确认" : "技能冲突已变化，请重新发起导出";
+            throw new SkillConflict(message, { name, token });
+          }
+        } else if (confirmation !== undefined) {
+          throw new SkillConflict("技能冲突已变化，请重新发起导出");
+        }
         const result = skills.exportSkill({
-          prompt: current, name, descriptor, ownerPromptId: owned ? current.id : undefined, conflictConfirmed: confirmed,
+          prompt, name, descriptor, ownerPromptId: owned ? prompt.id : undefined, conflictConfirmed: conflicts,
         });
         if (result.ok) return;
         const message = result.error ?? "导出失败";
-        if (result.conflict) throw new store.PromptConflict(message);
+        if (result.conflict) throw new SkillConflict(message);
         throw new BadRequest(message);
       });
-      return updated
-        ? ok(res, { name, path: skills.skillFilePath(name), prompt: versioned(updated) })
-        : fail(res, 404, "提示词不存在");
+      if (!updated.ok) {
+        return updated.error === "not-found"
+          ? fail(res, 404, "提示词不存在")
+          : fail(res, 400, "技能名非法：需要小写 kebab-case");
+      }
+      return ok(res, { name: updated.name, path: skills.skillFilePath(updated.name), prompt: versioned(updated.prompt) });
     },
   },
 ];
@@ -790,6 +807,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, lifetime?: Ab
     if (requestCancellation?.signal.aborted) return;
     if (requestCancellation && lifetime?.aborted) return failWithCode(res, 503, { code: "no-llm" }, trace);
     if (e instanceof BadRequest) return fail(res, 400, e.message);
+    if (e instanceof SkillConflict) return json(res, 409, { ok: false, error: { message: e.message, conflict: e.conflict } });
     if (e instanceof store.PromptConflict) return fail(res, 409, e.message);
     if (trace) trace("request-threw", { code: safeErrorCode(e) });
     else console.error("[prompt-enhancer] 未预期错误 " + method + " " + url.pathname, e);

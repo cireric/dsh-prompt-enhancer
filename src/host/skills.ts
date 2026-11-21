@@ -9,7 +9,7 @@
  * 因此它可以脱离宿主与数据库单测。
  */
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dshHome } from "./paths.ts";
 import type { SkillDescriptor } from "./ai.ts";
@@ -64,6 +64,12 @@ export interface SkillPromptLike {
 /** 目标目录是否已存在（同名冲突判定用）。 */
 export function skillExists(name: string): boolean {
   return existsSync(skillFilePath(name));
+}
+
+/** Identify the file shown in a conflict, including replacements and in-place edits. */
+export function skillFileVersion(name: string): string | undefined {
+  const stat = statSync(skillFilePath(name), { bigint: true, throwIfNoEntry: false });
+  return stat && [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
 }
 
 function replaceSkillFile(path: string, contents: string): void {
@@ -140,7 +146,7 @@ export function exportSkill(input: SkillExportInput): SkillExportResult {
     mkdirSync(skillDir(name), { recursive: true });
     replaceSkillFile(path, contents);
   } catch (e) {
-    return { ok: false, name, error: "写入技能文件失败：" + String(e) };
+    return { ok: false, name, error: `写入技能文件失败：${String(e)}` };
   }
 
   return { ok: true, name, path };

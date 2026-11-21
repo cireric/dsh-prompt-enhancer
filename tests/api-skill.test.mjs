@@ -38,7 +38,7 @@ test("aiSkillDescriptor：POST 到 /ai/skill-descriptor，体 {body,title,summar
     const out = await api.aiSkillDescriptor({ body: "把要点整理成周报", title: "周报生成", summary: "摘要", tags: ["写作"] });
     assert.deepEqual(out, descriptor);
     assert.equal(s.calls.length, 1);
-    assert.equal(s.calls[0].url, BASE + "/ai/skill-descriptor");
+    assert.equal(s.calls[0].url, `${BASE}/ai/skill-descriptor`);
     assert.equal(s.calls[0].init.method, "POST");
     assert.deepEqual(JSON.parse(s.calls[0].init.body), { body: "把要点整理成周报", title: "周报生成", summary: "摘要", tags: ["写作"] });
     assert.ok(s.calls[0].init.signal instanceof AbortSignal, "AI 路由必须带超时信号（同 polish/refine）");
@@ -115,7 +115,7 @@ test("exportPromptAsSkill：只需 promptId（缺省键不发：宿主自己按 
   try {
     const out = await api.exportPromptAsSkill({ promptId: "p1" });
     assert.deepEqual(out, receipt);
-    assert.equal(s.calls[0].url, BASE + "/skills/export");
+    assert.equal(s.calls[0].url, `${BASE}/skills/export`);
     assert.equal(s.calls[0].init.method, "POST");
     assert.deepEqual(JSON.parse(s.calls[0].init.body), { promptId: "p1" });
     assert.equal(s.calls[0].init.signal, undefined, "写盘路由不设超时（保持 P4 行为）");
@@ -124,11 +124,11 @@ test("exportPromptAsSkill：只需 promptId（缺省键不发：宿主自己按 
   }
 });
 
-test("exportPromptAsSkill：name / descriptor / conflictConfirmed 原样透传（重试路径的体形状）", async () => {
+test("exportPromptAsSkill：name / descriptor / conflictToken 原样透传（重试路径的体形状）", async () => {
   const s = stubFetch(() => jsonRes({ ok: true, data: receipt }));
   try {
-    await api.exportPromptAsSkill({ promptId: "p1", name: "weekly-report", descriptor, conflictConfirmed: true });
-    assert.deepEqual(JSON.parse(s.calls[0].init.body), { promptId: "p1", name: "weekly-report", descriptor, conflictConfirmed: true });
+    await api.exportPromptAsSkill({ promptId: "p1", name: "weekly-report", descriptor, conflictToken: "host-token" });
+    assert.deepEqual(JSON.parse(s.calls[0].init.body), { promptId: "p1", name: "weekly-report", descriptor, conflictToken: "host-token" });
   } finally {
     s.restore();
   }
@@ -136,12 +136,14 @@ test("exportPromptAsSkill：name / descriptor / conflictConfirmed 原样透传�
 
 test("exportPromptAsSkill 409（同名目录不属于本插件）：ApiError.status 409 + 宿主原文，确认后带标记重试成功", async () => {
   const conflictText = "技能目录 weekly-report 已存在，且不属于本插件的任何提示词（可能是你手写的技能）";
-  let s = stubFetch(() => jsonRes({ ok: false, error: conflictText }, 409));
+  const conflict = { name: "weekly-report", token: "host-token" };
+  let s = stubFetch(() => jsonRes({ ok: false, error: { message: conflictText, conflict } }, 409));
   try {
     await assert.rejects(api.exportPromptAsSkill({ promptId: "p1", name: "weekly-report" }), (err) => {
       assert.ok(err instanceof ApiError, "409 必须可见（前端据此弹确认）");
       assert.equal(err.status, 409);
       assert.equal(err.message, conflictText);
+      assert.deepEqual(err.skillConflict, conflict);
       return true;
     });
   } finally {
@@ -149,9 +151,9 @@ test("exportPromptAsSkill 409（同名目录不属于本插件）：ApiError.sta
   }
   s = stubFetch(() => jsonRes({ ok: true, data: receipt }));
   try {
-    const out = await api.exportPromptAsSkill({ promptId: "p1", name: "weekly-report", conflictConfirmed: true });
+    const out = await api.exportPromptAsSkill({ promptId: "p1", name: "weekly-report", conflictToken: conflict.token });
     assert.equal(out.path, receipt.path);
-    assert.deepEqual(JSON.parse(s.calls[0].init.body), { promptId: "p1", name: "weekly-report", conflictConfirmed: true });
+    assert.deepEqual(JSON.parse(s.calls[0].init.body), { promptId: "p1", name: "weekly-report", conflictToken: conflict.token });
   } finally {
     s.restore();
   }

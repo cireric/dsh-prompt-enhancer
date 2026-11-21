@@ -66,11 +66,13 @@ export class ApiError extends Error {
    * （`ai-flow.ts`）先看 code、再退回 status / name 判定，对信封形状变更透明。
    */
   readonly code: string | undefined;
-  constructor(message: string, status: number, probe = false, code?: string) {
+  readonly skillConflict: { name: string; token: string } | undefined;
+  constructor(message: string, status: number, probe = false, code?: string, skillConflict?: ApiError["skillConflict"]) {
     super(message);
     this.status = status;
     this.probe = probe;
     this.code = code;
+    this.skillConflict = skillConflict;
   }
 }
 
@@ -101,7 +103,13 @@ export interface SkillExportReceipt { name: string; path?: string; prompt?: Prom
  * T3 双形：`error` 可以是旧形 string（非 AI 路由），也可以是 AI 路由的
  * `{ code, message? }`——`message` 是宿主的开发诊断文案，`code` 才是跨层契约。
  */
-interface Envelope<T> { ok: boolean; data?: T; error?: string | { code?: unknown; message?: unknown } }
+interface Envelope<T> { ok: boolean; data?: T; error?: string | { code?: unknown; message?: unknown; conflict?: unknown } }
+
+function readSkillConflict(value: unknown): ApiError["skillConflict"] {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { name, token } = value as Record<string, unknown>;
+  return typeof name === "string" && name !== "" && typeof token === "string" && token !== "" ? { name, token } : undefined;
+}
 
 /** 从信封 `error` 读出跨层 code（结构化形态才有；旧形 string / 杂值一律 undefined）。 */
 function envelopeCode(error: unknown): string | undefined {
@@ -162,7 +170,8 @@ async function call<T>(method: string, path: string, body?: unknown, timeoutMs?:
   }
   if (parsed.data === undefined) {
     const fallback = `请求失败（HTTP ${res.status}）`;
-    throw new ApiError(envelopeMessage(parsed.error, fallback), res.status, false, envelopeCode(parsed.error));
+    const conflict = res.status === 409 && typeof parsed.error === "object" ? readSkillConflict(parsed.error?.conflict) : undefined;
+    throw new ApiError(envelopeMessage(parsed.error, fallback), res.status, false, envelopeCode(parsed.error), conflict);
   }
   return parsed.data;
 }
@@ -197,14 +206,7 @@ export const api = {
 
   createPrompt: (input: PromptInput & { approvedEvictions?: string[] }) =>
     call<{ prompt: Prompt; evicted: string[] }>("POST", "/prompts", input),
-  /**
-   * 宿主 PUT 只认白名单字段（事实见 `src/host/routes.ts` 的 PUT 分发：title | body | tags |
-   * summary | variables | skillName | skillExportedAt），其余字段被静默丢弃且仍回 200。故补丁类型取
-   * `PromptWritablePatch`（types.ts 已导出，由 `PROMPT_WRITABLE_KEYS` 派生的字段 Pick），
-   * 把 `sourceBody` / `aiRefined` / `aiRefinedAt` 这类「可读不可写」字段挡在编译期。
-   * `aiWriteBack` 是写回 `sourceBody` 的唯一路径（§4.4），它不是记录字段（store.updatePrompt
-   * 的选项目志），用交叉类型补上。
-   */
+  /** 普通编辑只发可写字段；`aiWriteBack` 请求宿主派生 AI 来源，不直接提交来源或技能归属。 */
   updatePrompt: (id: string, patch: PromptWritablePatch & { aiWriteBack?: boolean; contentVersion?: string }) =>
     call<Prompt>("PUT", "/prompts/" + encodeURIComponent(id), patch),
   rollbackPrompt: (id: string, contentVersion?: string) =>
@@ -249,7 +251,7 @@ export const api = {
    * 保持 P4 行为）。错误映射全部走 `call()` 的信封路径，调用方**按 status 分类**、不匹配文案：
    *   · 400 技能名非法 / description 兜底链全空（宿主原文）；
    *   · 404 提示词不存在；
-   *   · 409 同名目录**不属于本插件**（用户手写的技能）→ 确认后带 `conflictConfirmed: true` 重试。
+   *   · 409 带宿主锁定的技能名及 `conflictToken`；确认后仅用该凭据重试。
    * 缺省不发的键由 `JSON.stringify` 丢弃：只传 `promptId` 时宿主自己推名字，候选序为
    * `prompt.skillName（非空）→ body.name → descriptor?.name`（**唯一事实源**：`routes.ts` 的技能导出分支）。
    */
@@ -257,7 +259,7 @@ export const api = {
     promptId: string;
     name?: string;
     descriptor?: SkillDescriptorPayload;
-    conflictConfirmed?: boolean;
+    conflictToken?: string;
   }) => call<SkillExportReceipt>("POST", "/skills/export", input),
 
   // ── 提示词：单条读写（P6）──────────────────────────────────────────────

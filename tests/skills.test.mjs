@@ -9,18 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { makeDispatch } from "./helpers/fake-http.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "dpe-skills-"));
 process.env.DSH_HOME = home;
 
 const skills = await import("../src/host/skills.ts");
-// T7-2 的路由用例走**真实分发**（真查库、真写盘）：DSH_HOME 已在上方指向本次临时目录，
-// 而 store 的 db 路径是**调用期**求值（硬约束 13），故这里的 import 顺序不是承重条件。
-const store = await import("../src/host/store.ts");
-const { makeRoutes } = await import("../src/host/routes.ts");
-const { dshHome } = await import("../src/host/paths.ts");
-const { API_PREFIX } = await import("../src/types.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -203,23 +196,4 @@ test("isSkillStale：导出后改动才算过期；从未导出不算", () => {
   assert.equal(skills.isSkillStale({ skillName: "x", updatedAt: 101, skillExportedAt: 100 }), true);
   assert.equal(skills.isSkillStale({ updatedAt: 999, skillExportedAt: 0 }), false, "从未导出（无 skillName）不算过期");
   assert.equal(skills.isSkillStale({ skillName: "", updatedAt: 999, skillExportedAt: 0 }), false);
-});
-
-const dispatch = makeDispatch({ makeRoutes, API_PREFIX });
-
-test("历史同名技能需确认归属，确认后只保留一个所有者", async () => {
-  const name = "dup-owner";
-  const a = store.createPrompt({ title: "同名甲", body: "甲正文" });
-  const b = store.createPrompt({ title: "同名乙", body: "乙正文" });
-  store.updatePrompt(a.id, { skillName: name });
-  store.updatePrompt(b.id, { skillName: name });
-  assert.equal(skills.exportSkill({ prompt: a, name }).ok, true);
-
-  const unconfirmed = await dispatch("POST", "/skills/export", { promptId: b.id });
-  assert.equal(unconfirmed.status, 409);
-  assert.match(readFileSync(skills.skillFilePath(name), "utf8"), /甲正文/);
-  const confirmed = await dispatch("POST", "/skills/export", { promptId: b.id, conflictConfirmed: true });
-  assert.equal(confirmed.status, 200);
-  assert.equal(confirmed.envelope.data.path, skills.skillFilePath(name));
-  assert.deepEqual(store.listPrompts().filter((p) => p.skillName === name).map((p) => p.id), [b.id]);
 });

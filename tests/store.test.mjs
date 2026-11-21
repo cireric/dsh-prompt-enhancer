@@ -265,10 +265,11 @@ test("回收站：软删除 → 可见 → 恢复无损 → 永久删除 → 清
 // ─────────────────────────────────────────────────────────────────────────────
 test("回收站保留技能导出记录：软删除 → 恢复后 skillName/skillExportedAt 不丢", async () => {
   const p = store.createPrompt({ title: "导出技能的对象", body: "z" });
-  const exportedAt = Date.now();
-  const exported = store.updatePrompt(p.id, { skillName: "weekly-report", skillExportedAt: exportedAt });
-  assert.equal(exported.skillName, "weekly-report");
-  assert.equal(exported.skillExportedAt, exportedAt);
+  const result = store.recordSkillExport(p.id, "weekly-report", () => {});
+  assert.equal(result.ok, true);
+  assert.equal(result.prompt.skillName, "weekly-report");
+  const exportedAt = result.prompt.skillExportedAt;
+  assert.ok(exportedAt > 0);
 
   store.deletePrompt(p.id);
   const inTrash = store.listTrash().find((t) => t.id === p.id);

@@ -18,21 +18,16 @@ import { reasonOf } from "./err-text.ts";
 
 /** 过期判定只读这三个字段（窄接口：调用方传整条 `Prompt` 也满足）。 */
 export interface SkillStalenessLike {
-  /** 已导出的技能名（kebab-case）；缺省 / 空串 = 从未导出。 */
+  /** 本机绑定的技能目录名；缺省或空串表示未绑定。 */
   skillName?: string;
   updatedAt: number;
-  /** 上次导出时间；小于 updatedAt 即「技能已过期」（见 `src/types.ts` 的字段注释）。 */
+  /** 技能同步时间（见 `Prompt.skillExportedAt`）。 */
   skillExportedAt: number;
 }
 
-/**
- * 「技能已过期」判定：**导出过**、且导出后提示词又改过。
- *
- * 边界（验收 16 明确要求）：`updatedAt === skillExportedAt` **不算过期**——「刚导出完立刻看」
- * 必须是未过期。符号是 `>` 而不是 `>=`，与宿主 P3-D8 的原判定**逐字一致**（不得顺手改）。
- */
+/** 未同步的技能需要重导；已同步时，只在提示词晚于导出时间时判为过期。 */
 export function isSkillStale(prompt: SkillStalenessLike): boolean {
-  return Boolean(prompt.skillName) && prompt.updatedAt > prompt.skillExportedAt;
+  return Boolean(prompt.skillName) && (prompt.skillExportedAt === 0 || prompt.updatedAt > prompt.skillExportedAt);
 }
 
 /** 徽标三态：`none` = 不渲染；`exported` = 已导出且未过期；`stale` = 导出后又改过。 */
@@ -110,8 +105,7 @@ export type SkillReExportOutcome<R> =
  *     却被客户端丢弃」正是 `src/host/skills.ts` 文件头声明修掉的上游缺陷，重导是**常规路径**（徽标的
  *     意义就是「改了就重导」），不补这条它就会原样复活。meta 缺失时（本轮之前导出的、或从未跑过 AI
  *     补全的）退回兜底链，**不得因此失败**。
- *   · 不带 `conflictConfirmed`：不替用户确认覆盖。同名目录**属于本插件自己**（ownerPromptId
- *     就是本条）时本就不该 409；真回 409 就说明那是用户手写的技能目录，必须让它挡住。
+ *   · 不带覆盖凭据：遇到同名冲突时显示失败，不代替用户确认。
  *
  * `send` 由调用方注入（真实现 = `api.exportPromptAsSkill`），故本模块保持零依赖、可单测；
  * 目标目录一律取**宿主回执**的 `path`，缺席即报契约漂移——客户端不知道 `DSH_HOME`，
@@ -136,7 +130,7 @@ export async function reExportSkill<R extends SkillReExportReceiptLike>(
     };
   }
   if (!receipt.path) {
-    return { ok: false, errorKey: "manager.skill.pathMissing", detail: "keys=" + Object.keys(receipt).sort().join(",") };
+    return { ok: false, errorKey: "manager.skill.pathMissing", detail: `keys=${Object.keys(receipt).sort().join(",")}` };
   }
   return { ok: true, receipt };
 }

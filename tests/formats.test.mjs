@@ -144,7 +144,7 @@ test("导入回执以确认时为准，只列实际覆盖的词库和回收站�
   const receipt = store.importPrompts(backup, { confirm: true });
   assert.deepEqual(receipt, {
     ok: true, applied: true, stats: { added: 1, overwritten: 3, total: 4 },
-    overwrittenIds: [active.id, trashed.id, "later"],
+    overwrittenIds: [active.id, trashed.id, "later"], preservedSkillIds: [],
   });
   assert.equal(store.getPrompt(trashed.id).body, "b");
   assert.ok(!store.listTrash().some(({ id }) => id === trashed.id));

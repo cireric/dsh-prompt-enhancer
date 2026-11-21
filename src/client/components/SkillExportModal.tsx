@@ -6,7 +6,7 @@
  * （`POST /ai/skill-descriptor`，**失败条目行内红色标注、不阻断其它条目**）→ 预校验
  * （`toKebab` + `isValidSkillName` 提前报错 + description 非空；**最终判定仍以宿主为准**）
  * → 逐条 `POST /skills/export`（`409` 同名目录不属于本插件 → 共享确认弹窗 → 带
- * `conflictConfirmed: true` 重试）→ 结果汇总（成功 / 失败 / 跳过清单 + **宿主回执里的目标文件路径**）。
+ * 带宿主确认凭据重试）→ 结果汇总（成功 / 失败 / 跳过清单 + **宿主回执里的目标文件路径**）。
  *
  * **非组件逻辑一律不在本文件**（P6 的 I-4 教训）：勾选 / 全选 / 标签筛选 / 预校验 / 逐条编排 /
  * 结果汇总都在 `utils/skill-export.ts`（JSX-free，`node --test` 直接可测——`.tsx` 恰恰 import 不了）。
@@ -174,7 +174,7 @@ export function SkillExportModal({ t, onBack, initialPromptId }: SkillExportModa
     })();
   };
 
-  /** 逐条导出：预校验 → 请求 → 409 走共享确认 → 带 conflictConfirmed 重试（全在纯函数里）。 */
+  /** 逐条导出：预校验 → 请求 → 409 走共享确认 → 带凭据重试（全在纯函数里）。 */
   const runExport = (): void => {
     if (!idle || chosen.length === 0) return;
     const run = createSkillRun();
@@ -193,14 +193,14 @@ export function SkillExportModal({ t, onBack, initialPromptId }: SkillExportModa
               promptId: prompt.id,
               name: request.name,
               descriptor: request.descriptor,
-              conflictConfirmed: request.conflictConfirmed,
+              conflictToken: request.conflictToken,
             }),
           // 同名冲突确认：共享确认弹窗（promise 驱动；渲染点在 PromptSurfaceHost，压住管理面板）。
           confirmConflict: (info) =>
             requestConfirm({
               title: "manager.skill.conflictTitle",
               message: "manager.skill.conflictMessage",
-              detail: [info.title + " → " + info.name, info.detail],
+              detail: [`${info.title} → ${info.name}`, info.detail],
               confirmLabel: "manager.confirm.confirm",
               cancelLabel: "manager.confirm.cancel",
             }),
@@ -316,7 +316,7 @@ export function SkillExportModal({ t, onBack, initialPromptId }: SkillExportModa
       )}
 
       {loadError === null && shown.length > 0 && (
-        <div role="list">
+        <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
           {shown.map((prompt) => {
             const recorded = descriptors[prompt.id];
             const descriptor = recorded?.ok ? recorded.descriptor : undefined;
@@ -327,7 +327,7 @@ export function SkillExportModal({ t, onBack, initialPromptId }: SkillExportModa
              */
             const locked = exportNameLocked(prompt);
             return (
-              <div key={prompt.id} role="listitem" aria-label={prompt.title} style={listRow}>
+              <li key={prompt.id} aria-label={prompt.title} style={listRow}>
                 <input
                   type="checkbox"
                   aria-label={prompt.title}
@@ -345,14 +345,14 @@ export function SkillExportModal({ t, onBack, initialPromptId }: SkillExportModa
                     ))}
                     <span style={muted}>
                       {t("manager.skill.nameLabel")}：{pre.ok ? pre.name : (prompt.skillName ?? descriptor?.name ?? "—")}
-                      {locked ? " · " + t("manager.skill.nameLocked") : ""}
+                      {locked ? ` · ${t("manager.skill.nameLocked")}` : ""}
                     </span>
                   </span>
                   {recorded !== undefined && recorded.ok && (
                     <span style={muted}>
                       {recorded.descriptor.name} — {recorded.descriptor.description}
                       {/* 名字已锁定时说清楚：这个 AI 名不会改目录（描述与 whenToUse 仍会用它）。 */}
-                      {locked ? " · " + t("manager.skill.aiNameIgnored") : ""}
+                      {locked ? ` · ${t("manager.skill.aiNameIgnored")}` : ""}
                     </span>
                   )}
                   {recorded !== undefined && !recorded.ok && (
@@ -378,10 +378,10 @@ export function SkillExportModal({ t, onBack, initialPromptId }: SkillExportModa
                     </span>
                   )}
                 </span>
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
 
       {reviewing && (

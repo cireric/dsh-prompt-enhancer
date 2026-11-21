@@ -25,8 +25,8 @@ export type MetaDeleter = (key: string) => Promise<unknown>;
  * 某条提示词的方向、技能 descriptor 和模板填值记忆。**键的形态归各自的主模块**（`refined-direction.ts` /
  * `skill-export.ts`），这里只做枚举——不另抄一份键名字符串，否则约定就有了第二处真源。
  */
-export function perPromptMetaKeys(promptId: string): string[] {
-  return [refinedDirectionMetaKey(promptId), skillDescriptorMetaKey(promptId), templateMemoryKey(promptId)];
+export function perPromptMetaKeys(promptId: string, keepSkillDescriptor = false): string[] {
+  return [refinedDirectionMetaKey(promptId), ...(keepSkillDescriptor ? [] : [skillDescriptorMetaKey(promptId)]), templateMemoryKey(promptId)];
 }
 
 /** `deletePrompts` 的入参。 */
@@ -91,13 +91,17 @@ export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePr
   if (!input.irreversible) return { succeeded: 0, failed: 0 };
   // ⑦：清**回执说的那些** id（`{ ids }`，清空回收站的竞态窗口），回执说不出才退回调用方给的 ids。
   const ids = receiptIds(receipt) ?? input.ids;
-  const deleteMeta = input.deleteMeta ?? ((key: string) => api.deleteMeta(key));
+  return clearPromptMeta(ids.flatMap((id) => perPromptMetaKeys(id)), input.deleteMeta);
+}
+
+/** 清理调用方选定的键；单次失败只告警，不影响其他键。 */
+export async function clearPromptMeta(
+  keys: readonly string[], deleteMeta: MetaDeleter = api.deleteMeta,
+): Promise<DeletePromptsResult> {
   // 5. **并发清**（重要-4）：淘汰条数由上限配置决定（上限 300 → 50 时一次新建会淘汰 ~250 条 ⇒ 3×N
   //    把请求**一次性发出去**（顺序仍是「逐 id、逐键」的既有次序），再 allSettled 收结果。
   //    T7-5①（P7 §10.4-5）：map 的同步抛出现在被逐键兜住——每个调用推迟到一个微任务里发起，
   //    于是一次**同步抛出**变成「被拒绝的 promise」，交给下面的 allSettled 逐键收下（记 failed + warn）。
-  const keys: string[] = [];
-  for (const id of ids) for (const key of perPromptMetaKeys(id)) keys.push(key);
   // 旧写法 `keys.map((key) => deleteMeta(key))`：注入实现若**同步抛出**，异常会当场炸穿整个
   // `deletePrompts`——一次已经成功的主删除被变成失败，正是本函数第 3 条语义要挡的事。
   // 发起次序与并发度都不变（同一轮微任务里全部发出）。
@@ -110,7 +114,7 @@ export async function deletePrompts(input: DeletePromptsInput): Promise<DeletePr
       succeeded++;
     } else {
       failed++;
-      console.warn("[prompt-enhancer] 清理提示词的 meta 键失败（提示词已删除，残留键：" + keys[i] + "）", outcome.reason);
+      console.warn(`[prompt-enhancer] 清理提示词的 meta 键失败（残留键：${keys[i]}）`, outcome.reason);
     }
   }
   return { succeeded, failed };

@@ -1,7 +1,7 @@
 /**
  * 技能导出**路由**的名字候选序（T6 / D-1 的宿主端；A / 重要-1 起改成**权威层**）。
  *
- * **现行次序**（`src/host/routes.ts` 的技能导出分支）：
+ * **现行次序**（`src/host/store.ts#recordSkillExport`，路由提供首次导出的候选）：
  *   `prompt.skillName（非空）→ body.name → descriptor?.name`
  *
  * 为什么名字序必须在**权威层**（而不是只靠客户端每次都显式下发）：目录名是这个技能在官方根下的
@@ -15,11 +15,12 @@
  *
  * 隔离：临时 `DSH_HOME`（`skills.exportSkill` 会真的写盘），绝不碰用户真实技能目录。
  */
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { makeDispatch } from "./helpers/fake-http.mjs";
@@ -28,8 +29,9 @@ const home = mkdtempSync(join(tmpdir(), "dpe-skill-route-"));
 process.env.DSH_HOME = home; // ← 必须在 import store / routes / paths 之前
 const store = await import("../src/host/store.ts");
 const { makeRoutes } = await import("../src/host/routes.ts");
-const { dshHome } = await import("../src/host/paths.ts");
+const { dbPath, dshHome } = await import("../src/host/paths.ts");
 const { API_PREFIX } = await import("../src/types.ts");
+const { skillBadgeState } = await import("../src/skill-badge.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -38,11 +40,27 @@ const dispatch = makeDispatch({ makeRoutes, API_PREFIX });
 
 /** 真跑一次 POST（路径相对 API_PREFIX）。 */
 const post = (path, body) => dispatch("POST", path, body);
+const importBackup = (prompts, confirm = true) => post("/import", { backup: { version: 1, prompts }, confirm });
+const conflictToken = (res) => {
+  assert.equal(res.status, 409);
+  const token = res.envelope.error.conflict?.token;
+  assert.match(token, /^[a-f0-9]{64}$/);
+  return token;
+};
+
+function legacyRow(sql, ...values) {
+  const db = new DatabaseSync(dbPath());
+  try {
+    db.prepare(sql).run(...values);
+  } finally {
+    db.close();
+  }
+}
 
 /** 建一条**已导出**的提示词（skillName = 目录名身份）。 */
-function exportedPrompt(title, skillName) {
-  const p = store.createPrompt({ title, body: title + " 的正文" });
-  store.updatePrompt(p.id, { skillName, skillExportedAt: Date.now() });
+async function exportedPrompt(title, skillName) {
+  const p = store.createPrompt({ title, body: `${title} 的正文` });
+  assert.equal((await post("/skills/export", { promptId: p.id, name: skillName })).status, 200);
   return p.id;
 }
 
@@ -55,7 +73,7 @@ const skillNames = () => {
 };
 
 test("D-1 宿主端：显式 name（= 已导出技能名）优先于 descriptor.name ⇒ 落在既有目录，**不另建**", async () => {
-  const id = exportedPrompt("周报生成", "mine");
+  const id = await exportedPrompt("周报生成", "mine");
   const res = await post("/skills/export", {
     promptId: id,
     name: "mine",
@@ -70,8 +88,7 @@ test("D-1 宿主端：显式 name（= 已导出技能名）优先于 descriptor.
 });
 
 test("A / 重要-1：**不下发** name 时也由 skillName 决定（descriptor.name 退到首次导出的候选）", async () => {
-  const id = exportedPrompt("周报生成 B", "mine-b");
-  await post("/skills/export", { promptId: id, name: "mine-b" });
+  const id = await exportedPrompt("周报生成 B", "mine-b");
   assert.equal(existsSync(skillFile("mine-b")), true, "先确认它在 mine-b 目录里");
 
   const res = await post("/skills/export", {
@@ -87,11 +104,11 @@ test("A / 重要-1：**不下发** name 时也由 skillName 决定（descriptor.
 
 // ── A（重要-1）：权威层把「已导出条目的目录名」钉在 skillName 上 ──────────────────
 //
-// **变异靶**：把 `routes.ts` 的候选序改回 `body.name ?? descriptor?.name ?? prompt.skillName`
+// 变异靶：让请求候选名优先于 `prompt.skillName`。
 // ⇒ 下面第一条必红（落盘名会变成 body.name、并另建一个目录）。
 
 test("A / 重要-1：skillName 非空时，body.name 与 descriptor.name **都换了名**也仍落在既有目录", async () => {
-  const id = exportedPrompt("月报生成", "mine-locked");
+  const id = await exportedPrompt("月报生成", "mine-locked");
   const before = skillNames();
 
   const res = await post("/skills/export", {
@@ -106,7 +123,7 @@ test("A / 重要-1：skillName 非空时，body.name 与 descriptor.name **都�
   assert.equal(existsSync(skillDir("brand-new-ai-name")), false, "body.name 不得另建目录");
   assert.equal(existsSync(skillDir("descriptor-other-name")), false, "descriptor.name 也不得另建目录");
   assert.equal(store.getPrompt(id).skillName, "mine-locked", "库里的 skillName 不变 ⇒ 旧目录不无主");
-  assert.deepEqual(skillNames(), [...before, "mine-locked"].sort(), "技能根下只多了既有的那一个目录");
+  assert.deepEqual(skillNames(), before, "技能根目录集合没有变化");
 });
 
 test("A / 重要-1 ②：同一次会话内连续两次导出（第二次带一个**不同的 AI 名**）⇒ 目录集合不变、skillName 不变", async () => {
@@ -152,17 +169,155 @@ test("D-1 宿主端：未导出条目（无 skillName）仍按 AI 名建目录�
   assert.equal(store.getPrompt(created.id).skillName, "ai-first-name", "首次导出的名字进库，此后即锁定");
 });
 
+test("覆盖确认在目标技能文件更新后失效", async () => {
+  const owner = await exportedPrompt("现有技能", "changed-before-confirm");
+  const p = store.createPrompt({ title: "接手", body: "new body" });
+  const name = "changed-before-confirm";
+  const first = await post("/skills/export", { promptId: p.id, name });
+  assert.equal(first.status, 409);
+  assert.equal(first.envelope.error.conflict?.name, name);
+  const { token } = first.envelope.error.conflict;
+  writeFileSync(skillFile(name), "externally updated, longer content");
+  const retry = await post("/skills/export", { promptId: p.id, name, conflictToken: token });
+  assert.equal(retry.status, 409);
+  assert.notEqual(retry.envelope.error.conflict.token, token);
+  assert.equal(readFileSync(skillFile(name), "utf8"), "externally updated, longer content");
+  assert.equal(store.getPrompt(owner).skillName, name);
+  assert.equal(store.getPrompt(p.id).skillName, undefined);
+});
+
 test("confirmed skill overwrite transfers ownership and requires confirmation from the previous prompt", async () => {
   const a = store.createPrompt({ title: "first owner", body: "body A" });
   const b = store.createPrompt({ title: "second owner", body: "body B" });
   const name = "confirmed-transfer";
   assert.equal((await post("/skills/export", { promptId: a.id, name })).status, 200);
-  assert.equal((await post("/skills/export", { promptId: b.id, name })).status, 409);
-  assert.equal((await post("/skills/export", { promptId: b.id, name, conflictConfirmed: true })).status, 200);
+  const token = conflictToken(await post("/skills/export", { promptId: b.id, name }));
+  assert.equal((await post("/skills/export", { promptId: b.id, name, conflictConfirmed: true })).status, 409);
+  assert.equal((await post("/skills/export", { promptId: b.id, name, conflictToken: token })).status, 200);
   assert.deepEqual(store.listPrompts().filter((p) => p.skillName === name).map((p) => p.id), [b.id]);
   assert.equal(store.getPrompt(a.id).skillExportedAt, 0);
   assert.equal((await post("/skills/export", { promptId: a.id, name })).status, 409);
   assert.match(readFileSync(skillFile(name), "utf8"), /body B/);
+});
+
+for (const [index, [field, value]] of [["skillName", "different-skill"], ["skillExportedAt", 123], ["skillName", null]].entries()) {
+  test(`普通 PUT 不接受只读技能字段 ${field}=${value}`, async () => {
+    const p = store.createPrompt({ title: "PUT", body: "original" });
+    const name = `put-owned-${index}`;
+    assert.equal((await post("/skills/export", { promptId: p.id, name })).status, 200);
+    const before = store.getPrompt(p.id);
+    const result = await dispatch("PUT", `/prompts/${p.id}`, { body: "must not save", [field]: value });
+    assert.equal(result.status, 400);
+    assert.ok(result.envelope.error.includes(field));
+    assert.deepEqual(store.getPrompt(p.id), before);
+    assert.equal((await dispatch("PUT", `/prompts/${p.id}`, { body: "normal edit" })).status, 200);
+    assert.equal(store.getPrompt(p.id).skillName, before.skillName);
+    assert.equal(store.getPrompt(p.id).skillExportedAt, before.skillExportedAt);
+    assert.match(readFileSync(skillFile(name), "utf8"), /original/);
+  });
+}
+
+test("旧备份同名不接管词库、回收站或手写技能，也不互相认领", async () => {
+  const live = store.createPrompt({ title: "本机词库", body: "local live" });
+  const trashed = store.createPrompt({ title: "本机回收站", body: "local trash" });
+  assert.equal((await post("/skills/export", { promptId: live.id, name: "backup-live" })).status, 200);
+  assert.equal((await post("/skills/export", { promptId: trashed.id, name: "backup-trash" })).status, 200);
+  assert.equal(store.deletePrompt(trashed.id), true);
+  mkdirSync(skillDir("handwritten"), { recursive: true });
+  writeFileSync(skillFile("handwritten"), "handwritten, not managed");
+  const entries = ["backup-live", "backup-trash", "handwritten", "handwritten", "unclaimed"].map((name, i) => ({
+    id: `backup-claim-${i}`, body: `imported ${i}`, skillName: name, skillExportedAt: 123,
+  }));
+  const preview = await importBackup(entries, false);
+  assert.deepEqual(preview.envelope.data, { ok: true, applied: false, stats: { added: 5, overwritten: 0, total: 5 } });
+  assert.equal(store.getPrompt(entries[0].id), undefined);
+  const confirmed = await importBackup(entries);
+  assert.equal(confirmed.status, 200);
+  assert.deepEqual(confirmed.envelope.data.overwrittenIds, []);
+  for (const { id, body } of entries) {
+    const imported = store.getPrompt(id);
+    assert.equal(imported.body, body);
+    assert.equal(imported.skillName, undefined);
+    assert.equal(imported.skillExportedAt, 0);
+  }
+  assert.equal(store.getPrompt(live.id).skillName, "backup-live");
+  assert.equal(store.listTrash().find(({ id }) => id === trashed.id).skillName, "backup-trash");
+  assert.equal((await post("/skills/export", { promptId: entries[2].id, name: "handwritten" })).status, 409);
+  assert.equal(readFileSync(skillFile("handwritten"), "utf8"), "handwritten, not managed");
+  assert.match(readFileSync(skillFile("backup-live"), "utf8"), /local live/);
+  assert.match(readFileSync(skillFile("backup-trash"), "utf8"), /local trash/);
+  assert.equal(existsSync(skillDir("unclaimed")), false);
+});
+
+for (const [inTrash, fastClock] of [[false, false], [true, false], [false, true], [true, true]]) {
+  test(`导入覆盖同 ID 保留本机归属并待重导（${inTrash ? "回收站" : "词库"}${fastClock ? "、快钟" : ""}）`, async () => {
+    const name = `restore-owned-${inTrash ? "trash" : "live"}${fastClock ? "-fast" : ""}`;
+    const p = store.createPrompt({ title: "本机提示词", body: "original skill" });
+    assert.equal((await post("/skills/export", { promptId: p.id, name })).status, 200);
+    if (inTrash) assert.equal(store.deletePrompt(p.id), true);
+    const before = readFileSync(skillFile(name), "utf8");
+    const future = Date.now() + 86_400_000;
+    const dates = fastClock ? { createdAt: future - 1, updatedAt: future } : {};
+    const result = await importBackup([{ id: p.id, body: "restored older text", skillName: "foreign-name", skillExportedAt: 123, ...dates }]);
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.envelope.data.overwrittenIds, [p.id]);
+    assert.deepEqual(result.envelope.data.preservedSkillIds, [p.id]);
+    const restored = store.getPrompt(p.id);
+    assert.equal(restored.body, "restored older text");
+    assert.equal(restored.skillName, name);
+    assert.equal(skillBadgeState(restored), "stale", "缺省或未来的 updatedAt 都应显示待重导");
+    assert.ok(!store.listTrash().some(({ id }) => id === p.id));
+    assert.equal(readFileSync(skillFile(name), "utf8"), before);
+    const reexport = await post("/skills/export", { promptId: p.id, name: "foreign-name" });
+    assert.equal(reexport.status, 200);
+    assert.equal(reexport.envelope.data.name, name);
+    assert.equal(skillBadgeState(reexport.envelope.data.prompt), "exported");
+    assert.match(readFileSync(skillFile(name), "utf8"), /restored older text/);
+  });
+}
+
+test("两份同 ID 的本机归属不同：拒绝整批确认导入，保留两份和技能文件", async () => {
+  const live = store.createPrompt({ title: "词库", body: "live version" });
+  const trashed = store.createPrompt({ title: "回收站", body: "trash version" });
+  assert.equal((await post("/skills/export", { promptId: live.id, name: "split-live" })).status, 200);
+  assert.equal((await post("/skills/export", { promptId: trashed.id, name: "split-trash" })).status, 200);
+  assert.equal(store.deletePrompt(trashed.id), true);
+  legacyRow("UPDATE trash SET id = ? WHERE id = ?", live.id, trashed.id);
+  const liveBefore = store.getPrompt(live.id);
+  const trashBefore = store.listTrash().find(({ id }) => id === live.id);
+  const result = await importBackup([{ id: "must-not-insert", body: "new" }, { id: live.id, body: "overwrite" }]);
+  assert.equal(result.status, 409);
+  assert.equal(store.getPrompt("must-not-insert"), undefined);
+  assert.deepEqual(store.getPrompt(live.id), liveBefore);
+  assert.deepEqual(store.listTrash().find(({ id }) => id === live.id), trashBefore);
+  assert.match(readFileSync(skillFile("split-live"), "utf8"), /live version/);
+  assert.match(readFileSync(skillFile("split-trash"), "utf8"), /trash version/);
+});
+
+test("历史同名按落盘名匹配，确认覆盖时一并撤销回收站的归属", async () => {
+  const name = "legacy-alias";
+  const live = store.createPrompt({ title: "词库", body: "prior file" });
+  const duplicate = store.createPrompt({ title: "历史词库条目", body: "other live prompt" });
+  const trashed = store.createPrompt({ title: "回收站", body: "trash prompt" });
+  assert.equal((await post("/skills/export", { promptId: live.id, name })).status, 200);
+  assert.equal(store.deletePrompt(trashed.id), true);
+  legacyRow("UPDATE trash SET skillName = ?, skillExportedAt = ? WHERE id = ?", "Legacy Alias", 42, trashed.id);
+  const backup = readFileSync(skillFile(name), "utf8");
+  const unconfirmed = await post("/skills/export", { promptId: live.id });
+  assert.equal(unconfirmed.status, 409);
+  assert.equal(readFileSync(skillFile(name), "utf8"), backup);
+  assert.equal(store.listTrash().find(({ id }) => id === trashed.id).skillName, "Legacy Alias");
+  assert.equal((await post("/skills/export", { promptId: live.id, conflictToken: conflictToken(unconfirmed) })).status, 200);
+  const old = store.listTrash().find(({ id }) => id === trashed.id);
+  assert.equal(old.skillName, undefined);
+  assert.equal(old.skillExportedAt, 0);
+  assert.equal(old.body, "trash prompt");
+
+  legacyRow("UPDATE prompts SET skillName = ?, skillExportedAt = ? WHERE id = ?", name, 42, duplicate.id);
+  const token = conflictToken(await post("/skills/export", { promptId: duplicate.id }));
+  assert.equal((await post("/skills/export", { promptId: duplicate.id, conflictToken: token })).status, 200);
+  assert.equal(store.getPrompt(live.id).skillName, undefined);
+  assert.equal(store.getPrompt(duplicate.id).skillName, name);
 });
 
 test("invalid skill descriptor fields return 400 before creating the target directory", async () => {
@@ -180,6 +335,7 @@ test("a partial skill write preserves the previous file and owner", async (t) =>
   const name = "failed-transfer";
   assert.equal((await post("/skills/export", { promptId: a.id, name })).status, 200);
   const original = readFileSync(skillFile(name), "utf8");
+  const token = conflictToken(await post("/skills/export", { promptId: b.id, name }));
   const writeFile = fs.writeFileSync;
   const write = t.mock.method(fs, "writeFileSync", (target) => {
     writeFile(target, "partial skill", "utf8");
@@ -187,7 +343,7 @@ test("a partial skill write preserves the previous file and owner", async (t) =>
   });
   syncBuiltinESMExports();
   try {
-    const failed = await post("/skills/export", { promptId: b.id, name, conflictConfirmed: true });
+    const failed = await post("/skills/export", { promptId: b.id, name, conflictToken: token });
     assert.equal(failed.status, 400);
     assert.match(failed.envelope.error, /simulated disk failure/);
     assert.equal(store.getPrompt(a.id).skillName, name);

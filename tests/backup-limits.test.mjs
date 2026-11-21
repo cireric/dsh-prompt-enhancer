@@ -199,7 +199,7 @@ test("拒绝备份中的无效整数，保留旧版缺省字段和可安全使�
   assert.equal((await dispatch("DELETE", `/prompts/${prompt.id}`)).status, 200);
 });
 
-test("HTTP 只接受非负安全整数作为 skillExportedAt", async () => {
+test("普通 PUT 拒绝非负安全整数范围之外的只读 skillExportedAt 值", async () => {
   const p = store.createPrompt({ title: "技能", body: "正文" });
   for (const skillExportedAt of [Number.MAX_SAFE_INTEGER + 1, 0.1, -1]) {
     const response = await dispatch("PUT", `/prompts/${p.id}`, { skillExportedAt });

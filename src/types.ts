@@ -101,9 +101,9 @@ export interface Prompt {
   updatedAt: number;
   usageCount: number;
   lastUsedAt: number;
-  /** 已导出的 DSH 技能名（kebab-case）；undefined = 从未导出。 */
+  /** 本机提示词绑定的 DSH 技能目录名；undefined 表示未绑定。 */
   skillName?: string;
-  /** 上次导出时间；小于 updatedAt 即「技能已过期」。 */
+  /** 技能同步时间；有归属时，0 表示待重导，非零值用于判断是否过期。 */
   skillExportedAt: number;
 }
 
@@ -131,15 +131,10 @@ export interface PromptPatch {
   sourceBody?: string;
   aiRefined?: boolean;
   aiRefinedAt?: number;
-  skillName?: string;
-  skillExportedAt?: number;
 }
 
-/**
- * 宿主 PUT `/prompts/:id` 实际接收的字段白名单（事实在 `src/host/routes.ts` 的 PUT 分发处）：
- * 其余补丁字段一律被静默丢弃且仍回 200，故客户端补丁类型必须收窄到这份清单。
- */
-export const PROMPT_WRITABLE_KEYS = ["title", "body", "tags", "summary", "variables", "skillName", "skillExportedAt"] as const;
+/** 宿主普通 PUT 可直接修改的提示词字段；技能归属字段显式拒绝。 */
+export const PROMPT_WRITABLE_KEYS = ["title", "body", "tags", "summary", "variables"] as const;
 
 /** 客户端可经 PUT 写入的补丁子集（不含 `sourceBody` / `aiRefined` / `aiRefinedAt`）。 */
 export type PromptWritablePatch = Pick<PromptPatch, (typeof PROMPT_WRITABLE_KEYS)[number]>;
@@ -220,6 +215,8 @@ export interface ImportResult {
   applied?: boolean;
   /** 已确认导入在同一事务内替换的条目 ID（含回收站）；预览不返回。 */
   overwrittenIds?: string[];
+  /** 被替换且保留本机技能归属的条目 ID；客户端保留其重导描述符。 */
+  preservedSkillIds?: string[];
 }
 
 /** 回滚结果：`sourceBody` 为空时拒绝（不得清空正文）。 */

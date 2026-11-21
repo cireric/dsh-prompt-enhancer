@@ -19,6 +19,7 @@ import { readTemplateVariables } from "../template-variables.ts";
 import { dbPath } from "./paths.ts";
 import { selectEvictions } from "../eviction-order.ts";
 import { matchRank, normalizeQuery } from "../search-match.ts";
+import { isValidSkillName, toKebab } from "../skill-name.ts";
 import { normalizeTagName, normalizeTags } from "../tags.ts";
 import {
   BACKUP_VERSION,
@@ -144,7 +145,7 @@ function initDb(cur: DatabaseSync): void {
     cur.exec("PRAGMA journal_mode = WAL;");
   } catch (e) {
     // 某些文件系统/沙箱不支持 WAL：降级为默认 journal 模式，但必须留下可见痕迹（不停机）。
-    console.warn("[prompt-enhancer] 无法启用 WAL，已降级为默认 journal 模式：" + String(e));
+    console.warn(`[prompt-enhancer] 无法启用 WAL，已降级为默认 journal 模式：${String(e)}`);
   }
   cur.exec("PRAGMA busy_timeout = 5000;");
 
@@ -248,7 +249,7 @@ function parseTags(text: string | null): string[] {
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((t): t is string => typeof t === "string");
   } catch (e) {
-    console.warn("[prompt-enhancer] tags 列内容不是合法 JSON，已按空数组处理：" + String(e));
+    console.warn(`[prompt-enhancer] tags 列内容不是合法 JSON，已按空数组处理：${String(e)}`);
     return [];
   }
 }
@@ -402,7 +403,7 @@ function inTransaction<T>(cur: DatabaseSync, work: () => T): T {
     try {
       cur.exec("ROLLBACK");
     } catch (rollbackError) {
-      console.warn("[prompt-enhancer] ROLLBACK 失败：" + String(rollbackError));
+      console.warn(`[prompt-enhancer] ROLLBACK 失败：${String(rollbackError)}`);
     }
     throw e;
   }
@@ -579,9 +580,6 @@ function updateStoredPrompt(
   }
   // AI 三字段（sourceBody/aiRefined/aiRefinedAt）不在此接受：唯一写入者是
   // aiWriteBack:true 的内部派生（上方 503-507 行），§13.8-决定四 / §13.13。
-  if (patch.skillName !== undefined) next.skillName = patch.skillName;
-  if (patch.skillExportedAt !== undefined) next.skillExportedAt = patch.skillExportedAt;
-
   if (contentChanged) next.updatedAt = Date.now();
 
   writePrompt(cur, next);
@@ -591,23 +589,36 @@ function updateStoredPrompt(
 
 /** Record a single owner, rolling the database changes back if the file write fails. */
 export function recordSkillExport(
-  id: string, name: string, confirmed: boolean, write: (prompt: Prompt, owned: boolean) => void,
-): Prompt | undefined {
+  id: string, candidate: string, write: (target: {
+    prompt: Prompt;
+    name: string;
+    owned: boolean;
+    competingClaims: readonly { id: string; skillName: string; inTrash: number; skillExportedAt: number }[];
+  }) => void,
+): { ok: true; prompt: Prompt; name: string } | { ok: false; error: "not-found" | "invalid-name" } {
   const cur = getDb();
   return inTransaction(cur, () => {
     const prompt = selectPrompt(id);
-    if (!prompt) return undefined;
-    const otherOwner = cur.prepare(
-      "SELECT 1 FROM prompts WHERE skillName = ? AND id <> ? UNION ALL SELECT 1 FROM trash WHERE skillName = ? AND id <> ? LIMIT 1",
-    ).get(name, id, name, id);
-    if (otherOwner && !confirmed) throw new PromptConflict("同名技能已归另一条提示词，覆盖需要确认");
+    if (!prompt) return { ok: false, error: "not-found" };
+    const name = toKebab(prompt.skillName?.trim() || candidate);
+    if (!isValidSkillName(name)) return { ok: false, error: "invalid-name" };
+
+    // Legacy rows could store different spellings for the same skill directory.
+    const claims = cur.prepare(`
+      SELECT id, skillName, 0 AS inTrash, skillExportedAt FROM prompts WHERE skillName IS NOT NULL AND id <> ?
+      UNION ALL SELECT id, skillName, 1 AS inTrash, skillExportedAt FROM trash WHERE skillName IS NOT NULL
+      ORDER BY inTrash, id
+    `).all(id) as unknown as Array<{ id: string; skillName: string; inTrash: number; skillExportedAt: number }>;
+    const competingClaims = claims.filter((claim) => toKebab(claim.skillName) === name);
 
     const now = Date.now();
     cur.prepare("UPDATE prompts SET skillName = ?, skillExportedAt = ? WHERE id = ?").run(name, now, id);
-    cur.prepare("UPDATE prompts SET skillName = NULL, skillExportedAt = 0 WHERE skillName = ? AND id <> ?").run(name, id);
-    cur.prepare("UPDATE trash SET skillName = NULL, skillExportedAt = 0 WHERE skillName = ?").run(name);
-    write(prompt, !otherOwner && prompt.skillName === name);
-    return { ...prompt, skillName: name, skillExportedAt: now };
+    for (const claim of competingClaims) {
+      const table = claim.inTrash ? "trash" : "prompts";
+      cur.prepare(`UPDATE ${table} SET skillName = NULL, skillExportedAt = 0 WHERE id = ?`).run(claim.id);
+    }
+    write({ prompt, name, owned: competingClaims.length === 0 && prompt.skillName === name, competingClaims });
+    return { ok: true, name, prompt: { ...prompt, skillName: name, skillExportedAt: now } };
   });
 }
 
@@ -851,7 +862,7 @@ function validateBackup(input: unknown): { ok: true; value: ValidatedBackup } | 
       sourceBody: typeof e.sourceBody === "string" ? e.sourceBody : undefined,
       aiRefined: e.aiRefined === true || e.aiRefined === 1,
       ...(numbers as Record<keyof typeof numbers, number>),
-      skillName: typeof e.skillName === "string" ? e.skillName : undefined,
+      skillExportedAt: 0,
     });
   }
 
@@ -885,22 +896,34 @@ export function importPrompts(input: unknown, options: { confirm?: boolean } = {
   const cur = getDb();
   return inTransaction(cur, () => {
     const existing = cur.prepare(
-      "SELECT 1 FROM prompts WHERE id = ? UNION ALL SELECT 1 FROM trash WHERE id = ? LIMIT 1",
+      "SELECT skillName FROM prompts WHERE id = ? UNION ALL SELECT skillName FROM trash WHERE id = ?",
     );
-    const overwrittenIds = prompts.flatMap(({ id }) => existing.get(id, id) !== undefined ? [id] : []);
-    const overwritten = overwrittenIds.length;
-    const stats: ImportStats = { added: prompts.length - overwritten, overwritten, total: prompts.length };
-    if (!options.confirm) return { ok: true, applied: false, stats };
-
+    const overwrittenIds: string[] = [];
+    const preservedSkillIds: string[] = [];
+    const importedAt = Date.now();
     const removeTrash = cur.prepare("DELETE FROM trash WHERE id = ?");
     for (const p of prompts) {
-      insertPrompt(cur, p);
+      const rows = existing.all(p.id, p.id) as Array<{ skillName: string | null }>;
+      if (rows.length) overwrittenIds.push(p.id);
+      if (!options.confirm) continue;
+
+      // A backup can replace prompt data, not claim a local skill directory.
+      const localNames = rows.flatMap(({ skillName }) => skillName?.trim() ? [skillName] : []);
+      const identities = new Set(localNames.map((name) => toKebab(name) || name));
+      if (identities.size > 1) throw new PromptConflict(`提示词 ${p.id} 在词库和回收站绑定了不同技能，请先处理冲突`);
+      const skillName = localNames.find(isValidSkillName) ?? localNames[0];
+      if (skillName) preservedSkillIds.push(p.id);
+      // A fast source clock must not make a later local export appear stale.
+      insertPrompt(cur, { ...p, skillName, createdAt: Math.min(p.createdAt, importedAt), updatedAt: Math.min(p.updatedAt, importedAt) });
       removeTrash.run(p.id);
       ensureTagsWith(cur, p.tags);
     }
+    const overwritten = overwrittenIds.length;
+    const stats: ImportStats = { added: prompts.length - overwritten, overwritten, total: prompts.length };
+    if (!options.confirm) return { ok: true, applied: false, stats };
     for (const t of tags) ensureTagWith(cur, t.name);
     syncTagsFromPrompts(cur);
-    return { ok: true, applied: true, stats, overwrittenIds };
+    return { ok: true, applied: true, stats, overwrittenIds, preservedSkillIds };
   });
 }
 
