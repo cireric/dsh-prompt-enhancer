@@ -24,8 +24,10 @@ export type TemplateVariablesDialogProps = {
   variables?: readonly TemplateVariable[];
   /** 取消：关窗且不改草稿；由调用方卸载本组件。 */
   onCancel: () => void;
-  /** 确认：回传填充后的正文；由调用方卸载本组件并落草稿。 */
+  /** 回传正文；有填值记忆时，在保存完成后回传。 */
   onFilled?: (filledBody: string) => void;
+  /** 词库的确认流程需要包住记忆等待，才能在等待前后复核同一次操作。 */
+  onConfirm?: (filledBody: string, remember?: () => Promise<boolean>) => void;
   confirmLabel?: string;
   applyNotice?: string;
   applying?: boolean;
@@ -65,6 +67,7 @@ export function TemplateVariablesDialog({
   variables = NO_VARIABLES,
   onCancel,
   onFilled,
+  onConfirm,
   confirmLabel,
   applyNotice,
   applying = false,
@@ -121,38 +124,43 @@ export function TemplateVariablesDialog({
   const filled = fillTemplate(body, filledValues);
   const unfilled = unfilledVariables(names, filledValues);
   const needsDecision = confirmUnfilled && unfilled.length > 0;
-  const commit = async (): Promise<void> => {
-    if (!onFilled || applying || savingRef.current) return;
-    if (!memoryKey || (!rememberValues && !restoreDefaults.current)) {
-      onFilled(filled);
-      return;
-    }
-
-    const value = rememberValues ? JSON.stringify(pickRemembered(body, filledValues)) : null;
-    if (savedMemory.current?.key === memoryKey && savedMemory.current.value === value) {
-      onFilled(filled);
-      return;
-    }
-
+  const canConfirm = !!(onConfirm ?? onFilled);
+  const continueWithoutMemory = (): void => {
+    if (onConfirm) onConfirm(filled);
+    else onFilled?.(filled);
+  };
+  const saveMemory = async (key: string, value: string | null): Promise<boolean> => {
+    if (savedMemory.current?.key === key && savedMemory.current.value === value) return true;
     savingRef.current = true;
     setSaving(true);
     setSaveFailed(false);
     try {
       if (value === null) {
-        await api.deleteMeta(memoryKey);
+        await api.deleteMeta(key);
       } else {
-        await api.setMeta(memoryKey, value, CLEAR_TIMEOUT_MS);
+        await api.setMeta(key, value, CLEAR_TIMEOUT_MS);
       }
-      savedMemory.current = { key: memoryKey, value };
+      savedMemory.current = { key, value };
+      return true;
     } catch (error) {
       console.warn("[prompt-enhancer] 保存模板变量记忆失败", error);
       if (active.current) setSaveFailed(true);
-      return;
+      return false;
     } finally {
       savingRef.current = false;
       if (active.current) setSaving(false);
     }
-    if (active.current) latestOnFilled.current?.(filled);
+  };
+  const commit = async (): Promise<void> => {
+    if (!canConfirm || applying || savingRef.current) return;
+    if (!memoryKey || (!rememberValues && !restoreDefaults.current)) {
+      continueWithoutMemory();
+      return;
+    }
+    const value = rememberValues ? JSON.stringify(pickRemembered(body, filledValues)) : null;
+    const remember = () => saveMemory(memoryKey, value);
+    if (onConfirm) onConfirm(filled, remember);
+    else if (await remember() && active.current) latestOnFilled.current?.(filled);
   };
 
   return (
@@ -199,7 +207,7 @@ export function TemplateVariablesDialog({
           <span style={TITLE}>{tr("vars.preview")}</span>
           <pre style={expanded ? EXPANDED_PREVIEW : PREVIEW} tabIndex={0}>{filled}</pre>
         </div>
-        {memoryKey && onFilled && (
+        {memoryKey && canConfirm && (
           <div style={MEMORY_ACTIONS}>
             <label>
               <input type="checkbox" checked={rememberValues} disabled={locked} onChange={(event) => {
@@ -221,11 +229,11 @@ export function TemplateVariablesDialog({
         {saveFailed && (
           <div role="alert" style={MEMORY_ACTIONS}>
             <span style={HINT}>{tr("vars.memoryFailed")}</span>
-            <button type="button" style={GHOST} disabled={locked} onClick={() => onFilled?.(filled)}>{tr("vars.continueWithoutMemory")}</button>
+            <button type="button" style={GHOST} disabled={locked} onClick={continueWithoutMemory}>{tr("vars.continueWithoutMemory")}</button>
           </div>
         )}
         <div style={ACTIONS}>
-          {onFilled && (needsDecision ? (
+          {canConfirm && (needsDecision ? (
             <button type="button" style={PRIMARY} disabled={locked} onClick={() => void commit()}>{tr("vars.applyWithPlaceholders")}</button>
           ) : (
             <button type="submit" style={PRIMARY} disabled={locked}>{confirmLabel ?? tr("vars.fill")}</button>

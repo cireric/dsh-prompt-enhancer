@@ -17,9 +17,12 @@ import { showsLabel } from "../utils/icon-only.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { filterPrompts } from "../utils/hash-token.ts";
-import { needsInsertionConfirmation, promptSummary, recentPrompts, type DraftVersion, type InsertMode } from "../utils/insert.ts";
-import { applyVerifiedPrompt } from "../utils/library-insertion.ts";
-import { needsValues, parseVariables } from "../utils/template.ts";
+import { promptSummary, recentPrompts, type InsertMode } from "../utils/insert.ts";
+import {
+  applyVerifiedPrompt, discardSubmittedInsertion, markInsertionSubmitted, prepareLibraryUse,
+  type InsertionConfirmation, type LibraryInsertion, type LibraryUse,
+} from "../utils/library-insertion.ts";
+import { parseVariables } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 import {
   claimOverlay,
@@ -27,6 +30,7 @@ import {
   openManager,
   pushCapture,
   releaseOverlay,
+  subscribeOverlayClaim,
   useHashSuggestVisible,
   useOverlayClaim,
 } from "../utils/ui-state.ts";
@@ -38,13 +42,6 @@ import { useAsyncList } from "../utils/async-list.ts";
 /** 输入框旁「词库」按钮（任务 5 落地完整行为）。 */
 export type PromptLibraryButtonProps =
   PropsRuntime<"conversation.input.left"> & PropsLocale<"prompt-enhancer">;
-
-/** 已点动作、正等变量填窗回填的那一次插入。 */
-interface PendingUse extends DraftVersion {
-  prompt: Prompt;
-  mode: InsertMode;
-  reconfirm?: boolean;
-}
 
 /** 三种插入模式的动作文案。 */
 const ACTION_LABELS: Record<InsertMode, PromptEnhancerKey> = {
@@ -93,7 +90,7 @@ export function PromptLibraryButton({
   inputActions,
 }: PromptLibraryButtonProps): React.ReactElement | null {
   const input = useInput((s) => s);
-  const { draft, draftRev } = input;
+  const { draft } = input;
   /**
    * R53：`#` 候选浮层**此刻是否真的可见**——由浮层自己发布到 `ui-state.ts` 的共享信号，
    * 本组件订阅它（P8 把 `hashTriggerEnabled` 接进浮层时，两侧自动同改，无需再维护第二个判定）。
@@ -116,7 +113,7 @@ export function PromptLibraryButton({
    * 重跑 effect，4s 计时器就不会重置——seq 每次 +1 让 effect 依赖真的变化。
    */
   const [notice, setNotice] = React.useState<{ text: string; seq: number } | null>(null);
-  const [pending, setPending] = React.useState<PendingUse | null>(null);
+  const [pending, setPending] = React.useState<LibraryUse | null>(null);
   const [checking, setChecking] = React.useState(false);
   const application = React.useRef<AbortController | null>(null);
   const latestTarget = React.useRef({ input, actions: inputActions });
@@ -156,15 +153,27 @@ export function PromptLibraryButton({
     application.current?.abort();
     application.current = null;
   }, []);
-  React.useLayoutEffect(() => {
+  const discardSubmitted = React.useCallback((): void => {
+    cancelApplication();
     setChecking(false);
+    setPending(discardSubmittedInsertion);
+  }, [cancelApplication]);
+  React.useLayoutEffect(() => {
+    if (!settings.showComposerButton) discardSubmitted();
     return cancelApplication;
-  }, [panelOpen, settings.showComposerButton, inputActions, cancelApplication]);
+  }, [settings.showComposerButton, inputActions, cancelApplication, discardSubmitted]);
+  React.useLayoutEffect(() => subscribeOverlayClaim(() => {
+    if (getOverlayClaimSnapshot() === "library") return;
+    // Invalidate even if losing and regaining the overlay are batched into one render.
+    discardSubmitted();
+    setOpen(false);
+  }), [discardSubmitted]);
 
   // The host supplies a stable action object per session. Discard pending UI on rebinding too.
   React.useLayoutEffect(() => {
     setOpen(false);
     setPending(null);
+    setChecking(false);
     setSelectedId(null);
     setNotice(null);
   }, [inputActions]);
@@ -206,12 +215,13 @@ export function PromptLibraryButton({
   /**
    * **用户显式关闭**面板（点按钮/点浮层外/取消/已插入/存为提示词/去管理）：连未提交的变量填窗
    * 选择一起丢弃。R54：浮层抢屏的那条收起路径走下面「位移即收回意图」的 `setOpen(false)`，**不**经过
-   * 这里（它刻意不清 `pending`），故「已点动作、正等回填」的选择不会被静默丢弃。
+   * 这里。布局 effect 作废已提交的确认，但保留尚未提交的填窗选择。
    */
   const close = (): void => {
     cancelApplication();
     setOpen(false);
     setPending(null);
+    setChecking(false);
   };
   const backFromUse = (): void => {
     cancelApplication();
@@ -219,29 +229,6 @@ export function PromptLibraryButton({
     if (pending) setPending(null);
     else setSelectedId(null);
   };
-
-  /**
-   * 位移即收回意图（R58 ② 的**一般化**；R49 的效果保住）：`open` 为真但屏**不在本面手里** ⇒ 收回
-   * `open`。为什么必须收回：留着就造出「`open` 为真而面板不可见」的背离——用户再点一次按钮时
-   * `setOpen(true)` 与旧值相同，React 不重渲染、下面的 effect 也不重跑，面板**再也打不开**；
-   * R60 的通道分叉当初正是为了从源头掐掉这个状态。
-   *
-   * 覆盖范围（以 claim 为准，而不是只看 `#` 浮层这一个对手）：
-   * - 「面板已开、草稿无令牌时敲出 `#`」：浮层抢屏 ⇒ `claimed === "hash"` ⇒ 面板收起（R49 保住）；
-   * - 将来任何新面抢屏：同一行就覆盖了（P7 的收口意义正在这里——不再为每一对补一条局部规则）；
-   * - AI 面板**不抢屏**（它的前置条件是长驻状态、只取空屏），故它不会触发本行；它的那一路由动作侧的
-   *   R60 闸门挡在源头（非指针激活 + 浮层在场 ⇒ 直接 return，不置位 `open`）。
-   *
-   * **R57：不延后兑现**——`open` 在这里已被收回，浮层消失后**不会自动重现**，用户须**再激活一次**；
-   * 而键盘路径（浮层在场时 Enter/Space）连 `open` 都不会被置位（R60 的闸门），所以也不存在「排队的
-   * 意图被兑现」这回事。收回 `open` 时**不清 `pending`**（R54）：浮层抢屏不是用户放弃变量填窗，
-   * 清掉会让「已点动作、正等回填」的填窗选择静默消失——显式关闭路径（`close()`）才连它一起丢弃。
-   */
-  React.useEffect(() => {
-    if (!open) return;
-    if (claimed === "library") return;
-    setOpen(false);
-  }, [open, claimed]);
 
   /**
    * 隐藏即释放：`open` 收回/关闭后，claim 不得停在 `library` 上（P6 的教训——留成占位会把别的面
@@ -279,17 +266,17 @@ export function PromptLibraryButton({
     setNotice((prev) => ({ text: t(key), seq: (prev?.seq ?? 0) + 1 }));
   };
 
-  const apply = async (prompt: Prompt, body: string, mode: InsertMode, before: DraftVersion): Promise<void> => {
+  const apply = async (insertion: LibraryInsertion, confirmation: InsertionConfirmation): Promise<void> => {
     if (application.current || getOverlayClaimSnapshot() !== "library") return;
     const controller = new AbortController();
     application.current = controller;
+    setPending(markInsertionSubmitted);
     setChecking(true);
     setNotice(null);
     try {
       const result = await applyVerifiedPrompt({
-        id: prompt.id, body, mode, before, signal: controller.signal,
-        current: () => latestTarget.current.actions === inputActions && getOverlayClaimSnapshot() === "library"
-          ? latestTarget.current : undefined,
+        insertion, confirmation, signal: controller.signal,
+        current: () => getOverlayClaimSnapshot() === "library" ? latestTarget.current : undefined,
       });
       if (result.kind === "applied") {
         void result.usage.then(() => setUsageRevision((revision) => revision + 1)).catch((error: unknown) => {
@@ -306,16 +293,16 @@ export function PromptLibraryButton({
           close();
           break;
         case "cancelled":
+        case "memory-failed":
           break;
         case "missing":
-          setPrompts((prev) => prev?.filter((item) => item.id !== prompt.id) ?? null);
+          setPrompts((prev) => prev?.filter((item) => item.id !== insertion.id) ?? null);
           setPending(null);
           setSelectedId(null);
           showNotice("list.missingBeforeInsert");
           break;
         case "reconfirm":
-          if (pending) setPending({ ...pending, ...result.before, reconfirm: true });
-          else showNotice("vars.draftChanged");
+          setPending({ kind: "confirm", insertion, confirmation: { review: result.review } });
           break;
         case "unverified":
           console.warn("[prompt-enhancer] " + t("list.verifyFailed"), result.error);
@@ -337,9 +324,10 @@ export function PromptLibraryButton({
   };
 
   const choose = (prompt: Prompt, mode: InsertMode): void => {
-    if (application.current) return;
-    if (needsValues(prompt.body)) setPending({ prompt, mode, draft, draftRev });
-    else void apply(prompt, prompt.body, mode, input);
+    if (application.current || getOverlayClaimSnapshot() !== "library") return;
+    const use = prepareLibraryUse(prompt, mode, latestTarget.current);
+    setPending(use);
+    if (use.kind === "confirm") void apply(use.insertion, use.confirmation);
   };
 
   if (!settings.showComposerButton) return null;
@@ -365,6 +353,8 @@ export function PromptLibraryButton({
   const visible = [...recent, ...shown];
   const selected = visible.find((prompt) => prompt.id === selectedId);
   const variables = selected ? parseVariables(selected.body) : [];
+  const confirmation = pending?.kind === "confirm" ? pending.confirmation : null;
+  const review = confirmation && "review" in confirmation ? confirmation.review : null;
   const hiddenCount = matched.length - visible.length;
 
   const navigateRows = (event: React.KeyboardEvent, index: number): void => {
@@ -476,25 +466,49 @@ export function PromptLibraryButton({
           {checking ? t("list.checking") : notice?.text}
         </span>
       )}
-      {panelOpen && pending !== null && (
+      {panelOpen && pending?.kind === "fill" && (
         <div style={ANCHOR}>
           <TemplateVariablesDialog
             body={pending.prompt.body}
             variables={pending.prompt.variables}
             promptId={pending.prompt.id}
             t={t}
-            confirmLabel={t(ACTION_LABELS[pending.mode])}
+            confirmLabel={t(ACTION_LABELS[pending.insertion.mode])}
             onCancel={backFromUse}
             applying={checking}
-            applyNotice={pending.reconfirm ? t("vars.draftChanged") : undefined}
-            onFilled={(filled) => {
-              if (needsInsertionConfirmation(pending.mode, pending, { draft, draftRev })) {
-                setPending({ ...pending, draft, draftRev, reconfirm: true });
-                return;
-              }
-              void apply(pending.prompt, filled, pending.mode, pending);
-            }}
+            onConfirm={(body, remember) => void apply(pending.insertion, { body, remember })}
           />
+        </div>
+      )}
+      {panelOpen && pending?.kind === "confirm" && (
+        <div style={ANCHOR}>
+          <div role="dialog" aria-label={t(review ? "list.reviewDraft" : "list.reviewBody")} aria-busy={checking} style={PANEL}>
+            {review && <span role="alert" style={MUTED}>{t("list.reconfirm")}</span>}
+            <div style={PANEL_BODY}>
+              {review && (
+                <>
+                  <span style={HEADER}>{t("list.reviewDraft")}</span>
+                  <pre style={PREVIEW_BODY} tabIndex={0}>{review.draft || t("list.emptyDraft")}</pre>
+                  {pending.insertion.mode === "insert-send" && (
+                    <span style={MUTED}>
+                      {t("list.reviewAttachments")}{review.attachmentIds.length} · {t("list.checkAttachments")}
+                    </span>
+                  )}
+                </>
+              )}
+              <span style={HEADER}>{t("list.reviewBody")}</span>
+              <pre style={PREVIEW_BODY} tabIndex={0}>
+                {"review" in pending.confirmation ? pending.confirmation.review.body : pending.confirmation.body}
+              </pre>
+            </div>
+            <span style={PANEL_ACTIONS}>
+              <button type="button" autoFocus style={ACTION_BUTTON} onClick={backFromUse}>{t("vars.cancel")}</button>
+              <button type="button" style={PRIMARY} disabled={checking}
+                onClick={() => void apply(pending.insertion, pending.confirmation)}>
+                {t(ACTION_LABELS[pending.insertion.mode])}
+              </button>
+            </span>
+          </div>
         </div>
       )}
       {panelOpen && pending === null && (
