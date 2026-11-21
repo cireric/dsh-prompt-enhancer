@@ -176,6 +176,7 @@ npm run smoke       # 真实执行 client bundle：注册 id、7 个插槽的账
                     # 产物只由 src/ 组成（metafile 闸门）、lib 与 src 同代（源码指纹）
 ```
 
+- GitHub Actions 的无宿主验证与本地复跑方法见 [README · Development](../README.md#development)。
 - 每个任务结束时**四项全绿**；新增负样本必须先用**变异验证**（临时改坏实现 → 用例必须红 → 复原）。
 - 提交粒度：一个任务一次提交，`<type>: <scope> <what>`。
 - 活体验收（P4–P8）留下的记录在 `docs/superpowers/plans/*-acceptance.md`，是**唯一现场证据**（含被验收提交 SHA、逐条判据、NOT RUN 归属、临时数据与副作用清单）。

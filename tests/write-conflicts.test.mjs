@@ -29,6 +29,30 @@ beforeEach(() => {
   bindSettingsHost(undefined, { maxPromptCount: 20 });
 });
 
+test("变量配置随条目经 API 保存、回收站恢复和 JSON 备份往返", async () => {
+  const variables = [{ name: "范围", description: "填写要检查的目录", defaultValue: "src" }];
+  const created = await dispatch("POST", "/prompts", { title: "变量模板", body: "检查 {{范围}}", variables });
+  assert.equal(created.status, 200);
+  const { id } = created.envelope.data.prompt;
+  assert.deepEqual(store.getPrompt(id).variables, variables);
+
+  const invalid = await dispatch("PUT", "/prompts/" + id, { body: "错误正文", variables: [{ name: "范围", defaultValue: 42 }] });
+  assert.equal(invalid.status, 400);
+  assert.equal(store.getPrompt(id).body, "检查 {{范围}}");
+
+  assert.equal(store.deletePrompt(id), true);
+  assert.deepEqual(store.listTrash().find((entry) => entry.id === id).variables, variables);
+  assert.equal(store.restorePrompts([id]), 1);
+  const backup = JSON.parse(JSON.stringify(store.exportPrompts([id])));
+  assert.deepEqual(backup.prompts[0].variables, variables);
+
+  const cleared = await dispatch("PUT", "/prompts/" + id, { variables: [] });
+  assert.equal(cleared.status, 200);
+  assert.equal(store.getPrompt(id).variables, undefined);
+  assert.equal(store.importPrompts(backup, { confirm: true }).ok, true);
+  assert.deepEqual(store.getPrompt(id).variables, variables);
+});
+
 function fillLibrary() {
   return Array.from({ length: 20 }, (_, index) => store.createPrompt({ title: "existing", body: String(index) }));
 }

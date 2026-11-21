@@ -99,6 +99,19 @@ npm run smoke                    # artifact shape checks: really executes the cl
 npm test                         # node --test
 ```
 
+Run `npm run verify` locally before committing (typecheck, all tests, build,
+and smoke). For the GitHub Actions baseline, use Node 24 in a clean checkout:
+
+```sh
+npm ci --cache .npm-cache
+npm run verify:ci
+```
+
+The CI command runs tests that do not require DSH, rebuilds the bundles, and
+fails if they differ from Git's index. `npm ci` replaces `node_modules`, so use
+a separate checkout for this check if your main checkout has linked DSH packages.
+For source changes, include both rebuilt bundles in the same commit.
+
 Stack: TypeScript (`noEmit`, typecheck only) + esbuild (two entries) + Node's built-in `node --test`; runtime uses `node:sqlite` (Node ≥ 22.19, verified on v24). The build contract and the rest of the design live in [`docs/architecture.md`](docs/architecture.md) (the live architecture document); frozen history is in `docs/superpowers/`.
 
 ## Layout
