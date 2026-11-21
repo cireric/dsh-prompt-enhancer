@@ -12,16 +12,18 @@ import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { canRender } from "../../overlay-claim.ts";
 import type { Prompt } from "../../types.ts";
-import { ApiError, api } from "../utils/api.ts";
+import { api } from "../utils/api.ts";
 import { showsLabel } from "../utils/icon-only.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { filterPrompts } from "../utils/hash-token.ts";
-import { insertPromptDraft, needsInsertionConfirmation, promptSummary, recentPrompts, type DraftVersion, type InsertMode } from "../utils/insert.ts";
+import { needsInsertionConfirmation, promptSummary, recentPrompts, type DraftVersion, type InsertMode } from "../utils/insert.ts";
+import { applyVerifiedPrompt } from "../utils/library-insertion.ts";
 import { needsValues, parseVariables } from "../utils/template.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
 import {
   claimOverlay,
+  getOverlayClaimSnapshot,
   openManager,
   pushCapture,
   releaseOverlay,
@@ -115,6 +117,12 @@ export function PromptLibraryButton({
    */
   const [notice, setNotice] = React.useState<{ text: string; seq: number } | null>(null);
   const [pending, setPending] = React.useState<PendingUse | null>(null);
+  const [checking, setChecking] = React.useState(false);
+  const application = React.useRef<AbortController | null>(null);
+  const latestTarget = React.useRef({ input, actions: inputActions });
+  React.useLayoutEffect(() => {
+    latestTarget.current = { input, actions: inputActions };
+  }, [input, inputActions]);
   /**
    * 过滤查询词（2026-09-30 裁定：打开即聚焦、**关闭不记忆**）。
    * 不记忆是刻意的：记住上次的词会让下次打开看到一份「被筛过的库」，看起来像东西丢了。
@@ -144,6 +152,22 @@ export function PromptLibraryButton({
    * claim 接线），故「浮层可见」⇔「claim 在 `hash` 手里」。
    */
   const panelOpen = open && canRender("library", claimed);
+  const cancelApplication = React.useCallback((): void => {
+    application.current?.abort();
+    application.current = null;
+  }, []);
+  React.useLayoutEffect(() => {
+    setChecking(false);
+    return cancelApplication;
+  }, [panelOpen, settings.showComposerButton, inputActions, cancelApplication]);
+
+  // The host supplies a stable action object per session. Discard pending UI on rebinding too.
+  React.useLayoutEffect(() => {
+    setOpen(false);
+    setPending(null);
+    setSelectedId(null);
+    setNotice(null);
+  }, [inputActions]);
   /**
    * 关闭即清空查询词（**关闭不记忆**）。一条规则覆盖全部「面板真的不在了」的路径——显式
    * `close()`、点面板外、「位移即收回意图」那条把 `open` 收回的 effect，以及
@@ -168,10 +192,7 @@ export function PromptLibraryButton({
 
   // 点浮层外收起（三处浮层共用同一实现，见 utils/dismiss-outside.ts；宿主标准 props 没有这个座位，
   // 与官方 ui-commands 的 PopupSelectView 同款：document 捕获阶段的纯监听，不改宿主 DOM）。
-  useDismissOnOutside(rootRef, open, () => {
-    setOpen(false);
-    setPending(null);
-  });
+  useDismissOnOutside(rootRef, open, () => close());
 
   // 已删除提示自动消失。
   React.useEffect(() => {
@@ -188,8 +209,15 @@ export function PromptLibraryButton({
    * 这里（它刻意不清 `pending`），故「已点动作、正等回填」的选择不会被静默丢弃。
    */
   const close = (): void => {
+    cancelApplication();
     setOpen(false);
     setPending(null);
+  };
+  const backFromUse = (): void => {
+    cancelApplication();
+    setChecking(false);
+    if (pending) setPending(null);
+    else setSelectedId(null);
   };
 
   /**
@@ -247,29 +275,71 @@ export function PromptLibraryButton({
     openManager("list");
   };
 
-  /** 真正落草稿 + 上报用量（上报不阻塞 UI，但失败必须可见）。 */
-  const apply = (prompt: Prompt, body: string, mode: InsertMode): void => {
-    if (!insertPromptDraft(inputActions, input, body, mode)) {
-      setNotice((prev) => ({ text: t("error.insert"), seq: (prev?.seq ?? 0) + 1 }));
-      return;
-    }
-    if (mode === "insert-send") inputActions.submit();
-    close();
-    void api.recordUsage(prompt.id).then(() => setUsageRevision((revision) => revision + 1)).catch((err: unknown) => {
-      console.warn("[prompt-enhancer] " + t("error.use"), err);
-      // 宿主 `POST /prompts/:id/use` 对已删除的提示词回 404；按 status 分类（不匹配 message 文本，
-      // 宿主文案可改）——与 api.ts / ai-flow.ts 的既定纪律同口径。
-      if (err instanceof ApiError && err.status === 404) {
-        setPrompts((prev) => (prev === null ? prev : prev.filter((item) => item.id !== prompt.id)));
-        setNotice((prev) => ({ text: t("error.noPrompt"), seq: (prev?.seq ?? 0) + 1 }));
-      }
-    });
+  const showNotice = (key: PromptEnhancerKey): void => {
+    setNotice((prev) => ({ text: t(key), seq: (prev?.seq ?? 0) + 1 }));
   };
 
-  /** 有变量先填变量，填完再走 apply。 */
+  const apply = async (prompt: Prompt, body: string, mode: InsertMode, before: DraftVersion): Promise<void> => {
+    if (application.current || getOverlayClaimSnapshot() !== "library") return;
+    const controller = new AbortController();
+    application.current = controller;
+    setChecking(true);
+    setNotice(null);
+    try {
+      const result = await applyVerifiedPrompt({
+        id: prompt.id, body, mode, before, signal: controller.signal,
+        current: () => latestTarget.current.actions === inputActions && getOverlayClaimSnapshot() === "library"
+          ? latestTarget.current : undefined,
+      });
+      if (result.kind === "applied") {
+        void result.usage.then(() => setUsageRevision((revision) => revision + 1)).catch((error: unknown) => {
+          console.warn("[prompt-enhancer] " + t("error.use"), error);
+          if (latestTarget.current.actions === inputActions && !controller.signal.aborted) showNotice("list.usageFailed");
+        });
+      }
+      if (application.current !== controller) return;
+      switch (result.kind) {
+        case "applied":
+          // The write is complete. Closing the panel must not invalidate its usage receipt.
+          application.current = null;
+          setChecking(false);
+          close();
+          break;
+        case "cancelled":
+          break;
+        case "missing":
+          setPrompts((prev) => prev?.filter((item) => item.id !== prompt.id) ?? null);
+          setPending(null);
+          setSelectedId(null);
+          showNotice("list.missingBeforeInsert");
+          break;
+        case "reconfirm":
+          if (pending) setPending({ ...pending, ...result.before, reconfirm: true });
+          else showNotice("vars.draftChanged");
+          break;
+        case "unverified":
+          console.warn("[prompt-enhancer] " + t("list.verifyFailed"), result.error);
+          showNotice("list.verifyFailed");
+          break;
+        case "rejected":
+          showNotice("error.insert");
+          break;
+      }
+    } catch (error) {
+      console.warn("[prompt-enhancer] " + t("error.insert"), error);
+      if (application.current === controller) showNotice("error.insert");
+    } finally {
+      if (application.current === controller) {
+        application.current = null;
+        setChecking(false);
+      }
+    }
+  };
+
   const choose = (prompt: Prompt, mode: InsertMode): void => {
+    if (application.current) return;
     if (needsValues(prompt.body)) setPending({ prompt, mode, draft, draftRev });
-    else apply(prompt, prompt.body, mode);
+    else void apply(prompt, prompt.body, mode, input);
   };
 
   if (!settings.showComposerButton) return null;
@@ -334,8 +404,7 @@ export function PromptLibraryButton({
         if (event.target instanceof HTMLInputElement && event.target.type === "search" && query) return;
         event.preventDefault();
         event.stopPropagation();
-        if (pending) setPending(null);
-        else if (selected) setSelectedId(null);
+        if (pending || selected) backFromUse();
         else { close(); triggerRef.current?.focus(); }
       }}
       style={WRAP}
@@ -402,9 +471,9 @@ export function PromptLibraryButton({
         label={t("selection.save")}
         onSave={saveSelection}
       />
-      {notice !== null && (
+      {(checking || notice !== null) && (
         <span role="status" aria-live="polite" style={NOTICE}>
-          {notice.text}
+          {checking ? t("list.checking") : notice?.text}
         </span>
       )}
       {panelOpen && pending !== null && (
@@ -415,14 +484,15 @@ export function PromptLibraryButton({
             promptId={pending.prompt.id}
             t={t}
             confirmLabel={t(ACTION_LABELS[pending.mode])}
-            onCancel={() => setPending(null)}
+            onCancel={backFromUse}
+            applying={checking}
             applyNotice={pending.reconfirm ? t("vars.draftChanged") : undefined}
             onFilled={(filled) => {
               if (needsInsertionConfirmation(pending.mode, pending, { draft, draftRev })) {
                 setPending({ ...pending, draft, draftRev, reconfirm: true });
                 return;
               }
-              apply(pending.prompt, filled, pending.mode);
+              void apply(pending.prompt, filled, pending.mode, pending);
             }}
           />
         </div>
@@ -533,7 +603,7 @@ export function PromptLibraryButton({
               <section style={PREVIEW} aria-label={t("list.preview")}>
                 <header style={PANEL_HEADER}>
                   <h3 style={PREVIEW_TITLE}>{selected.title}</h3>
-                  <button type="button" autoFocus style={ACTION_BUTTON} onClick={() => setSelectedId(null)}>
+                  <button type="button" autoFocus style={ACTION_BUTTON} onClick={backFromUse}>
                     {t("manager.edit.back")}
                   </button>
                 </header>
@@ -548,14 +618,14 @@ export function PromptLibraryButton({
                   {selected.body}
                 </pre>
                 <span style={PANEL_ACTIONS}>
-                  <button type="button" style={PRIMARY} onClick={() => choose(selected, "insert")}>
+                  <button type="button" style={PRIMARY} disabled={checking} onClick={() => choose(selected, "insert")}>
                     {t(variables.length ? "list.fillInsert" : "action.insert")}
                   </button>
                   <details key={selected.id}>
                     <summary style={ACTION_BUTTON}>{t("list.moreActions")}</summary>
                     <span style={PANEL_ACTIONS}>
                       {SECONDARY_MODES.map((mode) => (
-                        <button key={mode} type="button" style={ACTION_BUTTON} onClick={() => choose(selected, mode)}>
+                        <button key={mode} type="button" style={ACTION_BUTTON} disabled={checking} onClick={() => choose(selected, mode)}>
                           {t(ACTION_LABELS[mode])}
                         </button>
                       ))}

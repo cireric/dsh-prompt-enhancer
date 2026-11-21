@@ -39,6 +39,7 @@ export const AI_PROBE_TIMEOUT_MS = 15_000;
  * `Promise.allSettled` 永不落定 ⇒ 既无 `console.warn` 也无 UI 信号（P7 M7 的 Minor 3）。
  */
 export const CLEAR_TIMEOUT_MS = 15_000;
+const PROMPT_VERIFICATION_TIMEOUT_MS = 5_000;
 
 /** `AbortSignal.timeout` 到点的形态判定（看名字，不看文案）：浏览器与 Node 都抛 `TimeoutError`。 */
 function isTimeoutAbort(err: unknown): boolean {
@@ -130,7 +131,7 @@ function envelopeMessage(error: unknown, fallback: string): string {
  * `DOMException("TimeoutError")` 换成带标记的 `ApiError`（见下）——探测超时与 AI 调用超时必须在
  * 分类器那里可辨；其余路径的超时**原样上抛**（既有契约，见 tests/api.test.mjs 的负面对照）。
  */
-async function call<T>(method: string, path: string, body?: unknown, timeoutMs?: number, probe = false, callerSignal?: AbortSignal): Promise<T> {
+async function call<T>(method: string, path: string, body?: unknown, timeoutMs?: number, probe = false, callerSignal?: AbortSignal, cache?: RequestCache): Promise<T> {
   const deadline = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
   const signal = callerSignal && deadline ? AbortSignal.any([callerSignal, deadline]) : callerSignal ?? deadline;
   let res: Response;
@@ -140,6 +141,7 @@ async function call<T>(method: string, path: string, body?: unknown, timeoutMs?:
       headers: body === undefined ? undefined : { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal,
+      ...(cache ? { cache } : {}),
     });
   } catch (e) {
     /**
@@ -259,8 +261,10 @@ export const api = {
   }) => call<SkillExportReceipt>("POST", "/skills/export", input),
 
   // ── 提示词：单条读写（P6）──────────────────────────────────────────────
-  /** 单条读取；不存在时宿主回 404（信封失败 → ApiError.status === 404）。 */
-  getPrompt: (id: string) => call<Prompt>("GET", "/prompts/" + encodeURIComponent(id)),
+  /** 单条读取，不复用缓存；确认取用时传 signal，使等待有界且可取消。 */
+  getPrompt: (id: string, signal?: AbortSignal) =>
+    call<Prompt>("GET", "/prompts/" + encodeURIComponent(id), undefined,
+      signal ? PROMPT_VERIFICATION_TIMEOUT_MS : undefined, false, signal, "no-store"),
   /** 软删除：进回收站（规格 §4.4），故返回的是「已删除」而不是被删实体。 */
   deletePrompt: (id: string) => call<{ deleted: true }>("DELETE", "/prompts/" + encodeURIComponent(id)),
 

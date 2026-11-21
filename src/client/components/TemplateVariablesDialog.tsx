@@ -28,6 +28,7 @@ export type TemplateVariablesDialogProps = {
   onFilled?: (filledBody: string) => void;
   confirmLabel?: string;
   applyNotice?: string;
+  applying?: boolean;
   panelSize?: Pick<React.CSSProperties, "width" | "height">;
   /** 应用到草稿前，未填项需要显式选择保留。 */
   confirmUnfilled?: boolean;
@@ -66,6 +67,7 @@ export function TemplateVariablesDialog({
   onFilled,
   confirmLabel,
   applyNotice,
+  applying = false,
   panelSize,
   confirmUnfilled = false,
   promptId,
@@ -83,6 +85,7 @@ export function TemplateVariablesDialog({
   const [rememberValues, setRememberValues] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [saveFailed, setSaveFailed] = React.useState(false);
+  const locked = saving || applying;
   const restoreDefaults = React.useRef(false);
   const savingRef = React.useRef(false);
   const active = React.useRef(false);
@@ -119,7 +122,7 @@ export function TemplateVariablesDialog({
   const unfilled = unfilledVariables(names, filledValues);
   const needsDecision = confirmUnfilled && unfilled.length > 0;
   const commit = async (): Promise<void> => {
-    if (!onFilled || savingRef.current) return;
+    if (!onFilled || applying || savingRef.current) return;
     if (!memoryKey || (!rememberValues && !restoreDefaults.current)) {
       onFilled(filled);
       return;
@@ -162,7 +165,7 @@ export function TemplateVariablesDialog({
       role="dialog"
       aria-label={tr("vars.title")}
     >
-      <form style={expanded ? EXPANDED_FORM : FORM} onSubmit={(event) => {
+      <form aria-busy={locked} style={expanded ? EXPANDED_FORM : FORM} onSubmit={(event) => {
         event.preventDefault();
         if (!needsDecision) void commit();
       }}>
@@ -178,7 +181,7 @@ export function TemplateVariablesDialog({
                 type="text"
                 style={INPUT}
                 value={Object.hasOwn(filledValues, name) ? filledValues[name] : ""}
-                disabled={saving}
+                disabled={locked}
                 autoFocus={name === focusedName}
                 aria-label={name}
                 onChange={(ev) => {
@@ -199,13 +202,13 @@ export function TemplateVariablesDialog({
         {memoryKey && onFilled && (
           <div style={MEMORY_ACTIONS}>
             <label>
-              <input type="checkbox" checked={rememberValues} disabled={saving} onChange={(event) => {
+              <input type="checkbox" checked={rememberValues} disabled={locked} onChange={(event) => {
                 setRememberValues(event.currentTarget.checked);
                 setSaveFailed(false);
               }} />
               {tr("vars.rememberTemplate")}
             </label>
-            <button type="button" style={GHOST} disabled={saving} onClick={() => {
+            <button type="button" style={GHOST} disabled={locked} onClick={() => {
               restoreDefaults.current = true;
               setValues({});
               setRememberValues(false);
@@ -218,14 +221,14 @@ export function TemplateVariablesDialog({
         {saveFailed && (
           <div role="alert" style={MEMORY_ACTIONS}>
             <span style={HINT}>{tr("vars.memoryFailed")}</span>
-            <button type="button" style={GHOST} onClick={() => onFilled?.(filled)}>{tr("vars.continueWithoutMemory")}</button>
+            <button type="button" style={GHOST} disabled={locked} onClick={() => onFilled?.(filled)}>{tr("vars.continueWithoutMemory")}</button>
           </div>
         )}
         <div style={ACTIONS}>
           {onFilled && (needsDecision ? (
-            <button type="button" style={PRIMARY} disabled={saving} onClick={() => void commit()}>{tr("vars.applyWithPlaceholders")}</button>
+            <button type="button" style={PRIMARY} disabled={locked} onClick={() => void commit()}>{tr("vars.applyWithPlaceholders")}</button>
           ) : (
-            <button type="submit" style={PRIMARY} disabled={saving}>{confirmLabel ?? tr("vars.fill")}</button>
+            <button type="submit" style={PRIMARY} disabled={locked}>{confirmLabel ?? tr("vars.fill")}</button>
           ))}
           <button type="button" style={GHOST} disabled={saving} onClick={onCancel}>
             {tr("vars.cancel")}
