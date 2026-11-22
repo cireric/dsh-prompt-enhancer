@@ -16,6 +16,7 @@ import {
   type DraftEdit, type DraftGeneration, type DraftReplacement, type DraftSession,
 } from "../utils/draft-session.ts";
 import { aiErrorKey, keepVariablesFor, missingVariables } from "../utils/ai-flow.ts";
+import { createAIRequestLifecycle } from "../utils/ai-request-lifecycle.ts";
 import { showsLabel } from "../utils/icon-only.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 import { needsValues } from "../utils/template.ts";
@@ -133,61 +134,36 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     (copyFeedback?.target === target ? copyFeedback.label : undefined) ??
     (target === "result" ? "ai.copy" : "ai.checkCopySuggestion");
   const rootRef = React.useRef<HTMLDivElement | null>(null);
-  /** 调用闸门：ref 同步生效（state 的 disabled 要等渲染），覆盖「探测 → 润色/完善/存库/切换」整段。 */
-  const busyRef = React.useRef(false);
-  const requestRef = React.useRef<{ controller: AbortController; startedAt: number; onCancel: () => void } | null>(null);
+  const [requests] = React.useState(() => createAIRequestLifecycle());
   const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
-  /** 卸载守卫（P4 惯例）：异步回调不再 setState；重挂载时复位，避免 StrictMode 双挂后永久失活。 */
   const aliveRef = React.useRef(true);
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
-      const request = requestRef.current;
-      if (request) {
-        requestRef.current = null;
-        busyRef.current = false;
-        request.controller.abort();
-      }
+      requests.invalidate();
     };
-  }, []);
+  }, [requests]);
 
   const waiting = status === "polishing" || status === "checking" || status === "refining" || status === "revisingCheck" ||
     status === "draftingPrompt" || status === "searchingDraft";
   React.useEffect(() => {
     if (!waiting) return;
     const id = window.setInterval(() => {
-      const request = requestRef.current;
-      if (request) setElapsedSeconds(Math.floor((performance.now() - request.startedAt) / 1000));
+      const seconds = requests.elapsedSeconds();
+      if (seconds !== undefined) setElapsedSeconds(seconds);
     }, 1000);
     return () => window.clearInterval(id);
-  }, [waiting]);
+  }, [requests, waiting]);
 
-  const beginRequest = (onCancel: () => void): AbortController => {
-    const controller = new AbortController();
-    requestRef.current = { controller, startedAt: performance.now(), onCancel };
-    busyRef.current = true;
-    setElapsedSeconds(0);
-    return controller;
-  };
-
-  const isCurrentRequest = (controller: AbortController): boolean =>
-    aliveRef.current && requestRef.current?.controller === controller;
-
-  const finishRequest = (controller: AbortController): boolean => {
-    if (!isCurrentRequest(controller)) return false;
-    requestRef.current = null;
-    busyRef.current = false;
-    return true;
-  };
-
-  const cancelRequest = (): void => {
-    const request = requestRef.current;
-    if (!request || !finishRequest(request.controller)) return;
-    request.controller.abort();
-    request.onCancel();
-  };
+  const startRequest: typeof requests.start = (operation) => requests.start({
+    ...operation,
+    onStart: () => {
+      setElapsedSeconds(0);
+      operation.onStart();
+    },
+  });
 
   const claimed = useOverlayClaim();
   const aiWanted = settings.showAIPolishButton && status !== "idle";
@@ -219,10 +195,10 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   React.useLayoutEffect(() => {
     if (checkOwner && checkOwner !== inputActions) {
-      cancelRequest();
+      requests.cancel();
       close();
     }
-  }, [checkOwner, inputActions]);
+  }, [checkOwner, inputActions, requests]);
 
   const settled = status === "choose" || status === "done" || status === "checked" || status === "error" ||
     status === "refined" || status === "saved" || status === "saveFailed" || status === "writeBackFailed";
@@ -244,79 +220,93 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const run = (mode: OptimizeMode): void => {
     const handoff = draftSession ? prepareDraftHandoff(draftSession) : undefined;
     const snapshot = draftSession ? handoff?.body : draft;
-    if (busyRef.current || !snapshot?.trim()) return;
+    if (!snapshot?.trim()) return;
     const check = mode === "check" && !handoff ? startCheck({ draft: snapshot, draftRev }) : null;
-    const controller = beginRequest(() => {
-      if (check) setOwnedCheck(null);
-      setStatus(draftSession ? "draftPrompt" : "choose");
-    });
-    setMode(mode);
-    // 授权**算一次、两处共用**：这一份发给宿主，下面 done 分支的提示读同一个 state。
+    // 授权算一次，调用和结果提示共用。
     const keepVariables = keepVariablesFor(snapshot);
-    setKeepVars(keepVariables);
-    setErrorKey(null);
-    setFillTarget(null);
-    setDraftChanged(false);
-    setOriginal(mode === "polish" ? snapshot : "");
-    setShowOriginal(false);
-    setCopyFeedback(null);
-    setPolished("");
-    setOwnedCheck(check ? { session: check, owner: inputActions } : null);
-    setTemplateSession(null);
-    setSaveResult(undefined);
-    if (!check) setStatus(mode === "polish" ? "polishing" : mode === "check" ? "checking" : "refining");
-    void (async () => {
-      try {
-        if (mode === "template") {
-          const result = await api.refinePrompt(snapshot, controller.signal);
-          if (!isCurrentRequest(controller)) return;
-          setTemplateSession(createTemplateRefinement(snapshot, result));
-          setStatus("refined");
-        } else if (mode === "check") {
-          const report = await api.checkPrompt(snapshot, controller.signal, handoff?.generatedFrom);
-          if (!isCurrentRequest(controller)) return;
-          if (handoff) {
-            updateDraft({ type: "checked", snapshot: handoff, report });
-            setStatus("checked");
-          } else editCheck({ type: "reported", report });
-        } else {
-          const result = await api.polishPrompt(snapshot, { keepVariables }, controller.signal);
-          if (!isCurrentRequest(controller)) return;
-          setPolished(result.polished);
-          setStatus("done");
-        }
-      } catch (err) {
-        if (!isCurrentRequest(controller)) return;
+    const callbacks = {
+      onStart: () => {
+        setMode(mode);
+        setKeepVars(keepVariables);
+        setErrorKey(null);
+        setFillTarget(null);
+        setDraftChanged(false);
+        setOriginal(mode === "polish" ? snapshot : "");
+        setShowOriginal(false);
+        setCopyFeedback(null);
+        setPolished("");
+        setOwnedCheck(check ? { session: check, owner: inputActions } : null);
+        setTemplateSession(null);
+        setSaveResult(undefined);
+        if (!check) setStatus(mode === "polish" ? "polishing" : mode === "check" ? "checking" : "refining");
+      },
+      onError: (err: unknown) => {
         console.warn("[prompt-enhancer] AI 优化失败", err);
         if (check) setOwnedCheck(null);
         setErrorKey(aiErrorKey(err));
         setStatus("error");
-      } finally {
-        finishRequest(controller);
-      }
-    })();
+      },
+      onCancel: () => {
+        if (check) setOwnedCheck(null);
+        setStatus(draftSession ? "draftPrompt" : "choose");
+      },
+    };
+    if (mode === "template") {
+      void startRequest({
+        ...callbacks,
+        request: (signal) => api.refinePrompt(snapshot, signal),
+        onSuccess: (result) => {
+          setTemplateSession(createTemplateRefinement(snapshot, result));
+          setStatus("refined");
+        },
+      });
+    } else if (mode === "check") {
+      void startRequest({
+        ...callbacks,
+        request: (signal) => api.checkPrompt(snapshot, signal, handoff?.generatedFrom),
+        onSuccess: (report) => {
+          if (handoff) {
+            updateDraft({ type: "checked", snapshot: handoff, report });
+            setStatus("checked");
+          } else editCheck({ type: "reported", report });
+        },
+      });
+    } else {
+      void startRequest({
+        ...callbacks,
+        request: (signal) => api.polishPrompt(snapshot, { keepVariables }, signal),
+        onSuccess: (result) => {
+          setPolished(result.polished);
+          setStatus("done");
+        },
+      });
+    }
   };
 
   const generateCheckRevision = (): void => {
-    if (!composerCheck || busyRef.current) return;
+    if (!composerCheck) return;
     const generation = beginCheckRevision(composerCheck);
     if (!generation) return;
     const returnToReport = () => editCheck({ type: "returnToReport" });
-    const controller = beginRequest(returnToReport);
-    setErrorKey(null);
-    setCopyFeedback(null);
-    setOwnedCheck({ owner: inputActions, session: generation.session });
-    void api.reviseCheckedPrompt(generation.request, controller.signal).then((revision) => {
-      if (isCurrentRequest(controller)) editCheck({ type: "revised", revision });
-    }).catch((err: unknown) => {
-      if (!isCurrentRequest(controller)) return;
-      console.warn("[prompt-enhancer] 检查改稿失败", err);
-      setErrorKey(aiErrorKey(err));
-      returnToReport();
-    }).finally(() => finishRequest(controller));
+    void startRequest({
+      onStart: () => {
+        setErrorKey(null);
+        setCopyFeedback(null);
+        setOwnedCheck({ owner: inputActions, session: generation.session });
+      },
+      request: (signal) => api.reviseCheckedPrompt(generation.request, signal),
+      onSuccess: (revision) => editCheck({ type: "revised", revision }),
+      onError: (err) => {
+        console.warn("[prompt-enhancer] 检查改稿失败", err);
+        setErrorKey(aiErrorKey(err));
+        returnToReport();
+      },
+      onCancel: returnToReport,
+    });
   };
 
   const startDraft = (): void => {
+    setOwnedCheck(null);
     setErrorKey(null);
     setDraftSession(createDraftSession(draft));
     setStatus("draftPrompt");
@@ -332,44 +322,43 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setStatus("draftPrompt");
   };
 
-  const runDraftGeneration = (action: DraftGeneration): void => {
-    if (busyRef.current || !draftSession) return;
-    const request = prepareDraftGeneration(draftSession, action);
-    if (!request) return;
-    const controller = beginRequest(backToDraftStatus);
-    setErrorKey(null);
-    setCopyFeedback(null);
-    setStatus("draftingPrompt");
-    void (async () => {
-      try {
-        const next = await generateDraft(draftSession, request, controller.signal, api.draftPrompt);
-        if (next && isCurrentRequest(controller)) setDraftSession(next);
-      } catch (err) {
-        if (!isCurrentRequest(controller)) return;
-        console.warn("[prompt-enhancer] 提示词起草失败", err);
-        setErrorKey(aiErrorKey(err));
-      } finally {
-        if (finishRequest(controller)) setStatus("draftPrompt");
-      }
-    })();
-  };
-
   const backToDraftStatus = (): void => setStatus("draftPrompt");
 
-  const searchDraft = async (query: string): Promise<void> => {
-    if (busyRef.current || !query.trim()) return;
-    const controller = beginRequest(backToDraftStatus);
-    setStatus("searchingDraft");
-    try {
-      const search = await api.searchDraft(query.trim(), controller.signal);
-      if (isCurrentRequest(controller)) updateDraft({ type: "searched", search });
-    } catch (err) {
-      if (!isCurrentRequest(controller)) return;
-      console.warn("[prompt-enhancer] 起草搜索失败", err);
-      updateDraft({ type: "searched", search: { status: "failed" } });
-    } finally {
-      if (finishRequest(controller)) setStatus("draftPrompt");
-    }
+  const runDraftGeneration = (action: DraftGeneration): void => {
+    if (!draftSession) return;
+    const request = prepareDraftGeneration(draftSession, action);
+    if (!request) return;
+    void startRequest({
+      onStart: () => {
+        setErrorKey(null);
+        setCopyFeedback(null);
+        setStatus("draftingPrompt");
+      },
+      request: (signal) => generateDraft(draftSession, request, signal, api.draftPrompt),
+      onSuccess: (next) => { if (next) setDraftSession(next); },
+      onError: (err) => {
+        console.warn("[prompt-enhancer] 提示词起草失败", err);
+        setErrorKey(aiErrorKey(err));
+      },
+      onFinish: backToDraftStatus,
+      onCancel: backToDraftStatus,
+    });
+  };
+
+  const searchDraft = (query: string): void => {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    void startRequest({
+      onStart: () => setStatus("searchingDraft"),
+      request: (signal) => api.searchDraft(trimmed, signal),
+      onSuccess: (search) => updateDraft({ type: "searched", search }),
+      onError: (err) => {
+        console.warn("[prompt-enhancer] 起草搜索失败", err);
+        updateDraft({ type: "searched", search: { status: "failed" } });
+      },
+      onFinish: backToDraftStatus,
+      onCancel: backToDraftStatus,
+    });
   };
 
   const saveDependencies = {
@@ -380,20 +369,15 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     isAlive: () => aliveRef.current,
   };
 
-  const runSave = async (operation: () => ReturnType<typeof saveTemplate>): Promise<void> => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setSaveResult(undefined);
-    setStatus("saving");
-    try {
+  const runSave = (operation: () => ReturnType<typeof saveTemplate>): Promise<void> =>
+    requests.runSave(async () => {
+      setSaveResult(undefined);
+      setStatus("saving");
       const result = await operation();
       if (!result || !aliveRef.current) return;
       if (result.kind !== "cancelled") setSaveResult(result);
       setStatus("refined");
-    } finally {
-      busyRef.current = false;
-    }
-  };
+    });
 
   const save = (): void => {
     if (!templateSession || !finalTemplate?.canUse) return;
@@ -472,7 +456,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   if (settings.showAIPolishButton === false) return null;
 
-  // 调用/完善/存库三态同属「忙」：按钮置灰、aria-busy、状态行可见，重入由 busyRef 兜底。
+  // 调用/完善/存库三态同属「忙」：按钮置灰、aria-busy、状态行可见，重入由请求生命周期同步拦截。
   // 提示文案按阶段取值：refining 是另一次 AI 调用、saving 是本地写库，都不该沿用
   // polishing 那句「正在调用 AI…（最长约 2 分钟）」。
   const busyKey: PromptEnhancerKey | null =
@@ -554,7 +538,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
             >
               <span style={status === "checked" ? { ...PANEL_HEADER, flexShrink: 0 } : PANEL_HEADER}>
                 <strong>{showCheckRevision ? t("ai.checkRevised") : status === "error" && draftSession ? t(failedHandoffKey) : t(showDraft ? "ai.draft.title" : showCheck ? "ai.check" : showRefined ? "ai.refine" : "ai.button")}</strong>
-                <button type="button" style={PANEL_BUTTON} disabled={!waiting && busyKey !== null} onClick={waiting ? cancelRequest : close}>
+                <button type="button" style={PANEL_BUTTON} disabled={!waiting && busyKey !== null} onClick={waiting ? requests.cancel : close}>
                   {t(waiting ? "ai.cancelRequest" : "ai.close")}
                 </button>
               </span>
@@ -593,7 +577,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   error={errorKey}
                   update={updateDraft}
                   generate={runDraftGeneration}
-                  onSearch={(query) => void searchDraft(query)}
+                  onSearch={searchDraft}
                   onBack={() => { setDraftSession(null); setErrorKey(null); setStatus("choose"); }}
                   onApply={() => apply(draftSession.body)}
                   onCheck={() => run("check")}
