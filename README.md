@@ -6,132 +6,63 @@
 
 # dsh-prompt-enhancer
 
-A DSH (DeepSeek Harness) plugin focused on **prompts only**: manage and reuse prompts beside the chat input, AI-polish them, capture them, and keep improving them.
+A DSH (DeepSeek Harness) Web plugin for managing, improving, and reusing prompts without leaving the chat input.
 
-Derived from [`master1Sun/dsh-prompt-library`](https://github.com/master1Sun/dsh-prompt-library) v0.16.0 (MIT) — see "Origin and license" below.
+## Features
 
-## Scope
+- **Prompt library:** create and edit prompts, search, sort, group by tag, and track usage. Open the manager from the composer or sidebar. Save selected text or the current draft as a prompt. Use the recycle bin to restore deleted entries, and preview JSON backups before importing.
+- **Reuse and templates:** type `#` to find prompts, or use the composer picker to append, overwrite, or insert and send. Fill `{{name}}` variables before insertion. Templates can define descriptions and defaults; the library can remember values for each template.
+- **Context suggestions:** while the draft is non-empty, show up to five prompts matched against the current draft and the last three user messages.
+- **AI optimization:** use Light polish to edit a draft, or Enhance as template to get an editable template with optional suggestions. Try variable values without changing the template, or save the template to the library.
+- **Check prompt:** review findings, select suggestions, and generate an editable revision. Applying it to the composer does not send a message or save a library entry.
+- **Draft from an idea:** start even with an empty composer. Describe the intended execution environment, answer or skip clarification, and review the resulting prompt and its assumptions. A draft check can send suggestions back to the feedback field for another revision. You can also enhance the draft as a template.
+- **Library rollback:** when a saved entry has an AI source version, switch between the original and the optimized body from its library details. This is not composer undo.
+- **Skill export:** export to `$DSH_HOME/skills/<name>/SKILL.md`. An outdated export is marked for re-export. Export is one-way; it does not import Skills back into the library or keep them in sync automatically.
+- **Settings:** choose the AI model, manager size, entry visibility, composer button labels, `#` suggestions, context suggestions, selection capture, and the library limit.
 
-**Included** (eleven delivered capabilities, in spec order):
-
-1. **Prompt library**: CRUD (title + body + tags), search, sorting, tag grouping, usage-count statistics; **two entries** — a button beside the composer and an entry at the sidebar foot (next to Settings) — both open the manager panel
-2. **Reuse**: insert (append) / overwrite / insert-and-send; type `#` for a live-filtering overlay
-3. **Template variables**: `{{name}}` placeholders, with a filled preview before inserting and remembered values for library reuse
-4. **AI optimization**: choose Light polish, Check prompt, Enhance as template, or Draft from an idea beside the prompt library. Start with an empty composer, describe the execution environment, and skip clarification if you wish. See the goal used for the draft, its assumptions, and any required inputs. Check the draft against your original requirements and applied feedback, then bring suggestions back into revision. Copy the result, apply it, or turn it into a template
-5. **Rollback**: the pre-polish body is kept, so you can switch back and forth between "original" and "polished"
-6. **Three capture paths**: create/edit in the manager panel, "save as prompt" from selected text, save the current draft
-7. **Tag management** and a **recycle bin** (soft delete + restore + permanent delete + empty)
-8. **Import/export**: JSON backup; import shows a preview and asks for confirmation
-9. **Context suggestions**: with a non-empty draft, keyword-match prompts against the current input plus the last 3 user messages (max 5)
-10. **Settings page**: AI model, panel size, entry visibility, `#` trigger toggle, suggestions toggle, selection-capture toggle, storage cap
-11. **Skill export**: export a prompt as an official DSH Skill (`$DSH_HOME/skills/<name>/SKILL.md`); once the prompt changes, a "skill is stale" badge appears with one-click re-export
-
-**Explicitly out of scope:**
-
-- Persona (SOUL) system and per-workspace/project/session scope binding
-- Session-level skill injection (pushing prompts into the system prompt), DSH Skill reverse import, harness skill switches and soft-control injection
-- A live sync engine between prompts and exported skills (replaced by explicit one-way export + a staleness badge)
-- Exporting to a project-level skill root (`<project>/.dsh/skills`)
-- systemPrompt injection — this plugin registers **zero** systemPrompt sections
-- Self-learning / auto-capture (no threshold rule; replaced by the three manual capture paths)
-- A version-history table and arbitrary version rollback
-- WebSocket push, plugin marketplace/recommendations, announcements, achievements, dashboards, desktop pets, QQ bots
-- Auto-update / version checks, scheduled backups
-- Slash commands
-
-## Status
-
-All eight milestones (M1–M8) are delivered:
-
-| Milestone | Delivered |
-| --- | --- |
-| **M1 Skeleton and build contract** | dual host/client build, `tsc --noEmit`, artifact-shape checks; the plugin loads in `dsh web` |
-| **M2 Data layer** | the four SQLite tables and the full storage function set, covered by `tests/store.test.mjs` |
-| **M3 API surface** | the HTTP routes plus the ported AI module |
-| **M4 Reuse loop** | library button, `#` trigger, insert / overwrite / insert-and-send, template variables |
-| **M5 AI + rollback** | AI polish button, one-click refine, original ↔ polished switching |
-| **M6 Capture + management** | manager panel, the three capture paths, tag management, recycle bin, import/export |
-| **M7 Skill export (D8)** | `skills.ts` export, `generateSkillDescriptor`, `SkillExportModal`, the staleness badge |
-| **M8 Wrap-up** | context suggestions, settings page, i18n close-out, documentation, licensing |
-
-The work ran as eight plans (P1–P8) under `docs/superpowers/plans/`; the design contract is `docs/superpowers/specs/2026-09-24-dsh-prompt-enhancer-design.md`.
-
-## Known limitations
-
-These are deliberate trade-offs recorded during development, not open bugs — please don't "fix" them without a design decision. (They are also listed in [`docs/architecture.md`](docs/architecture.md) §8; the `spec §` numbers below point into the frozen `docs/superpowers/specs/` records. Spec §13.10-五, §13.11-五, §13.12-五):
-
-1. **While the `#` overlay is on screen, a non-pointer activation cannot open the library panel** (spec §13.10-五-1). The gate branches on the activation channel: an activation with `event.detail === 0` — keyboard Enter/Space, `element.click()`, some assistive technology — is only let through when the overlay is absent, while a real pointer click (`detail > 0`) always is. A non-pointer activation does not latch the panel open, so once the overlay disappears you have to activate once more. The pointer path is unaffected, down to a down→up interval of 0 ms.
-2. **Per-keystroke input in the variable fill dialog is lost when the dialog unmounts** (spec §13.10-五-2). `values` is component-local state of `TemplateVariablesDialog`; closing the panel unmounts it. Only the selected prompt and the pending action survive.
-3. **Component wiring has no automated assertions** (spec §13.10-五-3). This repository has no react-dom/jsdom (hard constraint 5 forbids installing them), so invariants such as "the render gate really uses the derived value" are covered only by live acceptance. Mutation evidence: degrading `panelOpen` to `open` leaves the whole test suite green.
-4. **Type `#`, close the library panel, and the `#` overlay does not return by itself** (P8 ruling TBD-P8-6). Programmatic focus + Range restore does not bring it back on screen; only real typing does. Recorded as a trade-off, not a defect.
-5. **The AI result panel geometrically covers the composer** (P8 ruling TBD-P8-6). Its anchor and the matching setting belong to the overlay-placement / panel-size design space; explicitly recorded and **left unchanged** in this milestone.
-6. **With all three visibility toggles (`showComposerButton` / `showAIPolishButton` / `showSidebarButton`) set to `false`, the sidebar entry still renders once with the defaults before disappearing** (spec §13.12-五; M8 live acceptance §12.5). The rAF sampling run took 409 frames over 7.0 s: the two composer buttons were on screen for **0 frames**, the sidebar entry for **2 frames** (frames 5–6, t≈335 ms) — about 33 ms of flash. Cause: the settings store supplies the **defaults** until the host `settingsScope` snapshot arrives (`SidebarPromptEntry.tsx` consuming `useSettings()` + `settings-store.ts`). Left unfixed deliberately: eliminating it would re-introduce the "not-ready null state" this milestone explicitly removed — a loading gap instead of visible defaults, plus a nullable store read across every `useSettings()` call site — a cost higher than the benefit.
-
-## systemPrompt footprint
-
-**This plugin registers zero systemPrompt sections** (acceptance 14). No prompt text is ever injected into the system prompt: every write is an explicit, user-triggered insertion into the composer. A section count of 0 is a product commitment, not an omission (spec §2.2, hard constraint 2).
-
-Because upstream registered a `deployment:persona` section and this plugin does not, removing that upstream section means the host's built-in global `deployment:persona` slot **takes effect again**. That is **expected behavior**, not a regression — recorded in spec §0.1 (last row) and §12.
+The plugin registers **zero `systemPrompt` sections**. It does not inject prompts, roles, or Skills into sessions.
 
 ## Install
 
-This project is not published to npm yet. To install it locally into a DSH profile (use the launcher script when `dsh` is not on your PATH):
+The package is not published to npm. Use a local checkout and an existing DSH Web profile. The plugin runtime requires Node.js 22.19 or later. Set `DSH_HOME` to your DSH data directory, or use the default `~/.dsh`.
 
 ```sh
-node "$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" plugin --profile web add /path/to/dsh-prompt-enhancer
+node "${DSH_HOME:-$HOME/.dsh}/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" plugin --profile web add /path/to/dsh-prompt-enhancer
 ```
 
-A `link:` install means the profile resolves this project directory directly, so afterwards you only need `npm run build` and to **restart `dsh web`** (stop the current process and start it again) — no file copying. Confirm the profile layer with:
+After a `link:` install, the profile reads the checkout directly. When you change the source, run `npm run build` and restart `dsh web`; no file copying is needed. To confirm the profile entry:
 
 ```sh
-node "$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile web --dump-config | grep -A2 'dsh-prompt-enhancer'
+node "${DSH_HOME:-$HOME/.dsh}/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile web --dump-config | grep -A2 'dsh-prompt-enhancer'
 ```
+
+## Usage notes
+
+- If the `#` overlay is open, dismiss it before opening the prompt picker with the keyboard. Closing the picker does not automatically reopen the `#` overlay.
+- Closing or unmounting the variable dialog discards in-progress values. A library template's previously remembered values are separate.
+- If a structured AI request stalls or produces no answer, see [AI model troubleshooting (Chinese)](docs/troubleshooting-ai.md).
 
 ## Development
 
+Use Node 24 for development and CI. Local typechecking needs the DSH packages from an initialized profile.
+
 ```sh
-npm install --cache .npm-cache   # keep the cache inside the workspace (sandboxed writes)
-npm run link-dsh-deps            # link the profile's @deepseek-ai/* type packages for tsc
-npm run typecheck                # tsc --noEmit (includes i18n key-set checks)
-npm run build                    # production build: lib/index.js + lib/client.js
-npm run build:dev                # dev build: also prints load diagnostics
-npm run smoke                    # artifact shape checks: really executes the client bundle
-npm test                         # node --test
+npm install --cache .npm-cache
+npm run link-dsh-deps
+npm run verify
 ```
 
-Run `npm run verify` locally before committing (typecheck, all tests, build,
-and smoke). For the GitHub Actions baseline, use Node 24 in a clean checkout:
+`npm run verify` runs typecheck, all Node tests, build, and smoke. Source changes and the rebuilt `lib/` bundles belong in the same commit.
+
+GitHub Actions runs a DSH-free subset and checks that the tracked bundles match the rebuild. To reproduce it in a clean checkout:
 
 ```sh
 npm ci --cache .npm-cache
 npm run verify:ci
 ```
 
-The CI command runs tests that do not require DSH, rebuilds the bundles, and
-fails if they differ from Git's index. `npm ci` replaces `node_modules`, so use
-a separate checkout for this check if your main checkout has linked DSH packages.
-For source changes, include both rebuilt bundles in the same commit.
-
-Stack: TypeScript (`noEmit`, typecheck only) + esbuild (two entries) + Node's built-in `node --test`; runtime uses `node:sqlite` (Node ≥ 22.19, verified on v24). The build contract and the rest of the design live in [`docs/architecture.md`](docs/architecture.md) (the live architecture document); frozen history is in `docs/superpowers/`.
-
-## Layout
-
-```
-src/index.ts           host entry (Node ESM)
-src/client/index.ts    client entry (browser, __ModuleLoader__ module format)
-scripts/build.mjs      esbuild dual-entry build
-scripts/smoke.mjs      artifact shape checks
-scripts/link-dsh-deps.mjs  DSH type-package linker
-docs/                  design spec and implementation plans
-lib/                   build artifacts (tracked in git)
-```
+`npm ci` replaces `node_modules`, so use a separate checkout if your development checkout has linked DSH packages. See [Architecture](docs/architecture.md) for host services, slots, storage, and design decisions. See [AGENTS.md](AGENTS.md) for repository rules and acceptance requirements.
 
 ## Origin and license
 
-This project is a **derivative** of [`master1Sun/dsh-prompt-library`](https://github.com/master1Sun/dsh-prompt-library) v0.16.0 (MIT):
-
-- **Ported**: the SQLite storage layer (schema and semantics of its 4 tables), the AI module (LLM route resolution, prompt templates, output post-processing), shared UI components and template-variable logic, and the import/export format (kept compatible, so exports from the old plugin import directly)
-- **Removed**: the persona system, session-level skill injection, DSH skill reverse import and live sync, the WebSocket layer, DOM-injection entries, and dead code
-- **Added**: rollback (original ↔ polished), explicit triggering semantics for context suggestions, the staleness badge for skill exports, and official slots instead of DOM injection
-
-The upstream MIT text and `Copyright (c) master1Sun` notice are preserved in `LICENSE`.
+This project is derived from [`master1Sun/dsh-prompt-library`](https://github.com/master1Sun/dsh-prompt-library) v0.16.0 (MIT). The upstream MIT text and `Copyright (c) master1Sun` notice are preserved in [`LICENSE`](LICENSE).

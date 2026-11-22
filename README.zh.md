@@ -6,148 +6,63 @@
 
 # dsh-prompt-enhancer
 
-DSH（DeepSeek Harness）提示词增强插件：只做**提示词本身**的事——在聊天输入栏旁管理与复用提示词、AI 优化、沉淀与持续改进。
+DSH（DeepSeek Harness）Web 插件：在聊天输入框旁管理、优化和复用提示词。
 
-本项目基于 [`master1Sun/dsh-prompt-library`](https://github.com/master1Sun/dsh-prompt-library) v0.16.0（MIT）裁剪而来，见下方「来源与许可」。
+## 功能
 
-## 功能范围
+- **词库管理**：新建和编辑提示词，支持搜索、排序、标签分组和使用次数统计。可从输入框旁或侧栏打开管理面板，也可将选中文字或当前草稿存为提示词。回收站支持恢复，JSON 备份可在导入前预览。
+- **复用与模板**：输入 `#` 查找提示词，或打开输入框旁的词库选择器，选择追加、覆盖或插入并发送。插入前可试填 `{{变量名}}`。模板支持变量说明和默认值，词库可按模板记住填值。
+- **上下文推荐**：草稿非空时，根据当前草稿和最近三条用户消息匹配提示词，最多推荐五条。
+- **AI 优化**：轻度润色可编辑优化稿；增强为模板可编辑正文并选用补充建议。试填不改变模板，也可以把模板另存到词库。
+- **检查提示词**：查看问题、勾选建议并生成可编辑的改稿。应用到输入框不会发送消息，也不会写入词库。
+- **从想法起草**：空输入框也可起草。可补充执行环境、回答或跳过澄清，并查看草稿和假设。起草检查可把建议带回反馈框，再发起改写；也可把起草稿增强为模板。
+- **词库回滚**：已存条目保留 AI 优化前原文时，可在词库详情双向切换原文和优化稿。这不是输入框撤销。
+- **技能导出**：导出到 `$DSH_HOME/skills/<name>/SKILL.md`，导出内容过期时可重新导出。不把技能反向导入词库，也不自动同步。
+- **设置**：选择 AI 模型、管理面板尺寸、入口显隐、输入框按钮标签、`#` 触发、上下文推荐、选中捕获和词库条数上限。
 
-**做**（11 项已交付能力，按规格顺序）：
-
-1. **词库管理**：增删改查（标题 + 正文 + 标签）、搜索、排序、标签分组、使用次数统计；**双入口**——输入框旁按钮 + 左侧下方（设置按钮旁）入口，均可打开管理面板
-2. **复用**：插入（追加）/ 覆盖 / 插入并发送；输入 `#` 触发浮层实时筛选
-3. **模板变量**：`{{变量名}}` 占位，插入前可填参预览，词库复用时记忆上次填值
-4. **AI 优化**：输入框左侧可选轻度润色、检查提示词、增强为模板或从想法起草。空输入框也可起草，可补充执行环境，并跳过澄清。结果显示助手理解的目标、假设与执行前待补材料。可对照原需求和已采用的反馈检查正文，把建议带回改写，再复制、应用或增强为模板
-5. **可回滚**：保留 AI 优化前原文，支持「原文 ↔ 优化稿」双向切换
-6. **沉淀三入口**：管理面板新建/编辑、选中文字浮出「存为提示词」、当前草稿存为提示词
-7. **标签管理**、**回收站**（软删除 + 恢复 + 永久删除 + 清空）
-8. **导入导出**：JSON 备份，导入含预览与确认
-9. **上下文推荐**：草稿非空时按「当前输入 + 最近 3 条用户消息」关键词匹配推荐（最多 5 条）
-10. **设置页**：AI 模型、面板尺寸、按钮显隐、`#` 触发开关、推荐开关、选中捕获开关、存储上限
-11. **技能导出**：把提示词一键导出为官方 DSH Skill（`$DSH_HOME/skills/<name>/SKILL.md`）；提示词改动后显示「技能已过期」并支持一键重新导出
-
-**不做**（明确排除）：
-
-- 人格（SOUL）系统、按工作区/项目/会话的作用域绑定
-- 会话级技能注入（往 system prompt 注入提示词）、DSH Skill 反向导入、harness 技能开关与软控制注入
-- 技能与提示词的活同步引擎（改为显式单向导出 + 过期提示）
-- 项目级技能根（`<project>/.dsh/skills`）导出
-- systemPrompt 注入 —— 本插件注册的 systemPrompt section 数为 **0**
-- 自学习 / 自动捕获（无阈值判定，改为手动三入口）
-- 版本历史表与任意版本回退
-- WebSocket 推送、插件推荐/市场、公告、成就、看板、桌面宠物、QQ 机器人
-- 自动更新 / 版本检查、定时备份
-- 斜杠命令
-
-## 开发状态
-
-八个里程碑（M1–M8）**已全部交付**：
-
-| 里程碑 | 已交付 |
-| --- | --- |
-| **M1 骨架可加载** | host/client 双产物构建、`tsc --noEmit`、产物形状校验；插件可被 `dsh web` 加载 |
-| **M2 数据层** | 4 张 SQLite 表与全部存储函数，由 `tests/store.test.mjs` 覆盖 |
-| **M3 API 面** | HTTP 路由 + 移植的 AI 模块 |
-| **M4 复用闭环** | 词库按钮、`#` 触发、插入 / 覆盖 / 插入并发送、模板变量 |
-| **M5 AI + 回滚** | AI 优化按钮、一键完善、原文 ↔ 优化稿切换 |
-| **M6 沉淀 + 管理** | 管理面板、三入口捕获、标签管理、回收站、导入导出 |
-| **M7 技能导出（D8）** | `skills.ts` 导出、`generateSkillDescriptor`、`SkillExportModal`、过期徽标 |
-| **M8 收尾** | 上下文推荐、设置页、i18n 收口、文档与许可 |
-
-施工按 `docs/superpowers/plans/` 下的 8 份计划（P1–P8）推进；设计契约见 `docs/superpowers/specs/2026-09-24-dsh-prompt-enhancer-design.md`。
-
-## 已知限制
-
-以下都是施工期**显式留档的取舍，不是缺陷**——没有设计决策前请勿「顺手修」。它们同时列在 [`docs/architecture.md`](docs/architecture.md) §8；下面的「规格 §」编号指向已冻结的 `docs/superpowers/specs/` 记录（规格 §13.10-五、§13.11-五、§13.12-五）：
-
-1. **`#` 浮层在屏时，非指针激活打不开词库面板**（规格 §13.10-五-1）：闸门按**激活通道**分叉——`event.detail === 0` 的激活（键盘 Enter/空格、`element.click()`、部分辅助技术）仅在浮层不在屏时放行，真实指针点击（`detail > 0`）一律放行。非指针激活**不置位**面板打开状态，浮层消失后需**再激活一次**。指针路径完全不受影响，含 down→up 间隔 0ms 的极短点击。
-2. **变量填窗的逐字输入随卸载丢失**（规格 §13.10-五-2）：`values` 是 `TemplateVariablesDialog` 的组件局部 state，面板一关即卸载；只有「已选提示词 + 待执行动作」能保住。
-3. **组件接线无自动化断言**（规格 §13.10-五-3）：本仓库无 react-dom / jsdom（硬约束 5 禁装），「渲染门是否真的用了派生值」这类不变量只能由活体验收覆盖。变异证据：把 `panelOpen` 降级为 `open`，整套测试仍全绿。
-4. **输入 `#` 后关闭词库面板，`#` 浮层不会自己回来**（P8 裁决 TBD-P8-6）：程序化 focus + Range 恢复无效，只有真实键入才重新在屏。属**取舍**，非缺陷。
-5. **AI 结果面板在几何上覆盖 composer**（P8 裁决 TBD-P8-6）：它的落点与对应设置项属浮层落点 / 面板尺寸的设计范畴；本里程碑**显式记档、不修**。
-6. **三个显隐开关（`showComposerButton` / `showAIPolishButton` / `showSidebarButton`）全设 `false` 时，侧栏入口在首屏仍会先按默认渲染一次再消失**（规格 §13.12-五；M8 活体验收 §12.5）：rAF 采样 409 帧 / 7.0s——两个 composer 按钮在屏 **0 帧**，侧栏入口在屏 **2 帧**（第 5–6 帧，t≈335ms），约 33ms 的闪现。成因：设置 store 在宿主 `settingsScope` 快照到达前提供**默认值**（`SidebarPromptEntry.tsx` 消费 `useSettings()` + `settings-store.ts`）。有意不修：消除它需重新引入本里程碑明确移除的「**未就绪 null 态**」——把「默认值可见」换成「加载态空窗」，并让 store 读口变成可空类型（波及全部 `useSettings()` 调用点），代价高于收益。
-
-## systemPrompt 占用面
-
-**本插件注册的 systemPrompt section 数为 0**（验收 14）。任何提示词都不会被注入 system prompt：每一次写入都是用户显式触发、落到输入框里的插入。section 数为 0 是**产品承诺，不是遗漏**（规格 §2.2、硬约束 2）。
-
-上游注册了 `deployment:persona` section 而本插件没有，因此**移除上游的 `deployment:persona` section 后，宿主内置的全局 `deployment:persona` 槽位会重新生效**。这属**预期行为**，不是回归——见规格 §0.1 末行与 §12。
+插件注册 **零个 `systemPrompt` section**，不向会话注入提示词、角色或技能。
 
 ## 安装
 
-本项目尚未发布到 npm。本地安装到 DSH profile（`dsh` CLI 不在 PATH 时用其入口脚本）：
+本项目未发布到 npm。从本地仓库安装到已有的 DSH Web profile。插件运行需要 Node.js 22.19 或更高版本。`DSH_HOME` 指向 DSH 数据目录，未设置时使用 `~/.dsh`。
 
 ```sh
-node "$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" plugin --profile web add /path/to/dsh-prompt-enhancer
+node "${DSH_HOME:-$HOME/.dsh}/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" plugin --profile web add /path/to/dsh-prompt-enhancer
 ```
 
-`link:` 方式安装意味着 profile 直接解析本项目目录，因此后续只需 `npm run build` 并**重启 `dsh web`**（结束当前进程后重新启动），无需复制文件。用 `--dump-config` 可确认 profile 层已挂上：
+使用 `link:` 安装后，profile 直接读取本地仓库。源码改动后运行 `npm run build`，再重启 `dsh web`，无需复制文件。用以下命令确认已安装到对应 profile：
 
 ```sh
-node "$DSH_HOME/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile web --dump-config | grep -A2 'dsh-prompt-enhancer'
+node "${DSH_HOME:-$HOME/.dsh}/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile web --dump-config | grep -A2 'dsh-prompt-enhancer'
 ```
 
-### 检查与模板增强持续推理
+## 使用提示
 
-日志里的 `routing-start` 和首条 `stream-start` 可确认设置中选的模型是否优先调用。`firstReasoningMs` 说明模型已开始推理。若 `textChars: 0`，模型结束时还未生成正文，`finish: "max-tokens"` 表示耗尽输出 token，`deadlineAborted: true` 表示插件计时到期。检查和模板增强会请求宿主支持的 `off` 档位，适配器还需要把该档位转换成网关接受的请求字段。
-
-如果使用 `@deepseek-ai/dsh-llm-pi-ai`，可在 Web profile 的 `cordis.patch.yml` 中，给现有 `config.providers.modelscope.models` 下的对应模型条目补充以下字段，保留条目的其他配置。
-
-```yaml
-- id: deepseek-ai/DeepSeek-V4-Pro-0813
-  compat:
-    thinkingFormat: deepseek
-    supportsDeveloperRole: false
-  reasoningEfforts:
-    off: null
-    high: high
-- id: Qwen/Qwen3.8-Flash-Next
-  compat:
-    thinkingFormat: qwen
-    supportsDeveloperRole: false
-  reasoningEfforts:
-    off: null
-    high: high
-```
-
-DSH 对这两个模型使用 `system` 消息。选择 `off` 时，DeepSeek 请求发送 `{"thinking":{"type":"disabled"}}`，Qwen 请求发送 `{"enable_thinking":false}`。两个模型均已通过 ModelScope 流式请求的检查和模板增强验证。
-
-如果 `config.providers.wb.models` 下的 `deepseek-v4.1-flash` 已有 `reasoningEfforts.off: null`，在该模型条目下补充 `compat.thinkingFormat: deepseek`，与 `reasoningEfforts` 同级。这样 `off` 会序列化为同一个显式关闭参数。
-
-修改后重启 `dsh web`，分别运行检查和模板增强。在 `$DSH_HOME/prompt-enhancer/log/review-*.jsonl` 中，同一请求的首选模型应记录 `reasoningEffort: "off"`，返回正文，并出现 `candidate-accepted`。只看到 `off` 说明插件选择了该档位，实际响应才能确认网关采纳了该参数。
+- `#` 候选浮层显示时，先关闭它，再用键盘打开词库选择器。关闭选择器不会自动恢复 `#` 候选。
+- 变量填窗关闭或卸载时，进行中的输入值会丢失，与词库已记住的模板填值无关。
+- 检查、改稿、增强或起草长时间无正文时，见 [AI 模型排障](docs/troubleshooting-ai.md)。
 
 ## 开发
 
+开发与 CI 使用 Node 24。本地类型检查需要初始化过的 DSH profile 提供宿主包。
+
 ```sh
-npm install --cache .npm-cache   # 缓存必须落在工作区内（沙箱只允许写工作区）
-npm run link-dsh-deps            # 把 profile 的 @deepseek-ai/* 类型包链进 node_modules，供 tsc 解析
-npm run typecheck                # tsc --noEmit（含 i18n 键集校验）
-npm run build                    # 生产构建：lib/index.js + lib/client.js
-npm run build:dev                # 开发构建：额外打印加载日志
-npm run smoke                    # 产物形状校验：真实执行 client bundle 验证注册 id 与导出
-npm test                         # node --test
+npm install --cache .npm-cache
+npm run link-dsh-deps
+npm run verify
 ```
 
-技术栈：TypeScript（`noEmit`，仅类型检查）+ esbuild（双入口打包）+ Node 内置 `node --test`；运行时依赖 `node:sqlite`（Node ≥ 22.19，实测 v24）。构建契约与其余设计见 [`docs/architecture.md`](docs/architecture.md)（架构活文档）；冻结的历史资料在 `docs/superpowers/`。
+`npm run verify` 执行类型检查、全量 Node 测试、构建和产物冒烟检查。源码变更与重建后的 `lib/` 产物一同提交。
 
-## 目录结构
+GitHub Actions 运行无需 DSH 的测试子集，并检查重建产物与版本库一致。可在干净的检出中复跑：
 
+```sh
+npm ci --cache .npm-cache
+npm run verify:ci
 ```
-src/index.ts           host 入口（Node ESM）
-src/client/index.ts    client 入口（浏览器，__ModuleLoader__ 模块格式）
-scripts/build.mjs      esbuild 双产物构建
-scripts/smoke.mjs      产物形状校验
-scripts/link-dsh-deps.mjs  DSH 类型包链接
-docs/                  设计规格与实施计划
-lib/                   构建产物（纳入版本控制）
-```
+
+`npm ci` 会替换 `node_modules`。如果开发目录已链接 DSH 包，请另用干净的检出。宿主服务、插槽、存储和设计决策见[架构文档](docs/architecture.md)；项目规则和验收要求见 [AGENTS.md](AGENTS.md)。
 
 ## 来源与许可
 
-本项目是 [`master1Sun/dsh-prompt-library`](https://github.com/master1Sun/dsh-prompt-library) v0.16.0（MIT）的**衍生物**：
-
-- **移植**：SQLite 存储层（4 表的 schema 与存储语义）、AI 模块（LLM 路由解析、提示词模板、输出后处理）、通用 UI 组件与模板变量逻辑、导入导出格式（与上游同构，旧插件导出可直接导入）
-- **剔除**：人格系统、会话级技能注入、DSH 技能反向导入与活同步、WebSocket 层、DOM 注入入口、死代码
-- **新增**：可回滚（原文 ↔ 优化稿）、上下文推荐的显式触发语义、技能导出的过期提示、官方插槽替代 DOM 注入
-
-上游 MIT 全文与 `Copyright (c) master1Sun` 声明保留于 `LICENSE`。
+本项目衍生自 [`master1Sun/dsh-prompt-library`](https://github.com/master1Sun/dsh-prompt-library) v0.16.0（MIT）。上游 MIT 全文和 `Copyright (c) master1Sun` 声明保留于 [`LICENSE`](LICENSE)。

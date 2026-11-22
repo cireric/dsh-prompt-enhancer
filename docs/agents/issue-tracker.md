@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+GitHub Issues is this repo's public issue tracker. Use the `gh` CLI to read and update it.
 
 ## Conventions
 
@@ -32,7 +32,7 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 - **spec 落 issue**：每个功能包开一个 spec issue（Problem/Solution/Stories/Decisions/Testing/Out of scope），它同时是完成记录——实现完成后在 close comment 里留证据（测试数、提交范围、评审结论）。
 - **拆票按需，不按流程**：只有**确实跨多个会话执行**的包才拆票（用 native blocking 边表达依赖）；单会话能做完的包（半天级）不拆票，直接在 spec issue 的 close comment 里记任务清单与完成证据。
 - **`ready-for-agent` 标签语义收窄**：只在**真的要让另一个 agent 冷启动认领**时才打。同会话 grill→spec→implement 连续推进时不打（它标记的移交并未发生）。
-- **标签从简**：`enhancement` / `bug` 足够；不维护额外的状态标签体系。
+- **标签从简**：常规分类用 `enhancement` / `bug`；分诊状态按[标签角色映射](triage-labels.md)按需使用。
 
 （依据 2026-09-27 复盘：首包 6 个 issue 对应约一天工作量，其中 ready-for-agent 标记的移交从未发生——保留存档价值，砍掉移交仪式。）
 

@@ -1,21 +1,14 @@
 # dsh-prompt-enhancer · 架构与决策（活文档）
 
-- 更新：2026-10-03 · 对应代码基线 `eb03968` · 版本 `0.1.0`（`package.json`，未发布 npm）
-- **定位**：本文件是仓库的**架构事实入口**——把「运行时结构 · 设计决策 · 已知取舍 · 当前能力面」收在一处。任何设计意图与本文冲突时，以**代码**为准（本文标注了出处），代码与 `docs/superpowers/specs/` 冲突时以代码为准并回头订正本文件。
-- **权威链**：硬规则看 `AGENTS.md`（它指向本文件）· 设计意图看本文件 · 历史裁决看 `docs/superpowers/specs/`（下文 §编号即它的章节号，该目录已冻结、只作追溯）· 现场证据看 `docs/superpowers/plans/*-acceptance.md`
-- 约束（必须遵守）：仓库根 `AGENTS.md`（14 条硬约束）与全局 `~/.dsh/AGENTS.md`
+本文记录运行时结构、数据与接口不变量、设计决策和已知取舍。约束见 [AGENTS.md](../AGENTS.md)；实际行为以代码为准，发现不一致时更新本文。早期规格编号与历史材料见 [§9](#9-术语与来源)。
 
 ---
 
 ## 1. 这是什么
 
-一个 DSH Web 插件：把提示词本身管起来——**管理 → AI 优化 → 沉淀 → 复用**的闭环。基于上游 `master1Sun/dsh-prompt-library` v0.16.0（MIT）移植并重写，剔除人格（SOUL）、插件市场、公告、成就、看板等模块，只保留提示词相关能力。
+插件围绕提示词的管理、AI 优化、沉淀与复用。功能和来源见[中文 README](../README.zh.md)。
 
-**能力面**（12 项，均有代码与验收）：词库 CRUD/搜索/排序/标签/使用统计（双入口）· 复用（插入 / 覆盖 / 插入并发送 + `#` 浮层实时筛选）· 模板变量（`{{变量}}` 填充弹窗 + 记住上次填值）· AI 轻度润色 · 增强为模板（标题/标签/摘要/正文、可选补充建议） · 原文↔优化稿回滚 · 沉淀三入口（面板新建/编辑、选中文字、当前草稿）· 标签管理 · 回收站（软删/恢复/永久删/清空）· 导入导出（预览+确认）· 上下文推荐 · 设置页 · 技能导出（单向 + 过期徽标 + 一键重导）
-
-**产品承诺**：`systemPrompt` section 数 **恒为 0**（`src/index.ts:21`）。任何提示词文本都只经用户显式触发的插入进入 composer，绝不注入系统提示词。
-
-**明确不做**（本文 §1 与 `AGENTS.md` 硬约束 2/5）：会话级注入、技能反向导入、活同步引擎、自学习/自动捕获、版本历史表、WebSocket、斜杠命令、插件市场/公告/成就/宠物、自动更新。
+**产品边界**：`systemPrompt` section 数恒为 0。提示词只在用户显式操作时写入 Composer，不做系统提示词注入或会话、工作区绑定。不做技能反向导入或活同步、自学习或自动捕获、版本历史表、WebSocket、斜杠命令或自动更新。
 
 ---
 
@@ -23,22 +16,22 @@
 
 ```
 DSH web host
-├── dsh-prompt-enhancer (host)   src/index.ts（唯一装配点，86 行）
+├── dsh-prompt-enhancer (host)   src/index.ts（宿主装配点）
 │   ├── export Config = PromptEnhancerSettingsSchema   ← dsh 0.2.0：设置即插件 Config
 │   ├── ctx.inject(["llm"])        → registerLlm()     缺失 ⇒ AI 路由 503，其余功能不受影响
 │   ├── ctx.inject(["web"])        → 可选的起草搜索
-│   ├── ctx.inject(["webServer"]) → 单条 prefix 路由 /api/prompt-enhancer（30 条逻辑路由）
+│   ├── ctx.inject(["webServer"]) → 单条 prefix 路由 /api/prompt-enhancer
 │   ├── ctx.on("loader/volatile-update") → clearRouteCache()（改 provider/model 必须换路由）
 │   └── ctx.effect(lifecycle 日志；卸载时解绑设置面)
 │   ✗ 无 systemPrompt section   ✗ 无 agent/session 监听   ✗ 无 registerUpgrade（无 WS）
 │
-└── dsh-prompt-enhancer (client)  src/client/index.ts（218 行，7 个官方插槽）
+└── dsh-prompt-enhancer (client)  src/client/index.ts（官方插槽注册）
     ├── conversation.input.left      id=prompt-enhancer              order 10  词库按钮
     ├── conversation.input.overlay   id=prompt-enhancer-hash         order 20  `#` 候选浮层
     ├── conversation.input.left      id=prompt-enhancer-ai-polish    order 11  AI 优化按钮
-    ├── conversation.input.dock      id=prompt-enhancer-recommend    order 10  上下文推荐条
-    ├── sidebar.footer.action        id=prompt-enhancer              order 100 左侧下方入口
     ├── shell.overlay                id=prompt-enhancer              order 100 弹窗宿主（root，常驻挂载）
+    ├── sidebar.footer.action        id=prompt-enhancer              order 100 左侧下方入口
+    ├── conversation.input.dock      id=prompt-enhancer-recommend    order 10  上下文推荐条
     └── settings.section             id=prompt-enhancer              order 30  设置页
     条件注入（inject 导出数组不扩张）：uiWorkspace（目录选择）→ uiConversation（聊天快照）→ configForms（设置真源）
     注册顺序即 scripts/smoke.mjs 的 EXPECTED_SLOTS 账本顺序：挪位即红
@@ -50,32 +43,31 @@ DSH web host
 
 ## 3. 数据与存储
 
-SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhancer/db/prompts.db`；四张表 `prompts` / `trash` / `tags` / `meta`（`src/host/store.ts:121-160`）。
+SQLite 主库位于 `$DSH_HOME/prompt-enhancer/db/prompts.db`（`paths.ts#dbPath`）。表结构和迁移见 `store.ts#MIGRATIONS`。
 
 | 不变量 | 内容 | 出处 |
 |---|---|---|
-| schema 演进 | `SCHEMA_VERSION = 4` + `MIGRATIONS` 数组，迁移**幂等**。v4 将旧库中的异常计数和时间戳修复到非负安全整数范围，保留条目内容 | `src/types.ts:15`、`src/host/store.ts:76` |
+| schema 演进 | 数据库版本由 `SCHEMA_VERSION` 定义。`MIGRATIONS` 幂等；v4 修复旧库中的异常计数和时间戳，保留条目内容 | `types.ts#SCHEMA_VERSION`、`store.ts#MIGRATIONS` |
 | 存储层解耦 | `store.ts` **不 import 任何宿主能力**（cordis/服务），故可脱离 `dsh` 单测 | 硬约束 12 |
 | 测试隔离 | 靠环境变量把 `DSH_HOME` 指向临时目录，**不加 test-only API**；`paths.ts` 全部调用期求值 | 硬约束 13 |
-| 回滚语义 | `sourceBody` 存 AI 优化前原文，`POST /prompts/:id/rollback` 执行 **swap(body, sourceBody)**，可反复点 | `store.ts:560-568` |
-| 写回缝唯一 | 三 AI 字段（`sourceBody`/`aiRefined`/`aiRefinedAt`）**唯一写入者**是 `updatePrompt(…, { aiWriteBack: true })` 的内部派生；补丁类型按路由白名单收窄，客户端传不进来 | `types.ts:79-89`、`store.ts:497-502`、spec §13.13 |
-| 淘汰键序 | `(aiRefined asc, lastUsedAt asc, createdAt asc, id asc)` 的**唯一实现**在 `src/eviction-order.ts`，宿主真实淘汰与客户端预检共用，防两端漂移（D-1 的土壤） | `eviction-order.ts:33` |
+| 回滚语义 | AI 首次写回保留旧正文为 `sourceBody`；`POST /prompts/:id/rollback` 交换 `body` 与 `sourceBody`，可反复切换 | `store.ts#rollbackPrompt` |
+| 写回缝唯一 | 普通更新补丁不能直接写 `sourceBody`、`aiRefined` 或 `aiRefinedAt`。AI 写回由 `updatePrompt` 根据 `aiWriteBack` 派生这些字段 | `types.ts#PROMPT_WRITABLE_KEYS`、`store.ts#updatePrompt` |
+| 淘汰键序 | 宿主淘汰与客户端预演共用 `(aiRefined asc, lastUsedAt asc, createdAt asc, id asc)` | `src/eviction-order.ts` |
 | 淘汰豁免 | 创建前只从既有条目选淘汰对象。核对确认名单、创建、标签同步和淘汰在同一事务内完成。 | `store.ts#createPromptWithEvictions` |
-| 方向不猜 | 「当前 body 是哪一侧」只从 meta `pl:refined-dir:<id>` 读；**无记录 ⇒ 中性且不落库**（`aiRefined` 不参与推断——它只说明「发生过一次写回」） | `refined-direction.ts:44-96`、spec §13.11-二 |
-| meta 键约定 | `pl:<用途>:<id>`（如 `pl:refined-dir:<id>` / `pl:skill-descriptor:<id>`）；不可逆删除才清键，软删除不清 | `prompt-meta.ts:24`、`refined-direction.ts:39-42` |
+| 方向不猜 | 当前正文在哪一侧，只认方向记录；无记录时用中性标签，不补写记录 | `refined-direction.ts#readRefinedDirection` |
+| 条目 meta | `pl:<用途>:<id>` 用于方向、技能描述符及模板填值记忆。软删除不清键；永久删除、淘汰和确认导入覆盖有各自的清理路径，导入例外见 D32 | `prompt-meta.ts#perPromptMetaKeys`、`capture.ts`、`transfer.ts#confirmBackupImport` |
 
 ---
 
 ## 4. 接口面
 
-### 4.1 HTTP（单条 prefix 路由，30 条）
+### 4.1 HTTP（单条 prefix 路由）
 
 信封统一 `{ ok, data }` / `{ ok:false, error }`；AI 路由的失败信封扩为 `{ ok:false, error:{ code, message } }`（code 跨层传枚举，message 仅开发诊断）。状态码：400 参数 / 403 跨源写入被拒 / 404 未找到 / 409 写入冲突 / 500 未预期 / 503 AI 或设置不可用（`routes.ts` 文件头）。
 
-**路由清单单一真源**（2026-10-03，D13）：`routes.ts#ROUTE_SPECS` 是路由的唯一一份清单——`dispatch`
-按它匹配分发，`tests/api.test.mjs` 的覆盖账本按 `pattern` 与它双向对齐（加路由不加覆盖行即红）。
+**路由真源**：`routes.ts#ROUTE_SPECS` 驱动分发；`tests/api.test.mjs` 的覆盖账本按 `pattern` 与其对齐。
 
-**跨源写入闸**（2026-10-03，D9）：写方法（POST/PUT/DELETE）只接受同源请求——命中 `Sec-Fetch-Site: cross-site`、或 `Origin` 存在且与 `Host` 不同源（含 `Origin: null`）即 403，且**在读请求体之前**就返回。判据只认正向的跨源证据：`curl` / 脚本 / 宿主 agent 不带这些头，同源页面的写请求带 `Origin` 且与 `Host` 同值。GET 不挡（无副作用，响应本来也读不到）。
+**跨源写入闸**（D9）：对 POST/PUT/DELETE，`Sec-Fetch-Site: cross-site`、`Origin: null`、无效 `Origin`，或 `Origin` 的 host（含端口）不匹配 `Host` 时，在读请求体前返回 403。无 `Origin` 且无跨站标记的请求不被此闸拒绝。它不校验调用者身份，不是认证；GET 不走此闸。
 
 | 组 | 路由 |
 |---|---|
@@ -84,19 +76,26 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 回收站 | `GET /trash` · `POST /trash/:id/restore` · `DELETE /trash/:id` · `DELETE /trash`（回 `{removed, ids}`） |
 | AI | `GET /ai/providers` · `POST /ai/polish` · `POST /ai/check`（`findings` 含原文引用、问题和建议） · `POST /ai/check/revise`（选中建议 → 完整改稿与待确认问题） · `POST /ai/draft`（想法、可选回答及资料，返回澄清问题或正文、假设与待核实项） · `POST /ai/draft/search`（用可选宿主搜索查询资料来源） · `POST /ai/refine`（四个原有字段和可选 `suggestions`） · `POST /ai/skill-descriptor` |
 | 设置 | `GET /settings` · `PUT /settings`（写入后清 AI 路由缓存） |
-| 导入导出 | `POST /export/save`（宿主生成文件名 + 目录来自 `workspaces.pickDirectory`）· `POST /import`（`{backup, confirm}`，未确认只回预览） |
+| 导入导出 | `POST /export/save`（宿主生成文件名 + 目录来自 `uiWorkspace.pickDirectory()`）· `POST /import`（`{backup, confirm}`，未确认只回预览） |
 | meta | `GET/PUT/DELETE /meta/:key`（模板变量记忆等客户端键名的通用通道，宿主不认识键名约定） |
 | 技能 | `POST /skills/export`（可确认的 409 返回 `error.conflict: { name, token }`；重试携带 `conflictToken`） |
 
-### 4.2 设置（13 键，dsh 0.2.0 契约）
+### 4.2 设置
 
-设置即**插件 Config**：`export const Config = PromptEnhancerSettingsSchema`（`src/index.ts:44`），宿主按 patch 条目 id 投影设置页并写回 profile；volatile 变更经 `loader/volatile-update` 到达运行中的 fiber（不重挂载）。客户端订阅 `ctx.configForms.describe()`，镜像就绪时按 13 键签名解析条目 id。固定条目 ID 优先，支持 super-injector 的随机 ID。
+`src/index.ts#Config` 导出插件配置。宿主按 profile 条目 ID 保存，变更经 `loader/volatile-update` 刷新 AI 路由缓存。客户端从 `configForms` 订阅对应表单，优先识别固定 ID，也按设置键签名识别随机 ID；缺少表单时降级使用 HTTP 设置接口。
 
-`src/settings-shape.ts:25-33` 是**唯一真源**：`aiProvider` `aiModel` `panelWidth` `panelHeight` `showComposerButton` `composerButtonIconOnly` `showAIPolishButton` `aiPolishButtonIconOnly` `hashTriggerEnabled` `contextRecommendEnabled` `selectionAddEnabled` `showSidebarButton` `maxPromptCount`。归一化逐字段回落默认值（深拷贝式 `normalizeSettings`），键集 zh/en 在 i18n 类型面同值。
+键集和归一化见 `settings-shape.ts#SETTINGS_KEYS` / `normalizeSettings`，默认值见 `types.ts#DEFAULT_SETTINGS`。
 
 ### 4.3 客户端组件与纯逻辑的分工
 
-`node --test`（Node 24 类型擦除）直接 import `.ts` 源码，但 `.tsx` 进不去 ⇒ **判定一律下沉到纯模块**，组件只做接线：`ai-flow`（写回缝编排 + 错误分类）· `refined-direction`（方向判定/翻转/标注映射）· `overlay-claim`（三个浮层的互斥 claim 寄存器）· `context-recommend`（推荐打分）· `eviction`（淘汰预演）· `template` / `insert` / `capture` / `transfer` / `skill-export` / `search-match` / `ui-state` / `settings-store` / `icon-only` / `err-text` / `skill-badge` / `skill-name` / `skill-description`。
+组件连接宿主插槽、状态与视图。业务判定可直接在 Node 中测试；接线验收见 §7。
+
+| 查找 | 模块 |
+|---|---|
+| 检查、起草与模板结果 | `check-revision.ts`、`draft-session.ts`、`template-refine-session.ts`（D34–D37） |
+| 请求与存库 | `ai-request-lifecycle.ts` 管取消和并发；`template-save.ts` 编排存库，复用 `ai-flow.ts#writeBackRefined`（D38–D39） |
+| 应用到 Composer | `composer-application.ts` 管 AI 应用；`library-insertion.ts` 管词库复用。后者和普通检查复用 `insert.ts` 的宿主写入保护（D24、D31、D40） |
+| 浮层与方向 | `overlay-claim.ts` 管互斥判定，`ui-state.ts` 持有 claim；`refined-direction.ts` 处理库中原文与优化稿方向 |
 
 ---
 
@@ -111,7 +110,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 重试 | `callPrompt` 轮询候选，允许一轮诊断重试。候选阶段验证结构及内容，格式或截断错误可继续回退或重试。JSON 请求通过同一对象内的 `retryDiagnosis` 字段携带诊断，正文保持原样。技能描述符使用单独的三轮尝试，内容验收在候选级执行：解析通过才记候选接受，不合格记候选拒绝并同轮换下一个候选，不叠加诊断重试。 | `ai.ts#callPrompt`、`ai.ts#attemptAllCandidates`、`ai-errors.ts#failureDiagnosis` |
 | 结果缓存 | 读穿式 LRU + TTL：键 = hash(system + user + route)，TTL 30 分钟、上限 50 条、重启即清。只有首选模型的成功结果填充首选缓存。 | `ai-cache.ts:13-14,48-56` |
 | 输出后处理 | 润色剥离包裹和明确套话，拒绝空稿和截断。润色与模板增强保护原占位符及可识别的命令、路径和权限约束。模板增强另校验必填字段。 | `text.ts:71-123` |
-| 客户端超时 | 模型生成请求的上限见 D10。探测和清键为 15s。`TimeoutError` 按名字判定，探测超时带 `probe` 标记。 | `api.ts` |
+| 客户端超时 | 模型生成请求的上限见 D10。AI 探测、起草来源搜索和清键使用短超时。 | `api.ts` |
 | AI 请求诊断 | 正式构建也写 `$DSH_HOME/prompt-enhancer/log/review-YYYY-MM-DD.jsonl`（UTC 日期）。所有 `/ai/` 路由按 `id` 关联模型枚举、来源搜索、路由选择、缓存、排队、流式调用、校验及最终 HTTP 状态。模型请求只记录参数和长度，失败记录结束类型、错误码和可用的 HTTP 状态。 | `review-trace.ts`、`ai.ts#collectText` |
 
 **质量边界**：改写规则覆盖可检测的字面量。自由文本的语义一致性需要用户核对。
@@ -126,7 +125,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D2 | 持续优化 = AI 优化 + 使用统计 + 可回滚；**不引入版本历史表** | 本文 §1、§3 |
 | D3 | 沉淀 = 手动三入口；**无自学习/自动捕获**（上游的自动捕获是死代码） | 本文 §1 |
 | D4 | 实现路线：移植 host 存储层 + 通用组件 + 模板变量 + AI 模块，重写巨型弹窗，**只用官方插槽** | 本文 §2、`AGENTS.md` 硬约束 3 |
-| D5 | 导入走浏览器 `<input type=file>` 客户端读文件；导出走 `workspaces.pickDirectory()` 和 `POST /export/save`。文件及带封装的导入请求各限 5 MiB。导出成功时保证可通过正常入口导入。超限在写盘前报错，成功文件使用唯一文件名并独占创建。 | 本文 §4.1 |
+| D5 | 导入由浏览器读文件；导出由宿主选择目录并写文件。文件和封装后的导入请求分别限长；写盘前核对导出能通过同一导入大小上限，使用唯一文件名独占创建。 | §4.1、`backup-transfer.ts#MAX_REQUEST_BODY_BYTES` |
 | D6 | 数据变更同步用**同进程 window 事件**，无 WebSocket（上游的 WS 通道 emit 零调用点，已死） | 本文 §2 |
 | D7 | 命名空间：包 `dsh-prompt-enhancer` / HTTP `/api/prompt-enhancer` / i18n `prompt-enhancer` / 数据 `$DSH_HOME/prompt-enhancer/` | 本文 §2、§3 |
 | D8 | 技能导出**单向**：写 `$DSH_HOME/skills/<name>/SKILL.md` + 过期徽标 + 一键重导；**不做反向导入、不做活同步、不做项目级技能根** | 本文 §4.1（`/skills/export`） |
@@ -139,10 +138,10 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | §13.13 | 写回缝在 store 层收口：补丁类型收窄，AI 三字段「传不进来」（而非「靠没人传」） | 本文 §3、`src/types.ts:79-89` |
 | dsh 0.2.0 迁移 | 设置从 `settingsScope` → `configForms` + `Config`；`ctx.settings.update(entryId, patch)` 取代 `register`（旧写法启动即抛，是设置页保存 503 的根因） | `src/index.ts:4-14` |
 | 首包（已交付） | 统一 AI 错误码 + 诊断注入重试 · AI 结果缓存 · 推荐相关性重排（usage ×0.15 封顶 + 草稿词硬门槛） | issues #1–#6（全 CLOSED） |
-| D9 | **跨源写入闸**：写方法只接受同源请求（403 且不读体）；宿主 webServer 无 origin/token/CSRF 守卫，故闸门落在插件路由层 | 本文 §4.1、`routes.ts#isCrossSiteWrite` |
-| D10 | 默认单次尝试上限为 30s，宿主总预算为 110s，客户端超时为 120s。检查、模板增强和起草的单次上限为 180s，宿主总预算为 215s，客户端超时为 225s。候选目录单次查询上限为 30s，各阶段均受剩余总预算约束。 | 本文 §5、`ai-budget.ts`、`ai.ts#attemptAllCandidates` |
+| D9 | **跨源写入闸**：在插件路由层拦截带跨源证据的写请求，不依赖宿主的其他路由做认证。 | §4.1、`routes.ts#isCrossSiteWrite` |
+| D10 | 默认单次尝试上限为 30s，宿主总预算为 110s，客户端超时为 120s。检查、检查改稿、模板增强和起草的单次上限为 180s，宿主总预算为 215s，客户端超时为 225s。候选目录单次查询上限为 30s，各阶段均受剩余总预算约束。 | 本文 §5、`ai-budget.ts`、`ai.ts#attemptAllCandidates` |
 | D11 | **超限响应先于关连接**：5 MB 闸不得先 `req.destroy()`（会连 socket 一起拆，客户端只见 EPIPE）；改为停止读取 + `Connection: close`，让 400 正常写出 | 本文 §4.1、`routes.ts#readBody` |
-| D12 | **产物源码指纹**：`build` 把 `src/**` 的 hash 写进 `.build-meta.json`，`smoke` 比对当前 src 并红——「改完 src 不重建就提交」是本仓唯一能骗过其它所有门的失效模式（`npm test` 测 src、`smoke` 测 lib） | 本文 §7、`scripts/source-hash.mjs` |
+| D12 | **产物源码指纹**：`build` 把 `src/**` 的 hash 写进 `.build-meta.json`，`smoke` 比对当前 src 并红——测试验证源码，smoke 另外确认构建产物与源码同步 | 本文 §7、`scripts/source-hash.mjs` |
 | D13 | **路由清单单一真源**：`ROUTE_SPECS` 驱动 `dispatch`，测试的覆盖账本按 `pattern` 与它双向对齐（此前 dispatch 是手写 if 链、测试另有一份手抄副本） | 本文 §4.1、`routes.ts#ROUTE_SPECS` |
 | D14 | Composer 左侧并排显示选择器与 AI 优化。选择器点条目后进入独立预览，可返回搜索结果。AI 优化可直接选轻度润色或增强为模板。最终模板实时合并正文与勾选建议，复制、入库与试填共用同一份结果。AI 试填未填完时须显式选择保留占位符，应用时保护已变化的草稿。 | `PromptLibraryButton.tsx`、`AIPolishButton.tsx`、`ai-flow.ts` |
 | D15 | 变量说明与默认值可在 AI 结果的「条目信息」或管理器编辑页配置。AI 试填使用当前配置，最终正文与变量配置一同写入词库。配置与正文同存，随回收站和 JSON 备份往返。默认值跟随模板。显式记住的填值以模板 ID 单独保存，恢复默认值后确认插入会清除该模板的填值记忆。旧的共享填值不会自动带入。 | `TemplateVariablesDialog.tsx`、`store.ts` |
@@ -151,7 +150,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D18 | Composer 为空时仍可开启 AI 菜单，仅启用并高亮「从想法起草」。起草最多一轮澄清，可跳过。编辑后的结果可直接交给检查与模板增强，返回时保留起草状态。应用时以进入起草前的 Composer 为对照，变化时要求显式确认替换。 | `AIPolishButton.tsx`、`PromptDraftForm.tsx`、`draft.ts` |
 | D19 | 起草将影响结论的外部事实写成正文中的核实步骤，追问聚焦用户偏好。用户可主动通过宿主 `ctx.web.search()` 查询来源，发送范围限于独立填写的关键词。搜索不可用时可自行补充链接或摘录并继续起草。 | `draft-search.ts`、`draft.ts`、`PromptDraftForm.tsx` |
 | D20 | AI 请求的最终错误码只描述用户收到的结果。请求日志保留每轮候选的结束状态、插件计时器是否触发和校验结果，供定位更早的故障。 | 本文 §5、`review-trace.ts` |
-| D21 | 检查、模板增强和起草优先使用候选模型声明的 `off` 推理档位。关闭推理的模型获分配 2048 个检查输出 token 或 4096 个增强／起草输出 token。模型未声明该档位时使用 8192 输出 token，为共用预算的推理和 JSON 正文留出空间。起草在接受候选前校验完整结果，截断或结构错误可继续尝试下一候选或诊断重试。 | `ai.ts#collectText`、`ai.ts#draftPromptCore` |
+| D21 | 检查、检查改稿、模板增强和起草优先使用候选模型声明的 `off` 推理档位。关闭推理时，检查报告分配 2048 个输出 token，检查改稿、增强或起草分配 4096 个。模型未声明该档位时使用 8192 输出 token，为共用预算的推理和 JSON 正文留出空间。起草在接受候选前校验完整结果，截断或结构错误可继续尝试下一候选或诊断重试。 | `ai.ts#collectText`、`ai.ts#draftPromptCore` |
 | D22 | AI 面板等待时显示已用时长。取消请求返回操作菜单或起草面板，保留用户输入。HTTP 连接提前关闭或插件卸载时，宿主取消请求及排队等待，并停止后续候选和诊断重试。 | `AIPolishButton.tsx`、`routes.ts#dispatch`、`ai.ts#attemptAllCandidates` |
 | D23 | 写入冲突保护。管理器仅提交改动字段，保存和换稿携带宿主签发的 `contentVersion`。旧调用仍可省略该字段。创建需要淘汰时必须提交已确认的 ID，名单过期返回 409。确认导入按同 ID 覆盖在用条目或回收站条目，恢复遇到历史同 ID 冲突时保留两份并返回 409。 | `store.ts#createPromptWithEvictions`、`store.ts#importPrompts`、`prompt-edit.ts` |
 | D24 | 覆盖使用宿主整体替换正文和内联引用，不改独立附件。追加和替换尾部令牌用区间插入保留内联引用。公开输入状态未暴露引用选区卡片的完整坐标，含此类卡片的尾部编辑可能被宿主拒绝，界面保留草稿并提示失败。 | `insert.ts` |
@@ -176,36 +175,20 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 
 ## 7. 质量门禁与验收纪律
 
-```sh
-npm run verify      # 四道门一次跑满（= typecheck && test && build && smoke）；提交前必须跑它
-npm run typecheck   # tsc --noEmit
-npm test            # node --test
-npm run build       # lib/index.js + lib/client.js（同时把源码指纹写进 .build-meta.json）
-npm run smoke       # 真实执行 client bundle：注册 id、7 个插槽的账本顺序、inject 段序、导出形状、
-                    # 产物只由 src/ 组成（metafile 闸门）、lib 与 src 同代（源码指纹）
-```
+验证门禁见 [AGENTS.md](../AGENTS.md#命令与完成标准)，复跑步骤见 [README](../README.zh.md#开发)。构建检查打包输入；smoke 执行 bundle，检查模块与插槽注册、注入顺序和源码指纹（D12）。它不是浏览器或真实 DSH 端到端测试。
 
-- GitHub Actions 的无宿主验证与本地复跑方法见 [README · Development](../README.md#development)。
-- 每个任务结束时**四项全绿**；新增负样本必须先用**变异验证**（临时改坏实现 → 用例必须红 → 复原）。
-- 提交粒度：一个任务一次提交，`<type>: <scope> <what>`。
-- 活体验收（P4–P8）留下的记录在 `docs/superpowers/plans/*-acceptance.md`，是**唯一现场证据**（含被验收提交 SHA、逐条判据、NOT RUN 归属、临时数据与副作用清单）。
-- 组件接线没有自动化断言（无 react-dom/jsdom，硬约束 5），只靠活体验收——所以 `.tsx` 里的判定应尽量下沉到纯模块。
+组件接线用 DSH 现场验收。记录代码基线、实际点测结果、未验证项及副作用；不要把纯模块测试或历史点测当成当前现场验证。历史记录与离线评估的入口见 §9。
 
 ---
 
-## 8. 当前状态与已知取舍
+## 8. 已知取舍
 
-**已交付**：M1–M8 全部里程碑（骨架与构建契约 / 数据层 / API + AI / 复用闭环 / AI 与回滚 / 沉淀与管理 / 技能导出 / 推荐与设置与文档）。当前 HEAD 之后有过若干纯重构与文档收敛提交。
+- **词库入口与 `#` 浮层**：候选在屏时，词库入口拦截非指针激活（`event.detail === 0`）；指针点击不走此分支。关闭词库面板不主动恢复 `#` 候选（`PromptLibraryButton.tsx`；早期取舍见规格 §13.10-五和 P8 记录）。
+- **填窗局部态**：逐键填值随弹窗卸载丢失。显式关闭词库会清除待执行动作；临时让位只可保留未提交的填窗选择。已记住的值不受卸载影响（`TemplateVariablesDialog.tsx`、`PromptLibraryButton.tsx`、D15、D31）。
+- **浮层落点**：AI 结果面板锚在输入框旁，可能遮挡部分输入区（`AIPolishButton.tsx#ANCHOR`；P8 记录）。
+- **设置首屏**：设置 store 先提供默认值，再用宿主配置或 HTTP 读取结果更新。因此隐藏入口在设置就绪前可能短暂出现。早期采样只代表当时的宿主和代码（`settings-store.ts`）。
 
-**已知取舍**（**是取舍，不是缺陷；不要当 bug 修**——README 明写，出处见括号）：
-1. `#` 浮层在屏时，非指针激活（键盘 Enter/Space、`element.click()`、部分辅助技术）无法打开词库面板；真实指针点击不受影响（spec §13.10-五-1；下文 §编号均指 `docs/superpowers/specs/` 的章节，该目录已冻结）。
-2. 变量填窗逐键输入在弹窗卸载后丢失（组件本地态，spec §13.10-五-2）。
-3. 组件接线无自动化断言（spec §13.10-五-3；变异证据：把 `panelOpen` 退化成 `open` 全套测试仍绿）。
-4. 打 `#`、关词库面板后 `#` 浮层不会自己回来（程序化 focus + Range 无效，只有真实键入才复现，P8 裁决 TBD-P8-6）。
-5. AI 结果面板几何上覆盖 composer（浮层落点与面板尺寸的设计空间，P8 显式留档不改）。
-6. 三个显隐开关全关时，左侧入口在设置就绪前仍会渲染约 2 帧（~33ms），有意不修（消除它会重新引入「未就绪 null 态」，代价更高）。
-
-**待办与提案**：`docs/proposals/2026-10-03-pending-features-from-community-plugins.md`（14 条，已挂起；含 2 条待验证假设与 5 个交付批次的串行/并行约束）。
+[社区功能提案](proposals/2026-10-03-pending-features-from-community-plugins.md) 是历史材料，不是现行待办。
 
 ---
 
@@ -227,4 +210,8 @@ npm run smoke       # 真实执行 client bundle：注册 id、7 个插槽的账
 | 沉淀三入口 | 管理面板新建/编辑 · 选中文字存为提示词 · 当前草稿存为提示词 |
 | 淘汰预演 | 客户端按共享键序预演受害者并确认。宿主在创建事务内核对已批准的 ID |
 
-上游参考分析（功能对照、删除清单、实测异常）保留在 `docs/analysis-dsh-prompt-library/`；规格全文与 §13 自检收敛记录保留在 `docs/superpowers/specs/`。
+### 历史资料与排障
+
+- 早期规格、P1–P8 计划与现场记录、上游分析已从当前树移除。需要追溯时，从 `8a759cc` 查阅原 `docs/` 树；`71f1fd9` 记录了退役原因。§6 中以 `§13` 开头的条目编号指向早期规格。
+- [起草关键假设评估](../evaluations/draft-assumptions/README.md) 保留冻结基线、离线回放及证据边界，不代表真实模型或当前 DSH 现场验收。
+- 模型配置与日志用法见 [AI 模型排障](troubleshooting-ai.md)。
