@@ -123,6 +123,70 @@ test("检查提示词：只回审查报告，接受原文引用，也允许没�
   assert.deepEqual(clear.envelope, { ok: true, data: { findings: [] } });
 });
 
+test("检查提示词：要求模型过滤低价值问题，并给出可直接用的改法或待确认问题", async () => {
+  const systems = [];
+  ai.registerLlm({
+    ...fakeRuntime([]),
+    stream({ system }) {
+      systems.push(system);
+      return fakeStream(['{"findings":[]}', { type: "finish", reason: { kind: "stop" } }])();
+    },
+  });
+  const body = "只审查，不改文件。发现问题直接修复。";
+  for (const input of [{ body }, { body, draftContext: { idea: "只审查，不改文件" } }]) {
+    const report = await dispatch("POST", "/ai/check", input);
+    assert.deepEqual(report.envelope, { ok: true, data: { findings: [] } });
+  }
+  assert.equal(systems.length, 2);
+  for (const system of systems) {
+    assert.match(system, /按对执行或验收的实际影响从高到低/);
+    assert.match(system, /不报告仅涉及措辞、风格或排版偏好的问题/);
+    assert.match(system, /可直接粘贴的替换语句或补充语句/);
+    assert.match(system, /需要用户决策时，提出一个具体问题/);
+  }
+});
+
+test("检查改稿：只向模型传入已选建议，并返回完整正文和待确认问题", async () => {
+  const body = "总结 {{访谈}}。保留原话。";
+  const findings = [{ quote: "保留原话。", issue: "语言未指定", suggestion: "确认用哪种语言。" }];
+  const pending = ["摘要用中文还是原文语言？"];
+  const seen = [];
+  ai.registerLlm({
+    ...fakeRuntime([]),
+    stream({ system, messages }) {
+      seen.push({ system, input: JSON.parse(messages[0].content[0].text) });
+      return fakeStream([JSON.stringify({ body, pending }), { type: "finish", reason: { kind: "stop" } }])();
+    },
+  });
+  const response = await dispatch("POST", "/ai/check/revise", { body, findings });
+  assert.deepEqual(response.envelope, { ok: true, data: { body, pending } });
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].input, { body, findings });
+  assert.match(seen[0].system, /只处理 findings 中用户选中的建议/);
+  assert.match(seen[0].system, /不擅自替用户决定/);
+});
+
+test("检查改稿：空选择或不属于原文的引用在调用模型前拒绝", async () => {
+  let calls = 0;
+  ai.registerLlm({ ...fakeRuntime([]), stream: () => { calls++; return fakeStream([])(); } });
+  const body = "总结 {{访谈}}。";
+  const finding = { quote: "未出现在正文", issue: "问题", suggestion: "改法" };
+  for (const findings of [[], [finding]]) {
+    const response = await dispatch("POST", "/ai/check/revise", { body, findings });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(calls, 0);
+});
+
+test("检查改稿：模型输出删除原有占位符时不交付", async () => {
+  const body = "总结 {{访谈}}。";
+  const findings = [{ quote: body, issue: "格式不明确", suggestion: "用要点列出。" }];
+  ai.registerLlm(fakeRuntime([['{"body":"用要点总结访谈。","pending":[]}', { type: "finish", reason: { kind: "stop" } }]]));
+  const response = await dispatch("POST", "/ai/check/revise", { body, findings });
+  assert.equal(response.status, 503);
+  assert.equal(response.envelope.error.code, "schema-mismatch");
+});
+
 test("检查提示词：拒绝无原文依据的报告", async () => {
   const response = JSON.stringify({
     findings: [{ quote: "这是草稿里没有的原句", issue: "缺少权限", suggestion: "补充权限" }],

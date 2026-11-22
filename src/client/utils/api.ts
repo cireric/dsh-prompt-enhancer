@@ -6,6 +6,8 @@ import {
   type PluginSettings,
   type Prompt,
   type PromptCheckResult,
+  type PromptCheckRevision,
+  type PromptCheckRevisionRequest,
   type PromptDraftContext,
   type PromptDraftRequest,
   type PromptDraftResult,
@@ -229,6 +231,8 @@ export const api = {
     ),
   checkPrompt: (body: string, signal?: AbortSignal, draftContext?: PromptDraftContext) =>
     call<PromptCheckResult>("POST", "/ai/check", { body, draftContext }, STRUCTURED_AI_TIMEOUT_MS, false, signal),
+  reviseCheckedPrompt: (request: PromptCheckRevisionRequest, signal?: AbortSignal) =>
+    call<PromptCheckRevision>("POST", "/ai/check/revise", request, STRUCTURED_AI_TIMEOUT_MS, false, signal),
   draftPrompt: (request: PromptDraftRequest, signal?: AbortSignal) =>
     call<PromptDraftResult>("POST", "/ai/draft", request, STRUCTURED_AI_TIMEOUT_MS, false, signal),
   searchDraft: (query: string, signal?: AbortSignal) =>

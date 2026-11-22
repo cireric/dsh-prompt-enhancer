@@ -82,7 +82,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | 提示词 | `GET /prompts`（`q`/`tag`/`sort=default\|updated\|used\|created`）· `POST /prompts`（需要淘汰时携带 `approvedEvictions`）· `GET/PUT/DELETE /prompts/:id` · `POST /prompts/:id/use` · `POST /prompts/:id/rollback` |
 | 标签 | `GET /tags` · `POST /tags` · `PUT /tags/:from`（改名）· `DELETE /tags/:name`（在用保护） |
 | 回收站 | `GET /trash` · `POST /trash/:id/restore` · `DELETE /trash/:id` · `DELETE /trash`（回 `{removed, ids}`） |
-| AI | `GET /ai/providers` · `POST /ai/polish` · `POST /ai/check`（`findings` 含原文引用、问题和建议） · `POST /ai/draft`（想法、可选回答及资料，返回澄清问题或正文、假设与待核实项） · `POST /ai/draft/search`（用可选宿主搜索查询资料来源） · `POST /ai/refine`（四个原有字段和可选 `suggestions`） · `POST /ai/skill-descriptor` |
+| AI | `GET /ai/providers` · `POST /ai/polish` · `POST /ai/check`（`findings` 含原文引用、问题和建议） · `POST /ai/check/revise`（选中建议 → 完整改稿与待确认问题） · `POST /ai/draft`（想法、可选回答及资料，返回澄清问题或正文、假设与待核实项） · `POST /ai/draft/search`（用可选宿主搜索查询资料来源） · `POST /ai/refine`（四个原有字段和可选 `suggestions`） · `POST /ai/skill-descriptor` |
 | 设置 | `GET /settings` · `PUT /settings`（写入后清 AI 路由缓存） |
 | 导入导出 | `POST /export/save`（宿主生成文件名 + 目录来自 `workspaces.pickDirectory`）· `POST /import`（`{backup, confirm}`，未确认只回预览） |
 | meta | `GET/PUT/DELETE /meta/:key`（模板变量记忆等客户端键名的通用通道，宿主不认识键名约定） |
@@ -147,7 +147,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D14 | Composer 左侧并排显示选择器与 AI 优化。选择器点条目后进入独立预览，可返回搜索结果。AI 优化可直接选轻度润色或增强为模板。最终模板实时合并正文与勾选建议，复制、入库与试填共用同一份结果。AI 试填未填完时须显式选择保留占位符，应用时保护已变化的草稿。 | `PromptLibraryButton.tsx`、`AIPolishButton.tsx`、`ai-flow.ts` |
 | D15 | 变量说明与默认值可在 AI 结果的「条目信息」或管理器编辑页配置。AI 试填使用当前配置，最终正文与变量配置一同写入词库。配置与正文同存，随回收站和 JSON 备份往返。默认值跟随模板。显式记住的填值以模板 ID 单独保存，恢复默认值后确认插入会清除该模板的填值记忆。旧的共享填值不会自动带入。 | `TemplateVariablesDialog.tsx`、`store.ts` |
 | D16 | 选择器空查询时优先列出最近插入的条目。方向键聚焦结果，Enter 打开预览，Esc 返回列表。最终模板在同一份文本里标记新增变量与勾选建议，缺少原变量时可直接返回编辑。 | `PromptLibraryButton.tsx`、`AIPolishButton.tsx` |
-| D17 | AI 菜单默认高亮轻度润色。检查提示词基于发起时的草稿快照，展示实质问题、逐字引用和建议。检查结果只读，草稿变化后允许检查新版。 | `AIPolishButton.tsx`、`ai.ts`、`check.ts` |
+| D17 | AI 菜单默认高亮轻度润色。检查基于草稿快照，要求模型只报告影响执行或验收的实质问题，附逐字引用及可直接使用的改法或具体待确认问题。空报告说明未运行提示词。检查结果只读，可单独复制一条建议正文，草稿变化后允许检查新版。 | `AIPolishButton.tsx`、`ai.ts`、`check.ts` |
 | D18 | Composer 为空时仍可开启 AI 菜单，仅启用并高亮「从想法起草」。起草最多一轮澄清，可跳过。编辑后的结果可直接交给检查与模板增强，返回时保留起草状态。应用时以进入起草前的 Composer 为对照，变化时要求显式确认替换。 | `AIPolishButton.tsx`、`PromptDraftForm.tsx`、`draft.ts` |
 | D19 | 起草将影响结论的外部事实写成正文中的核实步骤，追问聚焦用户偏好。用户可主动通过宿主 `ctx.web.search()` 查询来源，发送范围限于独立填写的关键词。搜索不可用时可自行补充链接或摘录并继续起草。 | `draft-search.ts`、`draft.ts`、`PromptDraftForm.tsx` |
 | D20 | AI 请求的最终错误码只描述用户收到的结果。请求日志保留每轮候选的结束状态、插件计时器是否触发和校验结果，供定位更早的故障。 | 本文 §5、`review-trace.ts` |
@@ -164,6 +164,7 @@ SQLite（`node:sqlite`，Node ≥ 22.19）单文件落 `$DSH_HOME/prompt-enhance
 | D31 | Composer 词库选择器在填值记忆与未缓存的条目 ID 查询后复核同一确认。追加用最新草稿；覆盖和插入并发送遇草稿正文或修订号变化时，展示最新草稿并要求再次确认。发送还复核有序附件 ID，展示数量并提示核对附件栏。查询只核实条目仍在库，不比较版本、不替换已确认正文，也不与草稿写入构成原子操作；缺失保留查询与草稿，核验失败保留操作供重试。关闭、切换会话或失去浮层显示权使已提交的确认失效，但不撤销独立的填值记忆操作。锁定期不覆盖；拒写不发送、不记用量。 | `library-insertion.ts`、`PromptLibraryButton.tsx` |
 | D32 | 确认导入的 `overwrittenIds` 由写入事务确定，覆盖词库和回收站；预览只有统计。客户端只按有效回执在后台清理已有元数据，落库后的清理与通知不依赖面板是否仍挂载。回执中的 `preservedSkillIds` 标出应保留重导描述符的覆盖项；缺少此字段时不删描述符。清理与导入不原子；旧宿主缺覆盖回执时不猜清理名单。 | `store.ts#importPrompts`、`transfer.ts#confirmBackupImport` |
 | D33 | 普通提示词 PUT 带归属名或导出时间返回 400，整次不写。备份仍可携带旧字段，但导入不使用它们认领技能，也不写技能文件。同 ID 覆盖保留本机归属并标为待重导；词库和回收站有同 ID 且分别绑定不同技能时，整批导入返回 409，保留两份。导入的创建和编辑时间最多取本机确认导入时间，避免来源时钟偏快导致后续导出仍显示过期。 | `routes.ts`、`store.ts#importPrompts` |
+| D35 | 普通 Composer 检查默认不选建议；只把选中内容与检查原文交给改稿接口。结果保留原占位符，待用户决定的问题不写进正文。左侧编辑稿可复制或显式覆盖输入框，右侧检查快照只读。覆盖基于正文和修订号复核，变化后先展示待替换内容并确认，不发送或写库。 | `check.ts`、`check-revision.ts`、`AIPolishButton.tsx` |
 | D34 | 起草会话不依赖 React。澄清上限按生成流程计，回答或跳过后重试不再追问；从想法页再生成开启新流程。生成依据只在成功换稿时更新，重新生成不继承旧反馈，改写成功才追加本次反馈。建议只对同一份生成结果和逐字相同的正文有效，带入只预填反馈。起草和增强共用进入起草时的 Composer 基线；确认前再变化需展示最新内容并再次确认，应用不发送。 | `draft-session.ts`、`draft-session.test.mjs` |
 
 ---

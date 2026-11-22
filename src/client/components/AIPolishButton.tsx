@@ -2,7 +2,7 @@
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { canRender } from "../../overlay-claim.ts";
-import type { Prompt, PromptCheckResult, TemplateVariable } from "../../types.ts";
+import type { Prompt, PromptCheckFinding, PromptCheckResult, PromptCheckRevision, TemplateVariable } from "../../types.ts";
 import { PromptDraftForm } from "./PromptDraftForm.tsx";
 import {
   confirmDraftApplication, createDraftSession, draftCheckIsStale, draftSuggestionFeedback, editDraftSession,
@@ -35,6 +35,8 @@ import { TOKEN, TONE, overlayBase } from "../utils/theme.ts";
 import { claimOverlayIfFree, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
 import { reasonOf } from "../../err-text.ts";
 import { useDismissOnOutside } from "../utils/dismiss-outside.ts";
+import { applyCheckRevision, prepareCheckRevision } from "../utils/check-revision.ts";
+import { needsInsertionConfirmation, type DraftVersion } from "../utils/insert.ts";
 
 /** 输入框旁「AI 优化」按钮。 */
 export type AIPolishButtonProps =
@@ -57,6 +59,8 @@ type Status =
   | "done"
   | "checking"
   | "checked"
+  | "revisingCheck"
+  | "revisedCheck"
   | "draftingPrompt"
   | "searchingDraft"
   | "draftPrompt"
@@ -69,6 +73,8 @@ type Status =
   | "writeBackFailed";
 
 type OptimizeMode = "polish" | "check" | "template";
+type CopyTarget = "result" | PromptCheckFinding;
+type CopyFeedback = { target: CopyTarget; label?: "ai.copied" | "ai.copyFail" };
 
 /** 「已复制」的回退时长（与 P4 notice 同款：自动消失，不打断输入）。 */
 const COPIED_MS = 2000;
@@ -97,7 +103,8 @@ function SparkleIcon(): React.ReactElement {
 }
 
 export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProps): React.ReactElement | null {
-  const draft = useInput((s) => s.draft);
+  const input = useInput((s) => s);
+  const { draft, draftRev } = input;
   /**
    * 设置改读**共享响应式 store**（P8 T1）：宿主 scope 每次已提交变更都推一次快照，按钮的显隐与
    * 形状随之即时生效——不再是「mount 时读一次」。无 scope 时 store 给默认值，且无未就绪的 null 态。
@@ -108,7 +115,12 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   /** 点击那一刻的草稿快照（D-P5-5）：「原文」永远是它，润色与完善都用它当输入。 */
   const [original, setOriginal] = React.useState("");
   const [polished, setPolished] = React.useState("");
-  const [composerCheck, setComposerCheck] = React.useState<PromptCheckResult | null>(null);
+  const [composerCheck, setComposerCheck] = React.useState<{
+    report: PromptCheckResult; baseline: DraftVersion; owner: typeof inputActions;
+  } | null>(null);
+  const [selectedFindings, setSelectedFindings] = React.useState<number[]>([]);
+  const [checkRevision, setCheckRevision] = React.useState<PromptCheckRevision | null>(null);
+  const [checkApproval, setCheckApproval] = React.useState<DraftVersion | null>(null);
   const [draftSession, setDraftSession] = React.useState<DraftSession | null>(null);
   const [replacement, setReplacement] = React.useState<DraftReplacement | null>(null);
   const [resultView, setResultView] = React.useState<"final" | "edit" | "original">("final");
@@ -136,9 +148,10 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const templateVariables = variables.filter(({ name }) => variableNames.includes(name));
   const resultBody = refined ? refinedBody : polished;
   const missing = missingVariables(original, resultBody);
-  const [copied, setCopied] = React.useState(false);
-  /** 复制失败：在**按钮文案**上可见（不占用面板的 error 视图——那会顶掉用户刚拿到的结果）。 */
-  const [copyFailed, setCopyFailed] = React.useState(false);
+  const [copyFeedback, setCopyFeedback] = React.useState<CopyFeedback | null>(null);
+  const copyLabel = (target: CopyTarget): PromptEnhancerKey =>
+    (copyFeedback?.target === target ? copyFeedback.label : undefined) ??
+    (target === "result" ? "ai.copy" : "ai.checkCopySuggestion");
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   /** 调用闸门：ref 同步生效（state 的 disabled 要等渲染），覆盖「探测 → 润色/完善/存库/切换」整段。 */
   const busyRef = React.useRef(false);
@@ -160,7 +173,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     };
   }, []);
 
-  const waiting = status === "polishing" || status === "checking" || status === "refining" ||
+  const waiting = status === "polishing" || status === "checking" || status === "refining" || status === "revisingCheck" ||
     status === "draftingPrompt" || status === "searchingDraft";
   React.useEffect(() => {
     if (!waiting) return;
@@ -213,6 +226,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setOriginal("");
     setPolished("");
     setComposerCheck(null);
+    setSelectedFindings([]);
+    setCheckRevision(null);
+    setCheckApproval(null);
     setDraftSession(null);
     setReplacement(null);
     setResultView("final");
@@ -225,9 +241,15 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setSelectedSuggestions([]);
     setFillTarget(null);
     setDraftChanged(false);
-    setCopied(false);
-    setCopyFailed(false);
+    setCopyFeedback(null);
   };
+
+  React.useLayoutEffect(() => {
+    if (composerCheck && composerCheck.owner !== inputActions) {
+      if (requestRef.current) cancelRequest();
+      close();
+    }
+  }, [composerCheck, inputActions]);
 
   const settled = status === "choose" || status === "done" || status === "checked" || status === "error" ||
     status === "refined" || status === "saved" || status === "saveFailed" || status === "writeBackFailed";
@@ -235,12 +257,12 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   // 已复制提示自动消失。
   React.useEffect(() => {
-    if (!copied) return;
-    const id = window.setTimeout(() => setCopied(false), COPIED_MS);
-    return () => {
-      window.clearTimeout(id);
-    };
-  }, [copied]);
+    if (copyFeedback?.label !== "ai.copied") return;
+    const id = window.setTimeout(() => {
+      setCopyFeedback((current) => current === copyFeedback ? null : current);
+    }, COPIED_MS);
+    return () => window.clearTimeout(id);
+  }, [copyFeedback]);
 
   const updateDraft = (edit: DraftEdit): void => {
     setDraftSession((session) => session && editDraftSession(session, edit));
@@ -262,10 +284,12 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setDraftChanged(false);
     setOriginal(snapshot);
     setResultView("final");
-    setCopied(false);
-    setCopyFailed(false);
+    setCopyFeedback(null);
     setPolished("");
     setComposerCheck(null);
+    setSelectedFindings([]);
+    setCheckRevision(null);
+    setCheckApproval(null);
     setRefined(null);
     setStatus(mode === "polish" ? "polishing" : mode === "check" ? "checking" : "refining");
     void (async () => {
@@ -279,7 +303,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
           const report = await api.checkPrompt(snapshot, controller.signal, handoff?.generatedFrom);
           if (!isCurrentRequest(controller)) return;
           if (handoff) updateDraft({ type: "checked", snapshot: handoff, report });
-          else setComposerCheck(report);
+          else setComposerCheck({ report, baseline: { draft: snapshot, draftRev }, owner: inputActions });
           setStatus("checked");
         } else {
           const result = await api.polishPrompt(snapshot, { keepVariables }, controller.signal);
@@ -298,6 +322,26 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     })();
   };
 
+  const generateCheckRevision = (): void => {
+    if (!composerCheck || composerCheck.owner !== inputActions || busyRef.current) return;
+    const request = prepareCheckRevision(composerCheck.baseline, composerCheck.report, selectedFindings);
+    if (!request) return;
+    const controller = beginRequest("checked");
+    setErrorKey(null);
+    setCopyFeedback(null);
+    setStatus("revisingCheck");
+    void api.reviseCheckedPrompt(request, controller.signal).then((revision) => {
+      if (!isCurrentRequest(controller)) return;
+      setCheckRevision(revision);
+      setStatus("revisedCheck");
+    }).catch((err: unknown) => {
+      if (!isCurrentRequest(controller)) return;
+      console.warn("[prompt-enhancer] 检查改稿失败", err);
+      setErrorKey(aiErrorKey(err));
+      setStatus("checked");
+    }).finally(() => finishRequest(controller));
+  };
+
   const startDraft = (): void => {
     setErrorKey(null);
     setDraftSession(createDraftSession(draft));
@@ -308,8 +352,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setErrorKey(null);
     setDraftChanged(false);
     setReplacement(null);
-    setCopied(false);
-    setCopyFailed(false);
+    setCopyFeedback(null);
     setStatus("draftPrompt");
   };
 
@@ -319,8 +362,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     if (!request) return;
     const controller = beginRequest("draftPrompt");
     setErrorKey(null);
-    setCopied(false);
-    setCopyFailed(false);
+    setCopyFeedback(null);
     setStatus("draftingPrompt");
     void (async () => {
       try {
@@ -451,23 +493,20 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     })();
   };
 
-  const copy = (text: string): void => {
+  const copy = (text: string, target: CopyTarget = "result"): void => {
+    const pending: CopyFeedback = { target };
+    setCopyFeedback(pending);
     void (async () => {
+      let label: CopyFeedback["label"] = "ai.copied";
       try {
         await navigator.clipboard.writeText(text);
-        if (aliveRef.current) {
-          setCopied(true);
-          setCopyFailed(false);
-        }
       } catch (err) {
-        // 失败必须**在用户点的地方**可见（审查 #9）：先前只进 console.warn，用户看到的只是
-        // 按钮没变成「已复制」，无从判断发生了什么。
         console.warn("[prompt-enhancer] 复制失败", err);
-        if (aliveRef.current) {
-          setCopied(false);
-          setCopyFailed(true);
-        }
+        label = "ai.copyFail";
       }
+      if (!aliveRef.current) return;
+      // A late clipboard result must not change feedback for a newer click or a cleared panel.
+      setCopyFeedback((current) => current === pending ? { target, label } : current);
     })();
   };
 
@@ -498,6 +537,15 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     else setReplacement(application);
   };
 
+  const applyReviewedCheck = (): void => {
+    if (!aiVisible || !composerCheck || composerCheck.owner !== inputActions || !checkRevision) return;
+    setErrorKey(null);
+    const result = applyCheckRevision(inputActions, checkApproval ?? composerCheck.baseline, input, checkRevision.body);
+    if (result.kind === "confirm") setCheckApproval(result.reviewed);
+    else if (result.kind === "applied") close();
+    else setErrorKey("error.insert");
+  };
+
   const tryResult = (variable = ""): void => {
     if (needsValues(resultBody)) setFillTarget(variable);
     else apply(resultBody);
@@ -512,6 +560,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     status === "polishing"
       ? "ai.polishing"
       : status === "checking" ? "ai.checking"
+      : status === "revisingCheck" ? "ai.checkGenerating"
       : status === "draftingPrompt" ? "ai.draft.generating"
       : status === "searchingDraft" ? "ai.draft.searching"
       : status === "refining" ? "ai.refining"
@@ -528,11 +577,15 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const showDraft = status === "draftPrompt" || status === "draftingPrompt" || status === "searchingDraft";
   const showMenu = status === "choose" || (status === "error" && !draftSession);
   const failedHandoffKey = mode === "check" ? "ai.check" : "ai.refine";
-  const checkReport = draftSession ? draftSession.checked?.report : composerCheck;
+  const checkReport = draftSession ? draftSession.checked?.report : composerCheck?.report;
   const checkInput = draftSession?.body ?? draft;
-  const checkStale = draftSession ? draftCheckIsStale(draftSession) : checkInput !== original;
+  const checkStale = draftSession ? draftCheckIsStale(draftSession) : !!composerCheck &&
+    needsInsertionConfirmation("overwrite", composerCheck.baseline, input);
+  const showCheckRevision = status === "revisedCheck";
+  const checkApprovalStale = !!checkApproval && needsInsertionConfirmation("overwrite", checkApproval, input);
   const dialogLabel =
-    status === "error" && draftSession ? t(failedHandoffKey)
+    showCheckRevision ? t("ai.checkRevised")
+    : status === "error" && draftSession ? t(failedHandoffKey)
     : showDraft ? t("ai.draft.title")
     : showCheck ? t("ai.check")
     : status === "done"
@@ -580,10 +633,10 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
             <div
               role="dialog"
               aria-label={dialogLabel}
-              style={showRefined || showDraft || replacement ? TEMPLATE_PANEL : status === "checked" ? CHECK_PANEL : showMenu ? MENU_PANEL : PANEL}
+              style={showCheckRevision ? CHECK_COMPARE_PANEL : showRefined || showDraft || replacement ? TEMPLATE_PANEL : status === "checked" ? CHECK_PANEL : showMenu ? MENU_PANEL : PANEL}
             >
               <span style={status === "checked" ? { ...PANEL_HEADER, flexShrink: 0 } : PANEL_HEADER}>
-                <strong>{status === "error" && draftSession ? t(failedHandoffKey) : t(showDraft ? "ai.draft.title" : showCheck ? "ai.check" : showRefined ? "ai.refine" : "ai.button")}</strong>
+                <strong>{showCheckRevision ? t("ai.checkRevised") : status === "error" && draftSession ? t(failedHandoffKey) : t(showDraft ? "ai.draft.title" : showCheck ? "ai.check" : showRefined ? "ai.refine" : "ai.button")}</strong>
                 <button type="button" style={PANEL_BUTTON} disabled={!waiting && busyKey !== null} onClick={waiting ? cancelRequest : close}>
                   {t(waiting ? "ai.cancelRequest" : "ai.close")}
                 </button>
@@ -630,7 +683,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   onViewCheck={() => setStatus("checked")}
                   onEnhance={() => run("template")}
                   onCopy={() => copy(draftSession.body)}
-                  copyLabel={copyFailed ? "ai.copyFail" : copied ? "ai.copied" : "ai.copy"}
+                  copyLabel={copyLabel("result")}
                 />
               )}
               {!showRefined && draftChanged && <span role="alert" style={MUTED}>{t("ai.draftChanged")}</span>}
@@ -670,25 +723,96 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                               <strong style={CHECK_ISSUE}>{issue}</strong>
                               <blockquote style={CHECK_QUOTE}>{quote}</blockquote>
                               <p style={CHECK_SUGGESTION}><strong>{t("ai.checkSuggestion")}</strong> {suggestion}</p>
-                              {canUse && (
-                                <button type="button" style={PANEL_BUTTON} onClick={() => {
-                                  updateDraft({ type: "useSuggestion", finding });
-                                  backToDraft();
-                                }}>{t("ai.draft.useSuggestion")}</button>
-                              )}
+                              <div style={ACTIONS}>
+                                {!draftSession && (
+                                  <label style={CHECK_CHOICE}>
+                                    <input type="checkbox" checked={selectedFindings.includes(index)}
+                                      aria-label={`${t("ai.checkInclude")} ${index + 1}: ${issue}`}
+                                      onChange={(event) => {
+                                        const checked = event.currentTarget.checked;
+                                        setSelectedFindings((items) => checked ? [...items, index] : items.filter((item) => item !== index));
+                                      }} />
+                                    {t("ai.checkInclude")}
+                                  </label>
+                                )}
+                                <button type="button" style={PANEL_BUTTON} onClick={() => copy(suggestion, finding)}>
+                                  <span aria-live="polite">{t(copyLabel(finding))}</span>
+                                </button>
+                                {canUse && (
+                                  <button type="button" style={PANEL_BUTTON} onClick={() => {
+                                    updateDraft({ type: "useSuggestion", finding });
+                                    backToDraft();
+                                  }}>{t("ai.draft.useSuggestion")}</button>
+                                )}
+                              </div>
                             </li>
                           );
                         })}
                       </ul>
                     )}
                   </div>
+                  {!draftSession && errorKey && <span role="alert">{t(errorKey)}</span>}
                   <footer style={RESULT_ACTIONS}>
                     <button type="button" style={PANEL_BUTTON} onClick={draftSession ? backToDraft : () => setStatus("choose")}>
                       {t(draftSession ? "ai.draft.backToResult" : "ai.backToActions")}
                     </button>
                     {checkStale && !!checkInput.trim() && (
-                      <button type="button" style={PRIMARY} onClick={() => run("check")}>{t("ai.checkAgain")}</button>
+                      <button type="button" style={PANEL_BUTTON} onClick={() => run("check")}>{t("ai.checkAgain")}</button>
                     )}
+                    {!draftSession && checkReport.findings.length > 0 && (
+                      <button type="button" style={selectedFindings.length ? PRIMARY : DISABLED_MODE}
+                        disabled={!selectedFindings.length} onClick={generateCheckRevision}>{t("ai.checkGenerate")}</button>
+                    )}
+                  </footer>
+                </>
+              )}
+              {showCheckRevision && checkRevision && composerCheck && (
+                <>
+                  <div style={RESULT_CONTENT}>
+                    {checkApproval ? (
+                      <>
+                        <span role="alert">{t(checkApprovalStale ? "ai.checkReviewAgain" : "ai.checkReplaceWarning")}</span>
+                        <span style={HEADER}>{t("ai.draft.currentComposer")}</span>
+                        <pre style={PREVIEW}>{checkApproval.draft || "—"}</pre>
+                      </>
+                    ) : (
+                      <>
+                        {checkRevision.pending.length > 0 && (
+                          <div>
+                            <strong>{t("ai.checkPending")}</strong>
+                            <ul>{checkRevision.pending.map((question, index) => <li key={index}>{question}</li>)}</ul>
+                          </div>
+                        )}
+                        <div style={CHECK_COMPARE_GRID}>
+                          <label style={CHECK_COMPARE_FIELD}>
+                            {t("ai.checkRevised")}
+                            <textarea style={CHECK_COMPARE_TEXT} value={checkRevision.body} spellCheck={false} onChange={(event) => {
+                              setCheckRevision({ ...checkRevision, body: event.currentTarget.value });
+                              setCopyFeedback(null);
+                            }} />
+                          </label>
+                          <label style={CHECK_COMPARE_FIELD}>
+                            {t("ai.checkSource")}
+                            <textarea style={{ ...CHECK_COMPARE_TEXT, color: TOKEN.muted }} value={composerCheck.baseline.draft} readOnly />
+                          </label>
+                        </div>
+                      </>
+                    )}
+                    {errorKey && <span role="alert">{t(errorKey)}</span>}
+                  </div>
+                  <footer style={RESULT_ACTIONS}>
+                    {checkApproval ? (
+                      <button type="button" style={PANEL_BUTTON} onClick={() => { setCheckApproval(null); setErrorKey(null); }}>
+                        {t("ai.draft.keepEditing")}
+                      </button>
+                    ) : (
+                      <button type="button" style={PANEL_BUTTON} onClick={() => copy(checkRevision.body)} disabled={!checkRevision.body.trim()}>
+                        <span aria-live="polite">{t(copyLabel("result"))}</span>
+                      </button>
+                    )}
+                    <button type="button" style={PRIMARY} onClick={applyReviewedCheck} disabled={!checkRevision.body.trim()}>
+                      {t(!checkApproval ? "ai.apply" : checkApprovalStale ? "ai.draft.confirmCurrent" : "ai.draft.replace")}
+                    </button>
                   </footer>
                 </>
               )}
@@ -733,7 +857,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   {keepVars && <span style={MUTED}>{t("ai.mayAddVars")}</span>}
                   <span style={ACTIONS}>
                     <button type="button" style={PANEL_BUTTON} onClick={() => copy(polished)}>
-                      {copyFailed ? t("ai.copyFail") : copied ? t("ai.copied") : t("ai.copy")}
+                      {t(copyLabel("result"))}
                     </button>
                     <button type="button" style={PRIMARY} disabled={!resultBody.trim()} onClick={() => tryResult()}>
                       {t(needsFill ? "ai.tryTemplate" : "ai.apply")}
@@ -852,7 +976,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                           {t("ai.save")}
                         </button>
                         <button type="button" style={PANEL_BUTTON} disabled={!refinedBody.trim()} onClick={() => copy(refinedBody)}>
-                          {copyFailed ? t("ai.copyFail") : copied ? t("ai.copied") : t("ai.copy")}
+                          {t(copyLabel("result"))}
                         </button>
                         <button type="button" style={PRIMARY} disabled={!refinedBody.trim()} onClick={() => tryResult()}>
                           {t(needsFill ? "ai.tryTemplate" : "ai.apply")}
@@ -1071,6 +1195,7 @@ const CHECK_QUOTE: React.CSSProperties = {
   whiteSpace: "pre-wrap",
 };
 const CHECK_SUGGESTION: React.CSSProperties = { margin: 0, whiteSpace: "pre-wrap" };
+const CHECK_CHOICE: React.CSSProperties = { display: "inline-flex", gap: 4, alignItems: "center", marginInlineEnd: "auto", cursor: "pointer" };
 const SUGGESTIONS: React.CSSProperties = { display: "grid", gap: 8, margin: 0, minWidth: 0, border: 0, padding: "4px 0 2px" };
 const SUGGESTION: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 6, overflowWrap: "anywhere", lineHeight: 1.55 };
 
@@ -1109,6 +1234,17 @@ const CHECK_CONTENT: React.CSSProperties = {
   outlineOffset: -2,
   lineHeight: 1.65,
   overflowWrap: "anywhere",
+};
+
+const CHECK_COMPARE_PANEL: React.CSSProperties = {
+  ...TEMPLATE_PANEL, width: "min(760px, calc(100vw - 120px))",
+};
+const CHECK_COMPARE_GRID: React.CSSProperties = {
+  display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 10, flex: "1 0 auto",
+};
+const CHECK_COMPARE_FIELD: React.CSSProperties = { ...HEADER, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 };
+const CHECK_COMPARE_TEXT: React.CSSProperties = {
+  ...TEXTAREA, flex: "1 0 auto", minHeight: "clamp(145px, 31dvh, 280px)", fontWeight: "normal", lineHeight: 1.55, resize: "none",
 };
 
 const TEMPLATE_EDITOR: React.CSSProperties = {

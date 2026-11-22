@@ -24,6 +24,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, join } from "node:path";
 import * as ai from "./ai.ts";
 import { readDraftRequest } from "./draft.ts";
+import { readCheckRevisionRequest } from "./check.ts";
 import { searchDraftSources } from "./draft-search.ts";
 import * as skills from "./skills.ts";
 import * as store from "./store.ts";
@@ -555,6 +556,18 @@ export const ROUTE_SPECS: readonly RouteSpec[] = [
       const checked = await ai.checkPromptCore(text, getSettings(), trace, signal, draftContext);
       if (!checked.ok) return failWithCode(res, 503, { code: checked.code, message: devMessage(checked.code) }, trace);
       return ok(res, checked.report);
+    },
+  },
+  {
+    method: "POST",
+    pattern: "POST /ai/check/revise",
+    match: shape("ai", "check", "revise"),
+    handle: async ({ req, res, trace, signal }) => {
+      const request = readCheckRevisionRequest(await readBody(req, res, signal));
+      if (!request) return fail(res, 400, "检查改稿参数不正确");
+      const revised = await ai.reviseCheckedPromptCore(request, getSettings(), trace, signal);
+      if (!revised.ok) return failWithCode(res, 503, { code: revised.code, message: devMessage(revised.code) }, trace);
+      return ok(res, revised.value);
     },
   },
   {

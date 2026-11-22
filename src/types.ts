@@ -48,6 +48,16 @@ export interface PromptCheckResult {
   findings: PromptCheckFinding[];
 }
 
+export interface PromptCheckRevisionRequest {
+  body: string;
+  findings: PromptCheckFinding[];
+}
+
+export interface PromptCheckRevision {
+  body: string;
+  pending: string[];
+}
+
 export interface PromptDraftQuestion {
   question: string;
   options: string[];
