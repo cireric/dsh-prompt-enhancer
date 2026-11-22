@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { prepareCheckRevision, applyCheckRevision } from "../src/client/utils/check-revision.ts";
+import * as check from "../src/client/utils/check-revision.ts";
+const { prepareCheckRevision, applyCheckRevision } = check;
 
 const baseline = { draft: "原文 {{输入}}", draftRev: 1 };
 const report = { findings: [
@@ -11,6 +12,55 @@ const report = { findings: [
 test("检查改稿只提交选中的建议及本次检查原文", () => {
   assert.equal(prepareCheckRevision(baseline, report, []), undefined);
   assert.deepEqual(prepareCheckRevision(baseline, report, [1]), { body: baseline.draft, findings: [report.findings[1]] });
+});
+
+test("普通检查默认不选，只从检查快照和已勾选建议生成改稿", () => {
+  const result = check.editCheckSession(check.startCheck(baseline), { type: "reported", report });
+  assert.equal(check.beginCheckRevision(result), undefined);
+  const selected = check.editCheckSession(result, { type: "select", index: 1, selected: true });
+  assert.deepEqual(check.beginCheckRevision(selected)?.request, { body: baseline.draft, findings: [report.findings[1]] });
+});
+
+test("取消或失败回到原报告，重试沿用勾选", () => {
+  const result = check.editCheckSession(check.startCheck(baseline), { type: "reported", report });
+  const selected = check.editCheckSession(result, { type: "select", index: 0, selected: true });
+  const inFlight = check.beginCheckRevision(selected).session;
+  const returned = check.editCheckSession(inFlight, { type: "returnToReport" });
+  assert.deepEqual(returned.report, report);
+  assert.deepEqual(check.beginCheckRevision(returned)?.request, { body: baseline.draft, findings: [report.findings[0]] });
+});
+
+test("重查不继承旧勾选、编辑稿或覆盖确认", () => {
+  const result = check.editCheckSession(check.startCheck(baseline), { type: "reported", report });
+  const selected = check.editCheckSession(result, { type: "select", index: 1, selected: true });
+  const revision = check.editCheckSession(check.beginCheckRevision(selected).session, {
+    type: "revised", revision: { body: "旧改稿", pending: [] },
+  });
+  const confirmation = check.editCheckSession(revision, { type: "confirm", reviewed: baseline });
+  assert.equal(confirmation.phase, "confirming");
+  const next = { draft: "新版", draftRev: 2 };
+  const nextReport = { findings: [{ quote: "新版", issue: "交付", suggestion: "补上验收条件" }] };
+  const recheck = check.editCheckSession(check.startCheck(next), { type: "reported", report: nextReport });
+  assert.equal(recheck.phase, "report");
+  assert.deepEqual(recheck.report, nextReport);
+  assert.equal(check.beginCheckRevision(recheck), undefined);
+  const selectedAgain = check.editCheckSession(recheck, { type: "select", index: 0, selected: true });
+  assert.deepEqual(check.beginCheckRevision(selectedAgain)?.request, { body: "新版", findings: nextReport.findings });
+});
+
+test("覆盖确认取消后保留编辑稿，并恢复从检查原文复核", () => {
+  const result = check.editCheckSession(check.startCheck(baseline), { type: "reported", report });
+  const selected = check.editCheckSession(result, { type: "select", index: 0, selected: true });
+  const revision = check.editCheckSession(check.beginCheckRevision(selected).session, {
+    type: "revised", revision: { body: "AI 改稿", pending: ["确认格式"] },
+  });
+  const edited = check.editCheckSession(revision, { type: "editRevision", body: "手工改稿" });
+  const changed = { draft: "另一版", draftRev: 2 };
+  const confirmed = check.editCheckSession(edited, { type: "confirm", reviewed: changed });
+  assert.deepEqual(check.checkRevisionBaseline(confirmed), changed);
+  const returned = check.editCheckSession(confirmed, { type: "keepEditing" });
+  assert.deepEqual(returned.revision, { body: "手工改稿", pending: ["确认格式"] });
+  assert.deepEqual(check.checkRevisionBaseline(returned), baseline);
 });
 
 test("覆盖确认以展示过的正文和修订号为准，最终只写编辑稿", () => {
