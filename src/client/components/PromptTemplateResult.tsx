@@ -14,6 +14,7 @@ type Props = {
   saveResult?: TemplateSaveResult;
   draftChanged: boolean;
   copyLabel: PromptEnhancerKey;
+  applyLabel: "ai.tryTemplate" | "ai.apply";
   onEdit: (edit: TemplateRefineEdit) => void;
   onTry: (variable?: string) => void;
   onCopy: () => void;
@@ -24,7 +25,7 @@ type Props = {
 };
 
 export function PromptTemplateResult({
-  t, session, final, saveResult, draftChanged, copyLabel,
+  t, session, final, saveResult, draftChanged, copyLabel, applyLabel,
   onEdit, onTry, onCopy, onSave, onRetryWriteBack, onBackToDraft, onClose,
 }: Props): ReactElement {
   if (saveResult?.kind === "writeBackFailed") {
@@ -59,7 +60,7 @@ export function PromptTemplateResult({
   }
 
   const { baseBody, metadata, original, selected, suggestions, view } = session;
-  const { canUse, missing, names, needsFill, sections, variables } = final;
+  const { canUse, missing, names, sections, variables } = final;
   const showOriginal = view === "original";
   const setView = (view: TemplateRefineSession["view"]) => onEdit({ type: "view", view });
   return (
@@ -151,7 +152,7 @@ export function PromptTemplateResult({
           <>
             <button type="button" style={PANEL_BUTTON} disabled={!canUse} onClick={onSave}>{t("ai.save")}</button>
             <button type="button" style={PANEL_BUTTON} disabled={!canUse} onClick={onCopy}>{t(copyLabel)}</button>
-            <button type="button" style={PRIMARY} disabled={!canUse} onClick={() => onTry()}>{t(needsFill ? "ai.tryTemplate" : "ai.apply")}</button>
+            <button type="button" style={PRIMARY} disabled={!canUse} onClick={() => onTry()}>{t(applyLabel)}</button>
           </>
         ) : (
           <button type="button" style={PRIMARY} onClick={() => setView("final")}>{t("ai.viewFinalTemplate")}</button>

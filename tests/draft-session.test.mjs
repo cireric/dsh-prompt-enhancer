@@ -4,8 +4,8 @@ import { DRAFT_FEEDBACK_MAX_LENGTH } from "../src/types.ts";
 import {
   createDraftSession, editDraftSession, prepareDraftGeneration, generateDraft,
   prepareDraftHandoff, draftCheckIsStale, draftSuggestionFeedback,
-  requestDraftApplication, confirmDraftApplication,
 } from "../src/client/utils/draft-session.ts";
+import { confirmDraftApplication, requestComposerApplication } from "../src/client/utils/composer-application.ts";
 
 const question = "交付用什么语言？";
 const clarify = { kind: "clarify", questions: [{ question, options: ["中文", "英文"] }] };
@@ -152,9 +152,10 @@ test("重新生成的相同正文和相同输入也不能使上一稿的检查�
 
 test("应用起草或增强稿以进入时的 Composer 为基线，变化后两次确认不写旧版", async () => {
   const session = createDraftSession("未改的 Composer");
-  assert.deepEqual(requestDraftApplication(session, "未改的 Composer", draft.body), { kind: "apply", text: draft.body });
+  const source = { kind: "draft", composer: session.composer };
+  assert.deepEqual(requestComposerApplication(source, "未改的 Composer", { kind: "submit", text: draft.body }), { kind: "apply", text: draft.body });
   const enhanced = "用中文总结附件访谈：{{逐字稿}}。";
-  const first = requestDraftApplication(session, "用户改了草稿", enhanced);
+  const first = requestComposerApplication(source, "用户改了草稿", { kind: "submit", text: enhanced });
   assert.deepEqual(first, { kind: "confirm", current: "用户改了草稿", proposed: enhanced });
   const second = confirmDraftApplication(first, "用户再次改了草稿");
   assert.deepEqual(second, { kind: "confirm", current: "用户再次改了草稿", proposed: enhanced });

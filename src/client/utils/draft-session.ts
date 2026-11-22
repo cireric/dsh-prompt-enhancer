@@ -123,19 +123,3 @@ export function draftSuggestionFeedback(session: DraftSession, finding: PromptCh
   const feedback = previous ? previous + "\n\n" + suggestion : suggestion;
   return feedback.length <= DRAFT_FEEDBACK_MAX_LENGTH ? feedback : undefined;
 }
-
-export interface DraftReplacement {
-  readonly kind: "confirm";
-  readonly current: string;
-  readonly proposed: string;
-}
-
-type DraftApplication = DraftReplacement | { readonly kind: "apply"; readonly text: string };
-
-export function requestDraftApplication(session: DraftSession, current: string, proposed: string): DraftApplication {
-  return current === session.composer ? { kind: "apply", text: proposed } : { kind: "confirm", current, proposed };
-}
-
-export function confirmDraftApplication(replacement: DraftReplacement, current: string): DraftApplication {
-  return current === replacement.current ? { kind: "apply", text: replacement.proposed } : { ...replacement, current };
-}

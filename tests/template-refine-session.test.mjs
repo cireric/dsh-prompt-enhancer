@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canApplyTemplateRefinement, createTemplateRefinement, deriveTemplateRefinement, editTemplateRefinement } from "../src/client/utils/template-refine-session.ts";
+import { createTemplateRefinement, deriveTemplateRefinement, editTemplateRefinement } from "../src/client/utils/template-refine-session.ts";
+import { requestComposerApplication } from "../src/client/utils/composer-application.ts";
 import { fillTemplate, initialTemplateValues } from "../src/client/utils/template.ts";
 
 const original = "原文 {{范围}} {{旧变量}}";
@@ -63,17 +64,20 @@ test("试填采用当前默认值并保留未填项，不替换最终模板或�
 test("最终模板的可用性与试填模式取决于合成后的正文", () => {
   const session = edit(createTemplateRefinement(original, result), { type: "body", body: " \n " });
   assert.equal(deriveTemplateRefinement(session).canUse, false);
+  const attempt = (text) => requestComposerApplication({ kind: "template", original }, original, { kind: "try", text });
   const plain = deriveTemplateRefinement(edit(session, { type: "body", body: "纯文本" }));
   assert.equal(plain.canUse, true);
-  assert.equal(plain.needsFill, false);
+  assert.deepEqual(attempt(plain.body), { kind: "apply", text: "纯文本" });
   const template = deriveTemplateRefinement(edit(session, { type: "suggestion", index: 0, checked: true }));
   assert.equal(template.canUse, true);
-  assert.equal(template.needsFill, true);
+  assert.deepEqual(attempt(template.body), { kind: "fill" });
 });
 
 test("直接增强以原文快照保护覆盖，拒绝哪怕只增加空白的 Composer", () => {
   const session = edit(createTemplateRefinement(original, result), { type: "body", body: "编辑稿" });
-  assert.equal(canApplyTemplateRefinement(session, original), true);
-  assert.equal(canApplyTemplateRefinement(session, original + " "), false);
-  assert.equal(canApplyTemplateRefinement(session, "编辑稿"), false);
+  const source = { kind: "template", original: session.original };
+  const attempt = (current) => requestComposerApplication(source, current, { kind: "try", text: deriveTemplateRefinement(session).body });
+  assert.deepEqual(attempt(original), { kind: "apply", text: "编辑稿" });
+  assert.deepEqual(attempt(original + " "), { kind: "blocked" });
+  assert.deepEqual(attempt("编辑稿"), { kind: "blocked" });
 });

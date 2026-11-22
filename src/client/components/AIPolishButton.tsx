@@ -11,30 +11,33 @@ import {
   ACTIONS, DISABLED_MODE, HEADER, MENU_BUTTON, MUTED, PANEL_BUTTON, pill, PILLS, PREVIEW, PRIMARY, RESULT_ACTIONS, RESULT_CONTENT, TEXTAREA,
 } from "./ai-panel-styles.ts";
 import {
-  confirmDraftApplication, createDraftSession, draftCheckIsStale, draftSuggestionFeedback, editDraftSession,
-  generateDraft, prepareDraftGeneration, prepareDraftHandoff, requestDraftApplication,
-  type DraftEdit, type DraftGeneration, type DraftReplacement, type DraftSession,
+  createDraftSession, draftCheckIsStale, draftSuggestionFeedback, editDraftSession,
+  generateDraft, prepareDraftGeneration, prepareDraftHandoff,
+  type DraftEdit, type DraftGeneration, type DraftSession,
 } from "../utils/draft-session.ts";
+import {
+  applyCheckRevision, canUseCheckRevision, confirmDraftApplication, requestComposerApplication,
+  type ComposerApplication, type ComposerApplicationSource, type DraftReplacement,
+} from "../utils/composer-application.ts";
 import { aiErrorKey, keepVariablesFor, missingVariables } from "../utils/ai-flow.ts";
 import { createAIRequestLifecycle } from "../utils/ai-request-lifecycle.ts";
 import { showsLabel } from "../utils/icon-only.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
-import { needsValues } from "../utils/template.ts";
 import { api } from "../utils/api.ts";
 import { notifyDataChanged } from "../utils/data-sync.ts";
 import { useSettings } from "../utils/settings-store.ts";
 import { createFromCapture } from "../utils/capture.ts";
 import { retryTemplateWriteBack, saveTemplate, type TemplateSaveResult } from "../utils/template-save.ts";
 import {
-  canApplyTemplateRefinement, createTemplateRefinement, deriveTemplateRefinement, editTemplateRefinement, type TemplateRefineSession,
+  createTemplateRefinement, deriveTemplateRefinement, editTemplateRefinement, type TemplateRefineSession,
 } from "../utils/template-refine-session.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { seedRefinedDirection } from "../utils/refined-direction.ts";
 import { TOKEN, overlayBase } from "../utils/theme.ts";
-import { claimOverlayIfFree, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
+import { claimOverlayIfFree, getOverlayClaimSnapshot, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
 import { useDismissOnOutside } from "../utils/dismiss-outside.ts";
 import {
-  applyCheckRevision, beginCheckRevision, canCheckAgain, canUseCheckRevision, checkRevisionBaseline, CHECK_STATUS,
+  beginCheckRevision, canCheckAgain, CHECK_STATUS,
   editCheckSession, startCheck, type CheckSession,
 } from "../utils/check-revision.ts";
 import { needsInsertionConfirmation } from "../utils/insert.ts";
@@ -415,43 +418,44 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     close();
   };
 
-  /** 草稿仍与发起时一致才允许覆盖。 */
-  const apply = (text: string): void => {
-    if (draftSession) {
-      const application = requestDraftApplication(draftSession, draft, text);
-      if (application.kind === "apply") writeComposer(application.text);
-      else {
-        setReplacement(application);
-        setFillTarget(null);
-      }
-    } else if (templateSession ? !canApplyTemplateRefinement(templateSession, draft) : draft !== original) {
-      setDraftChanged(true);
-      setFillTarget(null);
-    } else writeComposer(text);
+  const handleApplication = (application: ComposerApplication, variable = ""): void => {
+    switch (application.kind) {
+      case "fill": setFillTarget(variable); break;
+      case "blocked": setDraftChanged(true); setFillTarget(null); break;
+      case "confirm": setReplacement(application); setFillTarget(null); break;
+      case "apply": writeComposer(application.text); break;
+    }
   };
 
+  const resultSource: ComposerApplicationSource = templateSession
+    ? { kind: "template", original: templateSession.original, draftComposer: draftSession?.composer }
+    : { kind: "polish", original };
+  const resultApplication = requestComposerApplication(resultSource, draft, { kind: "try", text: resultBody });
+  const applyLabel = resultApplication.kind === "fill" ? "ai.tryTemplate" : "ai.apply";
+  const tryResult = (variable = ""): void => handleApplication(resultApplication, variable);
+  const applyFilled = (text: string): void => {
+    handleApplication(requestComposerApplication(resultSource, draft, { kind: "submit", text }));
+  };
   const confirmReplacement = (): void => {
-    if (replacement === null) return;
-    const application = confirmDraftApplication(replacement, draft);
-    if (application.kind === "apply") writeComposer(application.text);
-    else setReplacement(application);
+    if (replacement) handleApplication(confirmDraftApplication(replacement, draft));
   };
 
   const comparedCheck = composerCheck?.phase === "revision" || composerCheck?.phase === "confirming" ? composerCheck : undefined;
   const checkApproval = comparedCheck?.phase === "confirming" ? comparedCheck.reviewed : undefined;
   const applyReviewedCheck = (): void => {
-    if (!aiVisible || !comparedCheck) return;
-    setErrorKey(null);
-    const result = applyCheckRevision(inputActions, checkRevisionBaseline(comparedCheck), input, comparedCheck.revision.body);
+    if (!comparedCheck || !checkOwner) return;
+    const result = applyCheckRevision(inputActions, {
+      owner: checkOwner,
+      visible: aiVisible,
+      liveClaim: getOverlayClaimSnapshot(),
+      baseline: comparedCheck.baseline,
+      reviewed: checkApproval,
+      body: comparedCheck.revision.body,
+    }, input);
+    if (result.kind === "ignored") return;
+    setErrorKey(result.kind === "rejected" ? "error.insert" : null);
     if (result.kind === "confirm") editCheck({ type: "confirm", reviewed: result.reviewed });
     else if (result.kind === "applied") close();
-    else setErrorKey("error.insert");
-  };
-
-  const needsFill = finalTemplate?.needsFill ?? needsValues(polished);
-  const tryResult = (variable = ""): void => {
-    if (needsFill) setFillTarget(variable);
-    else apply(resultBody);
   };
 
   if (settings.showAIPolishButton === false) return null;
@@ -527,7 +531,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
               focusVariable={fillTarget}
               confirmUnfilled
               confirmLabel={t("ai.apply")}
-              onFilled={apply}
+              onFilled={applyFilled}
               onCancel={() => setFillTarget(null)}
             />
           ) : (
@@ -579,7 +583,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   generate={runDraftGeneration}
                   onSearch={searchDraft}
                   onBack={() => { setDraftSession(null); setErrorKey(null); setStatus("choose"); }}
-                  onApply={() => apply(draftSession.body)}
+                  onApply={() => handleApplication(requestComposerApplication(
+                    { kind: "draft", composer: draftSession.composer }, draft, { kind: "submit", text: draftSession.body },
+                  ))}
                   onCheck={() => run("check")}
                   onViewCheck={() => setStatus("checked")}
                   onEnhance={() => run("template")}
@@ -679,7 +685,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                       {t(copyLabel("result"))}
                     </button>
                     <button type="button" style={PRIMARY} disabled={!resultBody.trim()} onClick={() => tryResult()}>
-                      {t(needsFill ? "ai.tryTemplate" : "ai.apply")}
+                      {t(applyLabel)}
                     </button>
                   </span>
                 </>
@@ -693,6 +699,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   draftChanged={draftChanged}
                   copyLabel={copyLabel("result")}
                   onEdit={(edit) => setTemplateSession((session) => session && editTemplateRefinement(session, edit))}
+                  applyLabel={applyLabel}
                   onTry={tryResult}
                   onCopy={() => copy(finalTemplate.body)}
                   onSave={save}

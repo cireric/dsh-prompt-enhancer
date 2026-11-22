@@ -1,6 +1,5 @@
-import type { InputActions, InputState } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { PromptCheckResult, PromptCheckRevision, PromptCheckRevisionRequest } from "../../types.ts";
-import { insertPromptDraft, needsInsertionConfirmation, type DraftVersion } from "./insert.ts";
+import type { DraftVersion } from "./insert.ts";
 
 export function prepareCheckRevision(
   baseline: DraftVersion, report: PromptCheckResult, selected: readonly number[],
@@ -29,14 +28,6 @@ export function canCheckAgain(stale: boolean, current: string): boolean {
 
 export function canGenerateCheckRevision(selected: readonly number[]): boolean {
   return selected.length > 0;
-}
-
-export function canUseCheckRevision(body: string): boolean {
-  return !!body.trim();
-}
-
-export function checkRevisionBaseline(session: CheckComparison): DraftVersion {
-  return session.phase === "confirming" ? session.reviewed : session.baseline;
 }
 
 type CheckEdit =
@@ -84,22 +75,4 @@ export function beginCheckRevision(session: CheckSession):
   if (session.phase !== "report") return;
   const request = prepareCheckRevision(session.baseline, session.report, session.selected);
   if (request) return { session: { ...session, phase: "generating" }, request };
-}
-
-type Result = { kind: "applied" | "rejected" } | { kind: "confirm"; reviewed: DraftVersion };
-
-export function applyCheckRevision(
-  actions: Pick<InputActions, "setDraft"> & Partial<Pick<InputActions, "captureInsertion">>,
-  reviewed: DraftVersion,
-  current: DraftVersion & Pick<InputState, "phase">,
-  body: string,
-): Result {
-  if (!canUseCheckRevision(body)) return { kind: "rejected" };
-  if (needsInsertionConfirmation("overwrite", reviewed, current)) {
-    return { kind: "confirm", reviewed: { draft: current.draft, draftRev: current.draftRev } };
-  }
-  if (current.phase === "adjudicating" || current.phase === "submitting" || current.phase === "sending") {
-    return { kind: "rejected" };
-  }
-  return { kind: insertPromptDraft(actions, current, body, "overwrite") ? "applied" : "rejected" };
 }

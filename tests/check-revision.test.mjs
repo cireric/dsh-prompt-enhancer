@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as check from "../src/client/utils/check-revision.ts";
-const { prepareCheckRevision, applyCheckRevision } = check;
+import { applyCheckRevision } from "../src/client/utils/composer-application.ts";
+const { prepareCheckRevision } = check;
+const application = (owner, baseline, body, reviewed) => ({ owner, visible: true, liveClaim: "ai", baseline, body, reviewed });
 
 const baseline = { draft: "原文 {{输入}}", draftRev: 1 };
 const report = { findings: [
@@ -57,10 +59,12 @@ test("覆盖确认取消后保留编辑稿，并恢复从检查原文复核", ()
   const edited = check.editCheckSession(revision, { type: "editRevision", body: "手工改稿" });
   const changed = { draft: "另一版", draftRev: 2 };
   const confirmed = check.editCheckSession(edited, { type: "confirm", reviewed: changed });
-  assert.deepEqual(check.checkRevisionBaseline(confirmed), changed);
+  assert.deepEqual(confirmed.reviewed, changed);
   const returned = check.editCheckSession(confirmed, { type: "keepEditing" });
   assert.deepEqual(returned.revision, { body: "手工改稿", pending: ["确认格式"] });
-  assert.deepEqual(check.checkRevisionBaseline(returned), baseline);
+  const actions = { setDraft: () => assert.fail("返回编辑应重置覆盖确认") };
+  const attempt = application(actions, returned.baseline, returned.revision.body, returned.reviewed);
+  assert.deepEqual(applyCheckRevision(actions, attempt, { ...changed, phase: "idle" }), { kind: "confirm", reviewed: changed });
 });
 
 test("覆盖确认以展示过的正文和修订号为准，最终只写编辑稿", () => {
@@ -69,19 +73,20 @@ test("覆盖确认以展示过的正文和修订号为准，最终只写编辑�
   const first = { draft: "变化后的正文", draftRev: 2, phase: "idle" };
   const latest = { ...first, draftRev: 3 };
   const edited = "用户编辑后的优化稿  ";
-  const review = applyCheckRevision(actions, baseline, first, edited);
+  const attempt = application(actions, baseline, edited);
+  const review = applyCheckRevision(actions, attempt, first);
   assert.deepEqual(review, { kind: "confirm", reviewed: { draft: first.draft, draftRev: 2 } });
-  const recheck = applyCheckRevision(actions, review.reviewed, latest, edited);
+  const recheck = applyCheckRevision(actions, { ...attempt, reviewed: review.reviewed }, latest);
   assert.equal(recheck.kind, "confirm");
   assert.deepEqual(writes, []);
-  assert.deepEqual(applyCheckRevision(actions, recheck.reviewed, latest, edited), { kind: "applied" });
+  assert.deepEqual(applyCheckRevision(actions, { ...attempt, reviewed: recheck.reviewed }, latest), { kind: "applied" });
   assert.deepEqual(writes, [edited]);
 });
 
 test("写入被锁定或捕获到更晚修订号时保留输入框", () => {
   const actions = { setDraft: () => assert.fail("不应覆盖输入框") };
   const locked = { ...baseline, phase: "sending" };
-  assert.deepEqual(applyCheckRevision(actions, baseline, locked, "优化稿"), { kind: "rejected" });
+  assert.deepEqual(applyCheckRevision(actions, application(actions, baseline, "优化稿"), locked), { kind: "rejected" });
   const raced = { ...actions, captureInsertion: () => ({ draftRev: 2 }) };
-  assert.deepEqual(applyCheckRevision(raced, baseline, { ...baseline, phase: "idle" }, "优化稿"), { kind: "rejected" });
+  assert.deepEqual(applyCheckRevision(raced, application(raced, baseline, "优化稿"), { ...baseline, phase: "idle" }), { kind: "rejected" });
 });

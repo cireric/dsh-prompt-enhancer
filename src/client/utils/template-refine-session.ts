@@ -48,7 +48,6 @@ export function deriveTemplateRefinement(session: TemplateRefineSession) {
     body,
     names,
     canUse: body.trim() !== "",
-    needsFill: names.length > 0,
     sections: parts.map(({ text, addition }) => ({ addition, fragments: markAddedVariables(text, session.original) })),
     missing: missingVariables(session.original, body),
     variables: session.variables.filter(({ name }) => names.includes(name)),
@@ -56,8 +55,3 @@ export function deriveTemplateRefinement(session: TemplateRefineSession) {
 }
 
 export type FinalTemplate = ReturnType<typeof deriveTemplateRefinement>;
-
-/** Direct enhancement uses the source snapshot, not the editable or filled text. */
-export function canApplyTemplateRefinement(session: TemplateRefineSession, composer: string): boolean {
-  return composer === session.original;
-}
