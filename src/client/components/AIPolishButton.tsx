@@ -2,43 +2,35 @@
 import * as React from "react";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { canRender } from "../../overlay-claim.ts";
-import type { Prompt, PromptCheckFinding, TemplateVariable } from "../../types.ts";
+import type { PromptCheckFinding } from "../../types.ts";
 import { PromptCheckReport } from "./PromptCheckReport.tsx";
 import { PromptCheckRevisionPanel } from "./PromptCheckRevisionPanel.tsx";
 import { PromptDraftForm } from "./PromptDraftForm.tsx";
+import { PromptTemplateResult } from "./PromptTemplateResult.tsx";
 import {
-  ACTIONS, DISABLED_MODE, HEADER, MENU_BUTTON, MUTED, PANEL_BUTTON, PREVIEW, PRIMARY, RESULT_ACTIONS, RESULT_CONTENT, TEXTAREA,
+  ACTIONS, DISABLED_MODE, HEADER, MENU_BUTTON, MUTED, PANEL_BUTTON, pill, PILLS, PREVIEW, PRIMARY, RESULT_ACTIONS, RESULT_CONTENT, TEXTAREA,
 } from "./ai-panel-styles.ts";
 import {
   confirmDraftApplication, createDraftSession, draftCheckIsStale, draftSuggestionFeedback, editDraftSession,
   generateDraft, prepareDraftGeneration, prepareDraftHandoff, requestDraftApplication,
   type DraftEdit, type DraftGeneration, type DraftReplacement, type DraftSession,
 } from "../utils/draft-session.ts";
-import {
-  aiErrorKey,
-  canToggle,
-  composeRefinedBody,
-  keepVariablesFor,
-  libraryCreateInput,
-  markAddedVariables,
-  missingVariables,
-  refinedBodySections,
-  needsWriteBack,
-  writeBackRefined,
-} from "../utils/ai-flow.ts";
+import { aiErrorKey, keepVariablesFor, missingVariables } from "../utils/ai-flow.ts";
 import { showsLabel } from "../utils/icon-only.ts";
-import { TemplateVariableFields } from "./TemplateVariableFields.tsx";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
-import { needsValues, parseVariables, updateTemplateVariable } from "../utils/template.ts";
-import { api, type AiRefineResult } from "../utils/api.ts";
+import { needsValues } from "../utils/template.ts";
+import { api } from "../utils/api.ts";
 import { notifyDataChanged } from "../utils/data-sync.ts";
 import { useSettings } from "../utils/settings-store.ts";
-import { createFromCapture, type CaptureOutcome } from "../utils/capture.ts";
+import { createFromCapture } from "../utils/capture.ts";
+import { retryTemplateWriteBack, saveTemplate, type TemplateSaveResult } from "../utils/template-save.ts";
+import {
+  canApplyTemplateRefinement, createTemplateRefinement, deriveTemplateRefinement, editTemplateRefinement, type TemplateRefineSession,
+} from "../utils/template-refine-session.ts";
 import type { PromptEnhancerKey } from "../utils/i18n.ts";
 import { seedRefinedDirection } from "../utils/refined-direction.ts";
-import { TOKEN, TONE, overlayBase } from "../utils/theme.ts";
+import { TOKEN, overlayBase } from "../utils/theme.ts";
 import { claimOverlayIfFree, releaseOverlay, useOverlayClaim } from "../utils/ui-state.ts";
-import { reasonOf } from "../../err-text.ts";
 import { useDismissOnOutside } from "../utils/dismiss-outside.ts";
 import {
   applyCheckRevision, beginCheckRevision, canCheckAgain, canUseCheckRevision, checkRevisionBaseline, CHECK_STATUS,
@@ -73,10 +65,7 @@ type Status =
   | "error"
   | "refining"
   | "refined"
-  | "saving"
-  | "saved"
-  | "saveFailed"
-  | "writeBackFailed";
+  | "saving";
 
 type OptimizeMode = "polish" | "check" | "template";
 type CopyTarget = "result" | PromptCheckFinding;
@@ -84,15 +73,6 @@ type CopyFeedback = { target: CopyTarget; label?: "ai.copied" | "ai.copyFail" };
 
 /** 「已复制」的回退时长（与 P4 notice 同款：自动消失，不打断输入）。 */
 const COPIED_MS = 2000;
-
-/** `saved` 态的 body 预览上限：截断后配合 `overflowWrap:anywhere`，让用户看见切换真的换了版本。 */
-const PREVIEW_MAX = 120;
-
-/** 长正文截断成一行预览（不改变正文，只影响展示）。 */
-function previewText(body: string): string {
-  return body.length > PREVIEW_MAX ? body.slice(0, PREVIEW_MAX) + "…" : body;
-}
-
 
 /** 润色星标：内联四角星，不引任何图标依赖（不引 ui-primitives）。 */
 function SparkleIcon(): React.ReactElement {
@@ -118,13 +98,15 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const settings = useSettings();
   const [panelStatus, setStatus] = React.useState<Status>("idle");
   const [mode, setMode] = React.useState<OptimizeMode>("polish");
-  /** 点击那一刻的草稿快照（D-P5-5）：「原文」永远是它，润色与完善都用它当输入。 */
+  /** 轻度润色的发起快照，模板原文单独由模板会话持有。 */
   const [original, setOriginal] = React.useState("");
   const [polished, setPolished] = React.useState("");
   const [ownedCheck, setOwnedCheck] = React.useState<{ session: CheckSession | null; owner: typeof inputActions } | null>(null);
   const checkOwner = ownedCheck?.owner;
   const composerCheck = checkOwner === inputActions ? ownedCheck?.session : undefined;
-  const status = composerCheck ? CHECK_STATUS[composerCheck.phase] : panelStatus;
+  const [saveResult, setSaveResult] = React.useState<TemplateSaveResult>();
+  const status = composerCheck ? CHECK_STATUS[composerCheck.phase]
+    : panelStatus === "refined" && saveResult ? saveResult.kind : panelStatus;
   const editCheck = (edit: Parameters<typeof editCheckSession>[1]): void => {
     setOwnedCheck((check) => check?.owner === inputActions && check.session
       ? { ...check, session: editCheckSession(check.session, edit) }
@@ -132,31 +114,20 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   };
   const [draftSession, setDraftSession] = React.useState<DraftSession | null>(null);
   const [replacement, setReplacement] = React.useState<DraftReplacement | null>(null);
-  const [resultView, setResultView] = React.useState<"final" | "edit" | "original">("final");
-  const showOriginal = resultView === "original";
+  const [showOriginal, setShowOriginal] = React.useState(false);
   /**
    * 本次调用**实际发出的**变量授权。`run()` 里算一次存这里，渲染期的提示文案读同一个值——
    * 不是渲染期重算的推断。理由：提示说「可能新增变量」而请求根本没授权（或反过来），是组件面
    * 唯一无人能自动发现的那类静默不一致（本仓库没有渲染测试通道）。
    */
   const [keepVars, setKeepVars] = React.useState(false);
-  /** 一键完善的 AI 产出（标题/标签/摘要 + 正文）；正文可编辑，存库与落草稿都取它。 */
-  const [refined, setRefined] = React.useState<AiRefineResult | null>(null);
-  /** 存库后的本地记录：create 之后是它，写回/回滚各用返回值整条替换。 */
-  const [saved, setSaved] = React.useState<Prompt | null>(null);
-  /** 本次 create 触发了超限淘汰（二次确认归 P6，本任务只做可见性）。 */
-  const [evicted, setEvicted] = React.useState(false);
-  const [saveError, setSaveError] = React.useState<string | null>(null);
+  const [templateSession, setTemplateSession] = React.useState<TemplateRefineSession | null>(null);
   const [errorKey, setErrorKey] = React.useState<PromptEnhancerKey | null>(null);
-  const [variables, setVariables] = React.useState<TemplateVariable[]>([]);
-  const [selectedSuggestions, setSelectedSuggestions] = React.useState<number[]>([]);
   const [fillTarget, setFillTarget] = React.useState<string | null>(null);
   const [draftChanged, setDraftChanged] = React.useState(false);
-  const refinedBody = refined ? composeRefinedBody(refined.body, refined.suggestions ?? [], selectedSuggestions) : "";
-  const variableNames = parseVariables(refinedBody);
-  const templateVariables = variables.filter(({ name }) => variableNames.includes(name));
-  const resultBody = refined ? refinedBody : polished;
-  const missing = missingVariables(original, resultBody);
+  const finalTemplate = templateSession ? deriveTemplateRefinement(templateSession) : null;
+  const resultBody = finalTemplate?.body ?? polished;
+  const missing = missingVariables(original, polished);
   const [copyFeedback, setCopyFeedback] = React.useState<CopyFeedback | null>(null);
   const copyLabel = (target: CopyTarget): PromptEnhancerKey =>
     (copyFeedback?.target === target ? copyFeedback.label : undefined) ??
@@ -237,14 +208,10 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setOwnedCheck(null);
     setDraftSession(null);
     setReplacement(null);
-    setResultView("final");
-    setRefined(null);
-    setSaved(null);
-    setEvicted(false);
-    setSaveError(null);
+    setShowOriginal(false);
+    setTemplateSession(null);
+    setSaveResult(undefined);
     setErrorKey(null);
-    setVariables([]);
-    setSelectedSuggestions([]);
     setFillTarget(null);
     setDraftChanged(false);
     setCopyFeedback(null);
@@ -288,23 +255,22 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     const keepVariables = keepVariablesFor(snapshot);
     setKeepVars(keepVariables);
     setErrorKey(null);
-    setVariables([]);
-    setSelectedSuggestions([]);
     setFillTarget(null);
     setDraftChanged(false);
-    setOriginal(snapshot);
-    setResultView("final");
+    setOriginal(mode === "polish" ? snapshot : "");
+    setShowOriginal(false);
     setCopyFeedback(null);
     setPolished("");
     setOwnedCheck(check ? { session: check, owner: inputActions } : null);
-    setRefined(null);
+    setTemplateSession(null);
+    setSaveResult(undefined);
     if (!check) setStatus(mode === "polish" ? "polishing" : mode === "check" ? "checking" : "refining");
     void (async () => {
       try {
         if (mode === "template") {
           const result = await api.refinePrompt(snapshot, controller.signal);
           if (!isCurrentRequest(controller)) return;
-          setRefined(result);
+          setTemplateSession(createTemplateRefinement(snapshot, result));
           setStatus("refined");
         } else if (mode === "check") {
           const report = await api.checkPrompt(snapshot, controller.signal, handoff?.generatedFrom);
@@ -357,6 +323,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   };
 
   const backToDraft = (): void => {
+    setTemplateSession(null);
+    setSaveResult(undefined);
     setErrorKey(null);
     setDraftChanged(false);
     setReplacement(null);
@@ -404,103 +372,39 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     }
   };
 
-  /**
-   * 存入词库（严格两步，每步失败都有可见后果）：
-   *   1. `createPrompt` 落**原文**（`libraryCreateInput` 的 body 恒为 original）——库里不留半成品；
-   *   2. 完善稿 ≠ 原文时 `writeBackRefined(…)` → `updatePrompt(id, { body: 完善稿, aiWriteBack: true })`
-   *      触发宿主回填 `sourceBody`，**成功之后**播种方向记录（`refined`）。
-   * 第 2 步失败**必须明说**：库里那条的 body 是原文（不是损坏数据），但优化稿没写回，
-   * 面内给 `ai.writeBackFail` + 原因 + 「重试写回」，不得假装已存好。
-   * 完善稿 ≡ 原文则不写回（宿主不回填 `sourceBody`），界面按 `canToggle` 显示 `ai.sameAsOriginal`。
-   */
-  const save = (): void => {
-    if (busyRef.current || refined === null || !refinedBody.trim()) return;
-    busyRef.current = true;
-    setSaveError(null);
-    setStatus("saving");
-    const writeBack = needsWriteBack(refinedBody, original);
-    void (async () => {
-      try {
-        let outcome: CaptureOutcome;
-        try {
-          outcome = await createFromCapture({
-            ...libraryCreateInput(refined, original),
-            ...(!writeBack && templateVariables.length ? { variables: templateVariables } : {}),
-          });
-        } catch (err) {
-          console.warn("[prompt-enhancer] 存入词库失败", err);
-          if (!aliveRef.current) return;
-          setSaveError(reasonOf(err));
-          setStatus("saveFailed");
-          return;
-        }
-        if (!aliveRef.current) return;
-        // 淘汰二次确认里被取消（R31 + §4.4）：**第 2 步不进入**（没有 id 可写回），
-        // 静静退回完善态——取消不是失败，不得走 saveFailed。
-        if (!outcome.ok) {
-          setStatus("refined");
-          return;
-        }
-        setSaved(outcome.prompt);
-        setEvicted(outcome.evicted.length > 0);
-        if (!writeBack) {
-          setStatus("saved");
-          return;
-        }
-        try {
-          const updated = await writeBackRefined({
-            promptId: outcome.prompt.id,
-            contentVersion: outcome.prompt.contentVersion,
-            body: refinedBody,
-            variables: templateVariables,
-            update: api.updatePrompt,
-            seed: seedRefinedDirection,
-          });
-          notifyDataChanged();
-          if (!aliveRef.current) return;
-          setSaved(updated);
-          setStatus("saved");
-        } catch (err) {
-          console.warn("[prompt-enhancer] 优化稿写回失败（原文已入库）", err);
-          if (!aliveRef.current) return;
-          setSaveError(reasonOf(err));
-          setStatus("writeBackFailed");
-        }
-      } finally {
-        busyRef.current = false;
-      }
-    })();
+  const saveDependencies = {
+    create: createFromCapture,
+    update: api.updatePrompt,
+    seed: seedRefinedDirection,
+    notify: notifyDataChanged,
+    isAlive: () => aliveRef.current,
   };
 
-  /** 写回重试：只重跑第 2 步（记录 id 来自第 1 步的返回值，仍在 `saved` 里）。 */
-  const retryWriteBack = (): void => {
-    if (busyRef.current || saved === null || refined === null) return;
+  const runSave = async (operation: () => ReturnType<typeof saveTemplate>): Promise<void> => {
+    if (busyRef.current) return;
     busyRef.current = true;
-    setSaveError(null);
+    setSaveResult(undefined);
     setStatus("saving");
-    void (async () => {
-      try {
-        const updated = await writeBackRefined({
-          promptId: saved.id,
-          contentVersion: saved.contentVersion,
-          body: refinedBody,
-          variables: templateVariables,
-          update: api.updatePrompt,
-          seed: seedRefinedDirection,
-        });
-        notifyDataChanged();
-        if (!aliveRef.current) return;
-        setSaved(updated);
-        setStatus("saved");
-      } catch (err) {
-        console.warn("[prompt-enhancer] 优化稿写回重试失败", err);
-        if (!aliveRef.current) return;
-        setSaveError(reasonOf(err));
-        setStatus("writeBackFailed");
-      } finally {
-        busyRef.current = false;
-      }
-    })();
+    try {
+      const result = await operation();
+      if (!result || !aliveRef.current) return;
+      if (result.kind !== "cancelled") setSaveResult(result);
+      setStatus("refined");
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
+  const save = (): void => {
+    if (!templateSession || !finalTemplate?.canUse) return;
+    const { original, metadata } = templateSession;
+    const { body, variables } = finalTemplate;
+    void runSave(() => saveTemplate({ original, metadata, body, variables }, saveDependencies));
+  };
+
+  const retryWriteBack = (): void => {
+    if (saveResult?.kind !== "writeBackFailed") return;
+    void runSave(() => retryTemplateWriteBack(saveResult.pending, saveDependencies));
   };
 
   const copy = (text: string, target: CopyTarget = "result"): void => {
@@ -536,7 +440,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
         setReplacement(application);
         setFillTarget(null);
       }
-    } else if (draft !== original) {
+    } else if (templateSession ? !canApplyTemplateRefinement(templateSession, draft) : draft !== original) {
       setDraftChanged(true);
       setFillTarget(null);
     } else writeComposer(text);
@@ -560,8 +464,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     else setErrorKey("error.insert");
   };
 
+  const needsFill = finalTemplate?.needsFill ?? needsValues(polished);
   const tryResult = (variable = ""): void => {
-    if (needsValues(resultBody)) setFillTarget(variable);
+    if (needsFill) setFillTarget(variable);
     else apply(resultBody);
   };
 
@@ -583,10 +488,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const empty = draft.trim() === "";
   const triggerDisabled = busyKey !== null;
   const hint = busyKey !== null ? t(busyKey) : t("ai.tip");
-  /** 淘汰提示：写回失败时也必须可见（那时 status 不是 saved，但淘汰已经真实发生）。 */
-  const evictedNotice = evicted ? <span style={MUTED}>{t("ai.evicted")}</span> : null;
   const showRefined = status === "refined" || status === "saveFailed";
-  const needsFill = needsValues(resultBody);
+  const showTemplateResult = showRefined || status === "saved" || status === "writeBackFailed";
   const showCheck = status === "checking" || status === "checked";
   const showDraft = status === "draftPrompt" || status === "draftingPrompt" || status === "searchingDraft";
   const showMenu = status === "choose" || (status === "error" && !draftSession);
@@ -634,9 +537,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
           {fillTarget !== null ? (
             <TemplateVariablesDialog
               body={resultBody}
-              variables={templateVariables}
+              variables={finalTemplate?.variables}
               t={t}
-              panelSize={refined ? TEMPLATE_PANEL : { width: PANEL.width }}
+              panelSize={finalTemplate ? TEMPLATE_PANEL : { width: PANEL.width }}
               focusVariable={fillTarget}
               confirmUnfilled
               confirmLabel={t("ai.apply")}
@@ -756,7 +659,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                       type="button"
                       style={pill(!showOriginal)}
                       aria-pressed={!showOriginal}
-                      onClick={() => setResultView("final")}
+                      onClick={() => setShowOriginal(false)}
                     >
                       {t("ai.polished")}
                     </button>
@@ -764,7 +667,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                       type="button"
                       style={pill(showOriginal)}
                       aria-pressed={showOriginal}
-                      onClick={() => setResultView("original")}
+                      onClick={() => setShowOriginal(true)}
                     >
                       {t("ai.original")}
                     </button>
@@ -797,175 +700,22 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   </span>
                 </>
               )}
-              {!replacement && showRefined && refined !== null && (
-                <>
-                  <div style={PILLS}>
-                    <button type="button" style={pill(resultView === "final")} aria-pressed={resultView === "final"} onClick={() => setResultView("final")}>{t("ai.finalTemplate")}</button>
-                    <button type="button" style={pill(resultView === "edit")} aria-pressed={resultView === "edit"} onClick={() => setResultView("edit")}>{t("ai.editTemplate")}</button>
-                    <button type="button" style={pill(showOriginal)} aria-pressed={showOriginal} onClick={() => setResultView("original")}>{t("ai.original")}</button>
-                  </div>
-                  <div style={RESULT_CONTENT}>
-                    {draftChanged && <span role="alert" style={MUTED}>{t("ai.draftChanged")}</span>}
-                    {missing.length > 0 && (
-                      <div role="alert" style={PILLS}>
-                        <span style={MUTED}>{t("ai.missingVariables")} {missing.join(", ")}</span>
-                        {resultView !== "edit" && (
-                          <button type="button" style={PANEL_BUTTON} onClick={() => setResultView("edit")}>{t("ai.editTemplate")}</button>
-                        )}
-                      </div>
-                    )}
-                    {status === "saveFailed" && (
-                      <span role="alert" style={ERROR}>
-                        <span>{t("ai.saveFail")}</span>
-                        {saveError !== null && <span style={ERROR_DETAIL}>{saveError}</span>}
-                      </span>
-                    )}
-                    {resultView === "final" ? (
-                      <pre role="region" aria-label={t("ai.finalTemplate")} tabIndex={0} style={FINAL_PREVIEW}>
-                        {refinedBodySections(refined.body, refined.suggestions ?? [], selectedSuggestions).map(({ text, addition }, index) => (
-                          <span key={index} style={addition ? ADDED_SUGGESTION : undefined}>
-                            {markAddedVariables(text, original).map(({ text: fragment, name, added }, position) => (
-                              added && name !== undefined ? (
-                                <button
-                                  key={position}
-                                  type="button"
-                                  style={ADDED_VARIABLE}
-                                  onClick={() => tryResult(name)}
-                                >
-                                  {fragment}
-                                </button>
-                              ) : fragment
-                            ))}
-                          </span>
-                        ))}
-                      </pre>
-                    ) : (
-                      <textarea
-                        key={resultView}
-                        autoFocus={resultView === "edit"}
-                        value={showOriginal ? original : refined.body}
-                        readOnly={showOriginal}
-                        aria-label={t(showOriginal ? "ai.original" : "ai.editTemplate")}
-                        onChange={(ev) => setRefined({ ...refined, body: ev.target.value })}
-                        style={TEMPLATE_EDITOR}
-                      />
-                    )}
-                    {!showOriginal && (
-                      <div style={RESULT_OPTIONS}>
-                        {refined.suggestions?.length ? (
-                          <details style={RESULT_DETAILS}>
-                            <summary style={RESULT_SUMMARY}>
-                              {t("ai.suggestions")} <span style={MUTED}>{selectedSuggestions.length}/{refined.suggestions.length}</span>
-                            </summary>
-                            <fieldset style={SUGGESTIONS} aria-label={t("ai.suggestions")}>
-                              {refined.suggestions.map((suggestion, index) => (
-                                <label key={suggestion} style={SUGGESTION}>
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedSuggestions.includes(index)}
-                                    onChange={(event) => {
-                                      const checked = event.currentTarget.checked;
-                                      setSelectedSuggestions((previous) => checked
-                                        ? [...previous, index]
-                                        : previous.filter((selected) => selected !== index));
-                                    }}
-                                  />
-                                  <span>{suggestion}</span>
-                                </label>
-                              ))}
-                            </fieldset>
-                          </details>
-                        ) : null}
-                        <details style={RESULT_DETAILS}>
-                          <summary style={RESULT_SUMMARY}>{t("ai.entryDetails")}</summary>
-                          <dl style={META}>
-                            <dt style={META_KEY}>{t("ai.fieldTitle")}</dt>
-                            <dd style={META_VALUE}>{refined.title}</dd>
-                            <dt style={META_KEY}>{t("ai.fieldTags")}</dt>
-                            <dd style={META_VALUE}>{refined.tags.join(" / ")}</dd>
-                            <dt style={META_KEY}>{t("ai.fieldSummary")}</dt>
-                            <dd style={META_VALUE}>{refined.summary}</dd>
-                          </dl>
-                          {variableNames.length > 0 && (
-                            <div style={RESULT_DETAILS}>
-                              <strong style={HEADER}>{t("vars.settings")}</strong>
-                              <TemplateVariableFields names={variableNames} variables={variables} t={t}
-                                onChange={(name, field, value) => setVariables((previous) =>
-                                  updateTemplateVariable(previous, name, field, value))} />
-                            </div>
-                          )}
-                        </details>
-                      </div>
-                    )}
-                  </div>
-                  <footer style={RESULT_ACTIONS}>
-                    {draftSession && (
-                      <button type="button" style={PANEL_BUTTON} onClick={backToDraft}>{t("ai.draft.backToResult")}</button>
-                    )}
-                    {resultView === "final" ? (
-                      <>
-                        <button type="button" style={PANEL_BUTTON} disabled={!refinedBody.trim()} onClick={save}>
-                          {t("ai.save")}
-                        </button>
-                        <button type="button" style={PANEL_BUTTON} disabled={!refinedBody.trim()} onClick={() => copy(refinedBody)}>
-                          {t(copyLabel("result"))}
-                        </button>
-                        <button type="button" style={PRIMARY} disabled={!refinedBody.trim()} onClick={() => tryResult()}>
-                          {t(needsFill ? "ai.tryTemplate" : "ai.apply")}
-                        </button>
-                      </>
-                    ) : (
-                      <button type="button" style={PRIMARY} onClick={() => setResultView("final")}>
-                        {t("ai.viewFinalTemplate")}
-                      </button>
-                    )}
-                  </footer>
-                </>
-              )}
-              {status === "writeBackFailed" && (
-                <>
-                  <span role="alert" style={ERROR}>
-                    <span>{t("ai.writeBackFail")}</span>
-                    {saveError !== null && (
-                      <span style={ERROR_DETAIL} title={saveError}>
-                        {saveError}
-                      </span>
-                    )}
-                  </span>
-                  {evictedNotice}
-                  <span style={ACTIONS}>
-                    <button type="button" style={PANEL_BUTTON} onClick={retryWriteBack}>
-                      {t("ai.retryWriteBack")}
-                    </button>
-                    <button type="button" style={PANEL_BUTTON} onClick={close}>
-                      {t("ai.close")}
-                    </button>
-                  </span>
-                </>
-              )}
-              {status === "saved" && saved !== null && (
-                <>
-                  <span role="status" aria-live="polite" style={MUTED}>
-                    {t("ai.saved")}
-                  </span>
-                  {evictedNotice}
-                  {/* §13.8 决定二：库侧的「原文 ↔ 优化稿」并排对比与切换已迁往管理面板详情页，
-                      这里只留指向它的提示（验收 6 的切换能力由详情页承担）。 */}
-                  {canToggle(saved) ? (
-                    <span style={MUTED}>{t("ai.toggleMoved")}</span>
-                  ) : (
-                    <span style={MUTED}>{t("ai.sameAsOriginal")}</span>
-                  )}
-                  <span style={PREVIEW}>{previewText(saved.body)}</span>
-                  <span style={ACTIONS}>
-                    {draftSession && (
-                      <button type="button" style={PANEL_BUTTON} onClick={backToDraft}>{t("ai.draft.backToResult")}</button>
-                    )}
-                    <button type="button" style={PANEL_BUTTON} onClick={close}>
-                      {t("ai.close")}
-                    </button>
-                  </span>
-                </>
+              {!replacement && showTemplateResult && templateSession && finalTemplate && (
+                <PromptTemplateResult
+                  t={t}
+                  session={templateSession}
+                  final={finalTemplate}
+                  saveResult={saveResult}
+                  draftChanged={draftChanged}
+                  copyLabel={copyLabel("result")}
+                  onEdit={(edit) => setTemplateSession((session) => session && editTemplateRefinement(session, edit))}
+                  onTry={tryResult}
+                  onCopy={() => copy(finalTemplate.body)}
+                  onSave={save}
+                  onRetryWriteBack={retryWriteBack}
+                  onBackToDraft={draftSession ? backToDraft : undefined}
+                  onClose={close}
+                />
               )}
             </div>
           )}
@@ -1024,51 +774,10 @@ const PANEL: React.CSSProperties = {
 const WAIT_STATUS: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: "2px 8px", flexShrink: 0 };
 const WAIT_ELAPSED: React.CSSProperties = { ...MUTED, fontVariantNumeric: "tabular-nums" };
 
-const ERROR: React.CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 2,
-  color: TOKEN.fg,
-  fontSize: 11,
-};
-
-const ERROR_DETAIL: React.CSSProperties = { color: TOKEN.muted, overflowWrap: "anywhere" };
-
-/** AI 标题/标签/摘要的只读展示：两列贴齐，值允许为空（P6 才给编辑面）。 */
-const META: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "auto minmax(0, 1fr)",
-  margin: "4px 0 0",
-  columnGap: 10,
-  rowGap: 4,
-  alignItems: "baseline",
-};
-
-const META_KEY: React.CSSProperties = { color: TOKEN.muted, fontSize: 11, whiteSpace: "nowrap" };
-
-const META_VALUE: React.CSSProperties = { margin: 0, color: TOKEN.fg, overflowWrap: "anywhere" };
-
-const PILLS: React.CSSProperties = { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" };
-
-/** 原文/优化稿切换 pill；选中态用 accent 描边。 */
-const pill = (active: boolean): React.CSSProperties => ({
-  padding: "1px 10px",
-  fontSize: 11,
-  lineHeight: "16px",
-  color: active ? TOKEN.accent : TOKEN.muted,
-  background: "transparent",
-  border: `1px solid ${active ? TOKEN.accent : TOKEN.border}`,
-  borderRadius: 999,
-  cursor: "pointer",
-});
-
 const MENU_PANEL: React.CSSProperties = { ...PANEL, width: "min(260px, calc(100vw - 120px))", gap: 10 };
 const MENU_ACTIONS: React.CSSProperties = { display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 4, flexShrink: 0 };
 const PRIMARY_MODE: React.CSSProperties = { ...MENU_BUTTON, color: TOKEN.accent, background: TOKEN.hover, fontWeight: 600 };
 const PANEL_HEADER: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
-const SUGGESTIONS: React.CSSProperties = { display: "grid", gap: 8, margin: 0, minWidth: 0, border: 0, padding: "4px 0 2px" };
-const SUGGESTION: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 6, overflowWrap: "anywhere", lineHeight: 1.55 };
-
 
 const TEMPLATE_PANEL: React.CSSProperties = {
   ...PANEL,
@@ -1090,30 +799,3 @@ const CHECK_PANEL: React.CSSProperties = {
 const CHECK_COMPARE_PANEL: React.CSSProperties = {
   ...TEMPLATE_PANEL, width: "min(760px, calc(100vw - 120px))",
 };
-
-const TEMPLATE_EDITOR: React.CSSProperties = {
-  ...TEXTAREA,
-  flex: "1 1 0",
-  minHeight: "clamp(100px, 29dvh, 220px)",
-  padding: "10px 11px",
-  fontSize: 13,
-  lineHeight: 1.6,
-};
-
-const RESULT_OPTIONS: React.CSSProperties = {
-  flex: "0 0 auto",
-  maxHeight: "min(128px, 20dvh)",
-  overflowY: "auto",
-};
-
-const RESULT_DETAILS: React.CSSProperties = { flex: "0 0 auto", borderTop: `1px solid ${TOKEN.border}` };
-
-const RESULT_SUMMARY: React.CSSProperties = { cursor: "pointer", padding: "6px 0", fontWeight: 600 };
-
-const FINAL_PREVIEW: React.CSSProperties = {
-  ...TEMPLATE_EDITOR, margin: 0, resize: "none", whiteSpace: "pre-wrap", overflowWrap: "anywhere", overflowY: "auto",
-};
-const ADDED_VARIABLE: React.CSSProperties = {
-  background: TOKEN.hover, color: TOKEN.accent, border: 0, padding: 0, font: "inherit", cursor: "pointer", textDecoration: "underline",
-};
-const ADDED_SUGGESTION: React.CSSProperties = { color: TONE.success, fontStyle: "italic" };

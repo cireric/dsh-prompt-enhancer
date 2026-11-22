@@ -23,8 +23,8 @@ export function keepVariablesFor(draft: string): boolean {
   return needsValues(draft);
 }
 
-/** 落到提示词库的入参：body 用**原文**（AI 完善稿只进输入框），title 走 clampTitle，tags 最多 1 个。 */
-export function libraryCreateInput(refined: AiRefineResult, originalDraft: string): {
+/** 创建入参：body 用原文；title 走 clampTitle，tags 最多 1 个。 */
+export function libraryCreateInput(refined: Pick<AiRefineResult, "title" | "tags" | "summary">, originalDraft: string): {
   title: string;
   body: string;
   tags: string[];
@@ -169,10 +169,6 @@ export function refinedBodySections(body: string, suggestions: readonly string[]
     { text: additions.length ? body.trimEnd() : body, addition: false },
     ...additions.map((text) => ({ text: "\n\n" + text, addition: true })),
   ];
-}
-
-export function composeRefinedBody(body: string, suggestions: readonly string[], selected: readonly number[]): string {
-  return refinedBodySections(body, suggestions, selected).map(({ text }) => text).join("");
 }
 
 export function missingVariables(original: string, result: string): string[] {

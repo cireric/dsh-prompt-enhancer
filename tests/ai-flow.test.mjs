@@ -70,13 +70,6 @@ test("aiErrorKey：按 HTTP 503 判 ai.unavailable、按 TimeoutError 判 ai.tim
   assert.equal(flow.aiErrorKey(new Error("boom")), "ai.fail");
 });
 
-test("composeRefinedBody 只加入勾选的建议，顺序与界面一致", () => {
-  const body = "检查 {{提交范围}}。等我确认后才提交。";
-  const suggestions = ["检查临时文件。", "回报提交哈希。", "列出提交文件。"];
-  assert.equal(flow.composeRefinedBody(body, suggestions, []), body);
-  assert.equal(flow.composeRefinedBody(body, suggestions, [2, 0]), body + "\n\n检查临时文件。\n\n列出提交文件。");
-});
-
 test("missingVariables 找出被删除或改名的原有变量", () => {
   const original = "对 {{ 提交范围 }} 使用 {{类型}}，再次核对 {{类型}}。";
   assert.deepEqual(flow.missingVariables(original, "检查 {{提交范围}}，选择 {{新类型}}。"), ["类型"]);
@@ -90,7 +83,7 @@ test("最终模板的标记保留原文字符，只标记新增变量和已勾�
   assert.deepEqual(sections.filter((part) => part.addition).map((part) => part.text), ["\n\n使用 {{示例}}。"]);
   const marked = sections.flatMap((part) => flow.markAddedVariables(part.text, "检查 {{范围}}。"));
   assert.deepEqual(marked.filter((part) => part.added).map(({ text, name }) => [text, name]), [["{{格式}}", "格式"], ["{{示例}}", "示例"]]);
-  assert.equal(marked.map((part) => part.text).join(""), flow.composeRefinedBody(body, suggestions, [0]));
+  assert.equal(marked.map((part) => part.text).join(""), "检查 {{ 范围 }} 和 {{格式}}。\n\n使用 {{示例}}。");
 });
 
 test("AI 保存的写回请求同时携带最终模板和变量配置", async () => {

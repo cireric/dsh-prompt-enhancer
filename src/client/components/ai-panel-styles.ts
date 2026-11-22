@@ -48,6 +48,19 @@ export const MENU_BUTTON: CSSProperties = {
 };
 export const DISABLED_MODE: CSSProperties = { ...MENU_BUTTON, opacity: 0.5, cursor: "default" };
 
+export const PILLS: CSSProperties = { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" };
+
+export const pill = (active: boolean): CSSProperties => ({
+  padding: "1px 10px",
+  fontSize: 11,
+  lineHeight: "16px",
+  color: active ? TOKEN.accent : TOKEN.muted,
+  background: "transparent",
+  border: `1px solid ${active ? TOKEN.accent : TOKEN.border}`,
+  borderRadius: 999,
+  cursor: "pointer",
+});
+
 export const RESULT_CONTENT: CSSProperties = {
   flex: "1 1 auto",
   minHeight: 0,
