@@ -33,6 +33,14 @@
 
 ## Agent skills
 
-- **Issue tracker**：通过 `gh` 操作 GitHub Issues；见[工单与发布约定](docs/agents/issue-tracker.md)。
-- **Triage labels**：分诊前查[标签角色映射](docs/agents/triage-labels.md)。
-- **Domain docs**：涉及术语或设计决策时查[域文档入口](docs/agents/domain.md)。
+### Issue tracker
+
+本地 Markdown 工单，位于 `.scratch/<feature-slug>/`。见[工单约定](docs/agents/issue-tracker.md)。
+
+### Triage labels
+
+状态写在 issue 文件的 `Status:` 行，沿用五个默认角色。见[标签角色映射](docs/agents/triage-labels.md)。
+
+### Domain docs
+
+Single-context：`GLOSSARY.md` + [架构与决策](docs/architecture.md)。见[域文档入口](docs/agents/domain.md)。
