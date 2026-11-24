@@ -606,7 +606,11 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                     { kind: "draft", composer: draftSession.composer }, draft, { kind: "submit", text: draftSession.body },
                   ))}
                   onCheck={() => run("check", "draft")}
-                  onViewCheck={() => setStatus("checked")}
+                  onViewCheck={() => {
+                    // 查看起草报告也要恢复起草来源，否则上一次增强的 trip 会让报告不渲染。
+                    setTrip({ source: "draft", operation: "check" });
+                    setStatus("checked");
+                  }}
                   onEnhance={() => run("template", "draft")}
                   onCopy={() => copy(draftSession.body)}
                   copyLabel={copyLabel("result")}
