@@ -137,7 +137,7 @@ SQLite 主库位于 `$DSH_HOME/prompt-enhancer/db/prompts.db`（`paths.ts#dbPath
 | §13.11-三 | 技能名身份：有归属的条目以 `skillName` 决定目录，`name` 只参与无归属条目的导出。 | `store.ts#recordSkillExport` |
 | §13.13 | 写回缝在 store 层收口：补丁类型收窄，AI 三字段「传不进来」（而非「靠没人传」） | 本文 §3、`src/types.ts:79-89` |
 | dsh 0.2.0 迁移 | 设置从 `settingsScope` → `configForms` + `Config`；`ctx.settings.update(entryId, patch)` 取代 `register`（旧写法启动即抛，是设置页保存 503 的根因） | `src/index.ts:4-14` |
-| 首包（已交付） | 统一 AI 错误码 + 诊断注入重试 · AI 结果缓存 · 推荐相关性重排（usage ×0.15 封顶 + 草稿词硬门槛） | issues #1–#6（全 CLOSED） |
+| 首包（已交付） | 统一 AI 错误码 + 诊断注入重试 · AI 结果缓存 · 推荐相关性重排（usage ×0.15 封顶 + 草稿词硬门槛） | 首包交付提交（git 历史） |
 | D9 | **跨源写入闸**：在插件路由层拦截带跨源证据的写请求，不依赖宿主的其他路由做认证。 | §4.1、`routes.ts#isCrossSiteWrite` |
 | D10 | 默认单次尝试上限为 30s，宿主总预算为 110s，客户端超时为 120s。检查、检查改稿、模板增强和起草的单次上限为 180s，宿主总预算为 215s，客户端超时为 225s。候选目录单次查询上限为 30s，各阶段均受剩余总预算约束。 | 本文 §5、`ai-budget.ts`、`ai.ts#attemptAllCandidates` |
 | D11 | **超限响应先于关连接**：5 MB 闸不得先 `req.destroy()`（会连 socket 一起拆，客户端只见 EPIPE）；改为停止读取 + `Connection: close`，让 400 正常写出 | 本文 §4.1、`routes.ts#readBody` |
