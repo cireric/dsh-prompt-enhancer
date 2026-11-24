@@ -92,7 +92,7 @@ SQLite 主库位于 `$DSH_HOME/prompt-enhancer/db/prompts.db`（`paths.ts#dbPath
 
 | 查找 | 模块 |
 |---|---|
-| 检查、起草与模板结果 | `check-revision.ts`、`draft-session.ts`、`template-refine-session.ts`（D34–D37） |
+| 检查、起草与模板结果 | `check-revision.ts`、`draft-session.ts`、`template-refine-session.ts`（D34–D37）；`ai-round-trip.ts` 决定来源、结果归属与返回动作（D41） |
 | 请求与存库 | `ai-request-lifecycle.ts` 管取消和并发；`template-save.ts` 编排存库，复用 `ai-flow.ts#writeBackRefined`（D38–D39） |
 | 应用到 Composer | `composer-application.ts` 管 AI 应用；`library-insertion.ts` 管词库复用。后者和普通检查复用 `insert.ts` 的宿主写入保护（D24、D31、D40） |
 | 浮层与方向 | `overlay-claim.ts` 管互斥判定，`ui-state.ts` 持有 claim；`refined-direction.ts` 处理库中原文与优化稿方向 |
@@ -170,6 +170,7 @@ SQLite 主库位于 `$DSH_HOME/prompt-enhancer/db/prompts.db`（`paths.ts#dbPath
 | D38 | **模板存库不是原子事务**：先创建增强原文；取消淘汰确认不创建，最终模板正文与原文逐字相同时随创建保存变量配置，不写回。写回失败保留已创建的条目及淘汰提示；重试只重发原载荷并使用原创建回执的 ID 和版本，冲突不自动覆盖。创建成功立即通知；若收到创建回执时组件已卸载，不启动写回。已发出的写回可完成，成功后播种方向并通知，不更新已卸载界面；播种失败不改判写回。 | `template-save.ts`、`capture.ts`、`ai-flow.ts` |
 | D39 | **AI 请求生命周期**：每个入口只有一个同步占用，AI 与存库（含写回重试）互斥。只有当前 AI 请求可更新界面或释放占用；取消先失效再中止，由各流程返回原位置。卸载中止 AI 但不导航，不中止存库（D38）。计时按每次请求起点计算；浮层让位不使请求失效，Composer 所属变化只使普通检查失效。 | `ai-request-lifecycle.ts`、`AIPolishButton.tsx` |
 | D40 | **应用判定共享，覆盖策略不共享**：应用模块按来源处理试填和覆盖，组件负责呈现结果。直接润色、增强按各自的原文快照阻止覆盖；起草及其增强沿用 D34；只有普通检查走 D35 的修订号复核与宿主写入保护。试填取消不应用，提交时才核对 Composer。 | `composer-application.ts`、`AIPolishButton.tsx` |
+| D41 | **AI 操作往返按发起来源**：检查与模板增强在发起时认定来源（Composer 或起草稿）；成功结果归属、取消去向、失败后的菜单/重试/返回动作由同一往返规则决定。视图不通过起草会话是否存在推断返回策略。请求失效与卸载仍由共享生命周期处理，来源不赋予失效请求导航权。 | `ai-round-trip.ts`、`AIPolishButton.tsx` |
 
 ---
 
