@@ -21,6 +21,7 @@ import {
 } from "../utils/composer-application.ts";
 import { aiErrorKey, keepVariablesFor, missingVariables } from "../utils/ai-flow.ts";
 import { createAIRequestLifecycle } from "../utils/ai-request-lifecycle.ts";
+import { recheckRoundTrip, retryRoundTrip, roundTripOutcome, type RoundTrip, type RoundTripSource } from "../utils/ai-round-trip.ts";
 import { showsLabel } from "../utils/icon-only.ts";
 import { TemplateVariablesDialog } from "./TemplateVariablesDialog.tsx";
 import { api } from "../utils/api.ts";
@@ -101,7 +102,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
    */
   const settings = useSettings();
   const [panelStatus, setStatus] = React.useState<Status>("idle");
-  const [mode, setMode] = React.useState<OptimizeMode>("polish");
+  /** 本次 AI 操作的往返上下文；来源在发起时认定，后续取消/失败/结果都只看它。 */
+  const [trip, setTrip] = React.useState<RoundTrip | null>(null);
   /** 轻度润色的发起快照，模板原文单独由模板会话持有。 */
   const [original, setOriginal] = React.useState("");
   const [polished, setPolished] = React.useState("");
@@ -182,6 +184,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   const close = (): void => {
     setStatus("idle");
+    setTrip(null);
     setOriginal("");
     setPolished("");
     setOwnedCheck(null);
@@ -220,16 +223,18 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     setDraftSession((session) => session && editDraftSession(session, edit));
   };
 
-  const run = (mode: OptimizeMode): void => {
-    const handoff = draftSession ? prepareDraftHandoff(draftSession) : undefined;
-    const snapshot = draftSession ? handoff?.body : draft;
+  const run = (mode: OptimizeMode, source: RoundTripSource): void => {
+    const handoff = source === "draft" && draftSession ? prepareDraftHandoff(draftSession) : undefined;
+    if (source === "draft" && !handoff) return;
+    const snapshot = source === "draft" ? handoff?.body : draft;
     if (!snapshot?.trim()) return;
-    const check = mode === "check" && !handoff ? startCheck({ draft: snapshot, draftRev }) : null;
+    const roundTrip: RoundTrip | null = mode === "polish" ? null : { source, operation: mode };
+    const check = mode === "check" && source === "composer" ? startCheck({ draft: snapshot, draftRev }) : null;
     // 授权算一次，调用和结果提示共用。
     const keepVariables = keepVariablesFor(snapshot);
     const callbacks = {
       onStart: () => {
-        setMode(mode);
+        setTrip(roundTrip);
         setKeepVars(keepVariables);
         setErrorKey(null);
         setFillTarget(null);
@@ -251,7 +256,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
       },
       onCancel: () => {
         if (check) setOwnedCheck(null);
-        setStatus(draftSession ? "draftPrompt" : "choose");
+        const destination = roundTrip ? roundTripOutcome(roundTrip, "cancel").destination : "menu";
+        setStatus(destination === "draft" ? "draftPrompt" : "choose");
       },
     };
     if (mode === "template") {
@@ -268,8 +274,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
         ...callbacks,
         request: (signal) => api.checkPrompt(snapshot, signal, handoff?.generatedFrom),
         onSuccess: (report) => {
-          if (handoff) {
-            updateDraft({ type: "checked", snapshot: handoff, report });
+          if (source === "draft") {
+            updateDraft({ type: "checked", snapshot: handoff!, report });
             setStatus("checked");
           } else editCheck({ type: "reported", report });
         },
@@ -310,6 +316,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
 
   const startDraft = (): void => {
     setOwnedCheck(null);
+    setTrip(null);
     setErrorKey(null);
     setDraftSession(createDraftSession(draft));
     setStatus("draftPrompt");
@@ -428,7 +435,11 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   };
 
   const resultSource: ComposerApplicationSource = templateSession
-    ? { kind: "template", original: templateSession.original, draftComposer: draftSession?.composer }
+    ? {
+        kind: "template",
+        original: templateSession.original,
+        ...(trip?.source === "draft" ? { draftComposer: draftSession?.composer } : {}),
+      }
     : { kind: "polish", original };
   const resultApplication = requestComposerApplication(resultSource, draft, { kind: "try", text: resultBody });
   const applyLabel = resultApplication.kind === "fill" ? "ai.tryTemplate" : "ai.apply";
@@ -480,17 +491,25 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const showTemplateResult = showRefined || status === "saved" || status === "writeBackFailed";
   const showCheck = status === "checking" || status === "checked";
   const showDraft = status === "draftPrompt" || status === "draftingPrompt" || status === "searchingDraft";
-  const showMenu = status === "choose" || (status === "error" && !draftSession);
-  const failedHandoffKey = mode === "check" ? "ai.check" : "ai.refine";
-  const reportedCheck = composerCheck?.phase === "report" ? composerCheck : undefined;
-  const draftCheck = draftSession?.checked;
-  const checkStale = draftSession ? draftCheckIsStale(draftSession) : !!reportedCheck &&
-    needsInsertionConfirmation("overwrite", reportedCheck.baseline, input);
-  const checkAgain = canCheckAgain(checkStale, draftSession?.body ?? draft) ? () => run("check") : undefined;
+  const successOutcome = trip ? roundTripOutcome(trip, "success") : undefined;
+  const failureOutcome = trip ? roundTripOutcome(trip, "failure") : undefined;
+  const failureRetry = trip && failureOutcome ? retryRoundTrip(trip, failureOutcome) : undefined;
+  const failedTripKey: PromptEnhancerKey = trip?.operation === "check" ? "ai.check" : "ai.refine";
+  const reportOwner = successOutcome?.owner;
+  const showMenu = status === "choose" || (status === "error" && (failureOutcome?.actions.menu ?? true));
+  const reportedCheck = reportOwner === "composer-check" && composerCheck?.phase === "report" ? composerCheck : undefined;
+  const draftCheck = reportOwner === "draft-check" ? draftSession?.checked : undefined;
+  const checkStale = reportOwner === "draft-check"
+    ? (draftSession ? draftCheckIsStale(draftSession) : false)
+    : !!reportedCheck && needsInsertionConfirmation("overwrite", reportedCheck.baseline, input);
+  const recheckTrip = successOutcome ? recheckRoundTrip(successOutcome) : undefined;
+  const checkAgain = recheckTrip && canCheckAgain(
+    checkStale, recheckTrip.source === "draft" ? draftSession?.body ?? "" : draft,
+  ) ? () => run("check", recheckTrip.source) : undefined;
   const showCheckRevision = status === "revisedCheck";
   const dialogLabel =
     showCheckRevision ? t("ai.checkRevised")
-    : status === "error" && draftSession ? t(failedHandoffKey)
+    : status === "error" && trip?.source === "draft" ? t(failedTripKey)
     : showDraft ? t("ai.draft.title")
     : showCheck ? t("ai.check")
     : status === "done"
@@ -541,7 +560,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
               style={showCheckRevision ? CHECK_COMPARE_PANEL : showRefined || showDraft || replacement ? TEMPLATE_PANEL : status === "checked" ? CHECK_PANEL : showMenu ? MENU_PANEL : PANEL}
             >
               <span style={status === "checked" ? { ...PANEL_HEADER, flexShrink: 0 } : PANEL_HEADER}>
-                <strong>{showCheckRevision ? t("ai.checkRevised") : status === "error" && draftSession ? t(failedHandoffKey) : t(showDraft ? "ai.draft.title" : showCheck ? "ai.check" : showRefined ? "ai.refine" : "ai.button")}</strong>
+                <strong>{showCheckRevision ? t("ai.checkRevised") : status === "error" && trip?.source === "draft" ? t(failedTripKey) : t(showDraft ? "ai.draft.title" : showCheck ? "ai.check" : showRefined ? "ai.refine" : "ai.button")}</strong>
                 <button type="button" style={PANEL_BUTTON} disabled={!waiting && busyKey !== null} onClick={waiting ? requests.cancel : close}>
                   {t(waiting ? "ai.cancelRequest" : "ai.close")}
                 </button>
@@ -549,9 +568,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
               {showMenu && (
                 <>
                   <div style={MENU_ACTIONS}>
-                    <button type="button" style={empty ? DISABLED_MODE : PRIMARY_MODE} disabled={empty} onClick={() => run("polish")}>{t("ai.lightPolish")}</button>
-                    <button type="button" style={empty ? DISABLED_MODE : MENU_BUTTON} disabled={empty} onClick={() => run("check")}>{t("ai.check")}</button>
-                    <button type="button" style={empty ? DISABLED_MODE : MENU_BUTTON} disabled={empty} onClick={() => run("template")}>{t("ai.refine")}</button>
+                    <button type="button" style={empty ? DISABLED_MODE : PRIMARY_MODE} disabled={empty} onClick={() => run("polish", "composer")}>{t("ai.lightPolish")}</button>
+                    <button type="button" style={empty ? DISABLED_MODE : MENU_BUTTON} disabled={empty} onClick={() => run("check", "composer")}>{t("ai.check")}</button>
+                    <button type="button" style={empty ? DISABLED_MODE : MENU_BUTTON} disabled={empty} onClick={() => run("template", "composer")}>{t("ai.refine")}</button>
                     <button type="button" style={empty ? PRIMARY_MODE : MENU_BUTTON} onClick={startDraft}>{t("ai.draft.title")}</button>
                   </div>
                   {empty && <span style={MUTED}>{t("ai.empty")}</span>}
@@ -586,9 +605,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   onApply={() => handleApplication(requestComposerApplication(
                     { kind: "draft", composer: draftSession.composer }, draft, { kind: "submit", text: draftSession.body },
                   ))}
-                  onCheck={() => run("check")}
+                  onCheck={() => run("check", "draft")}
                   onViewCheck={() => setStatus("checked")}
-                  onEnhance={() => run("template")}
+                  onEnhance={() => run("template", "draft")}
                   onCopy={() => copy(draftSession.body)}
                   copyLabel={copyLabel("result")}
                 />
@@ -606,10 +625,12 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
               {status === "error" && (
                 <>
                   <span role="alert" style={MUTED}>{t(errorKey ?? "ai.fail")}</span>
-                  {draftSession && (
+                  {failureRetry && (
                     <div style={ACTIONS}>
-                      <button type="button" style={PANEL_BUTTON} onClick={backToDraft}>{t("ai.draft.backToResult")}</button>
-                      <button type="button" style={PRIMARY} onClick={() => run(mode)}>{t("ai.retry")}</button>
+                      {failureOutcome?.actions.backToDraft && (
+                        <button type="button" style={PANEL_BUTTON} onClick={backToDraft}>{t("ai.draft.backToResult")}</button>
+                      )}
+                      <button type="button" style={PRIMARY} onClick={() => run(failureRetry.operation, failureRetry.source)}>{t("ai.retry")}</button>
                     </div>
                   )}
                 </>
@@ -704,7 +725,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   onCopy={() => copy(finalTemplate.body)}
                   onSave={save}
                   onRetryWriteBack={retryWriteBack}
-                  onBackToDraft={draftSession ? backToDraft : undefined}
+                  onBackToDraft={successOutcome?.actions.backToDraft ? backToDraft : undefined}
                   onClose={close}
                 />
               )}
