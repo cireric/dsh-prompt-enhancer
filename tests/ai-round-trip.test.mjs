@@ -67,13 +67,13 @@ test("失败按来源给出菜单或重试原操作并返回起草", () => {
 });
 
 test("检查新版沿用报告归属：Composer 报告取消回菜单，起草报告取消回起草", () => {
-  const composerRecheck = recheckRoundTrip(roundTripOutcome(check("composer"), "success"));
-  const draftRecheck = recheckRoundTrip(roundTripOutcome(check("draft"), "success"));
+  const composerRecheck = recheckRoundTrip("composer-check");
+  const draftRecheck = recheckRoundTrip("draft-check");
   assert.deepEqual(composerRecheck, check("composer"));
   assert.deepEqual(draftRecheck, check("draft"));
   assert.equal(roundTripOutcome(composerRecheck, "cancel").destination, "menu");
   assert.equal(roundTripOutcome(draftRecheck, "cancel").destination, "draft");
-  assert.equal(recheckRoundTrip(roundTripOutcome(template("composer"), "success")), undefined);
+  assert.equal(recheckRoundTrip("template"), undefined);
 });
 
 test("失败重试保留来源，并区分重试检查与重试增强", () => {

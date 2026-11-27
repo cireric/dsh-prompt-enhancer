@@ -62,10 +62,10 @@ export function roundTripOutcome(trip: RoundTrip, event: RoundTripEvent): RoundT
     : { destination: "report", owner: "composer-check", actions: withActions({ selectSuggestions: true, generateRevision: true }) };
 }
 
-/** 「检查新版」沿用报告归属的来源，而不是当前页面里有没有起草会话。 */
-export function recheckRoundTrip(outcome: RoundTripOutcome): RoundTrip | undefined {
-  if (outcome.owner === "composer-check") return { source: "composer", operation: "check" };
-  if (outcome.owner === "draft-check") return { source: "draft", operation: "check" };
+/** 「检查新版」沿用当前报告的归属，不读取最近一次请求。 */
+export function recheckRoundTrip(owner: RoundTripOwner | undefined): RoundTrip | undefined {
+  if (owner === "composer-check") return { source: "composer", operation: "check" };
+  if (owner === "draft-check") return { source: "draft", operation: "check" };
 }
 
 /** 失败重试保留原来源；重试目标必须是原操作，不能一律退回检查。 */

@@ -50,7 +50,7 @@ export type AIPolishButtonProps =
 /**
  * 面板状态机。AI 请求失败进入 error，可返回模式选择：
  *   - 润色：polishing → done / error
- *   - 检查：checking → checked / error
+ *   - 检查：checking → checked（Composer）/ draftChecked（起草）/ error
  *   - 完善：refining → refined（面内是 AI 标题/标签/摘要 + 可编辑完善稿）
  *   - 存库：saving → saved / saveFailed / writeBackFailed
  * 注意面板里的 pill 对比（`done` 态）只是**同一份结果的两种样子**，不是库侧的版本切换：
@@ -63,7 +63,7 @@ type Status =
   | "polishing"
   | "done"
   | "checking"
-  | "checked"
+  | "draftChecked"
   | "draftingPrompt"
   | "searchingDraft"
   | "draftPrompt"
@@ -102,7 +102,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
    */
   const settings = useSettings();
   const [panelStatus, setStatus] = React.useState<Status>("idle");
-  /** 本次 AI 操作的往返上下文；来源在发起时认定，后续取消/失败/结果都只看它。 */
+  /** 请求发起时的往返上下文；查看已有报告不改写它。 */
   const [trip, setTrip] = React.useState<RoundTrip | null>(null);
   /** 轻度润色的发起快照，模板原文单独由模板会话持有。 */
   const [original, setOriginal] = React.useState("");
@@ -206,7 +206,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
     }
   }, [checkOwner, inputActions, requests]);
 
-  const settled = status === "choose" || status === "done" || status === "checked" || status === "error" ||
+  const showDraftCheck = status === "draftChecked";
+  const showCheckReport = status === "checked" || showDraftCheck;
+  const settled = status === "choose" || status === "done" || showCheckReport || status === "error" ||
     status === "refined" || status === "saved" || status === "saveFailed" || status === "writeBackFailed";
   useDismissOnOutside(rootRef, aiVisible && settled && draftSession === null, close);
 
@@ -222,6 +224,8 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const updateDraft = (edit: DraftEdit): void => {
     setDraftSession((session) => session && editDraftSession(session, edit));
   };
+
+  const openDraftCheck = (): void => setStatus("draftChecked");
 
   const run = (mode: OptimizeMode, source: RoundTripSource): void => {
     const handoff = source === "draft" && draftSession ? prepareDraftHandoff(draftSession) : undefined;
@@ -276,7 +280,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
         onSuccess: (report) => {
           if (source === "draft") {
             updateDraft({ type: "checked", snapshot: handoff!, report });
-            setStatus("checked");
+            openDraftCheck();
           } else editCheck({ type: "reported", report });
         },
       });
@@ -489,20 +493,20 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
   const hint = busyKey !== null ? t(busyKey) : t("ai.tip");
   const showRefined = status === "refined" || status === "saveFailed";
   const showTemplateResult = showRefined || status === "saved" || status === "writeBackFailed";
-  const showCheck = status === "checking" || status === "checked";
+  const showCheck = status === "checking" || showCheckReport;
   const showDraft = status === "draftPrompt" || status === "draftingPrompt" || status === "searchingDraft";
   const successOutcome = trip ? roundTripOutcome(trip, "success") : undefined;
   const failureOutcome = trip ? roundTripOutcome(trip, "failure") : undefined;
   const failureRetry = trip && failureOutcome ? retryRoundTrip(trip, failureOutcome) : undefined;
   const failedTripKey: PromptEnhancerKey = trip?.operation === "check" ? "ai.check" : "ai.refine";
-  const reportOwner = successOutcome?.owner;
+  const reportOwner = showDraftCheck ? "draft-check" : status === "checked" ? "composer-check" : undefined;
   const showMenu = status === "choose" || (status === "error" && (failureOutcome?.actions.menu ?? true));
-  const reportedCheck = reportOwner === "composer-check" && composerCheck?.phase === "report" ? composerCheck : undefined;
+  const reportedCheck = composerCheck?.phase === "report" ? composerCheck : undefined;
   const draftCheck = reportOwner === "draft-check" ? draftSession?.checked : undefined;
   const checkStale = reportOwner === "draft-check"
     ? (draftSession ? draftCheckIsStale(draftSession) : false)
     : !!reportedCheck && needsInsertionConfirmation("overwrite", reportedCheck.baseline, input);
-  const recheckTrip = successOutcome ? recheckRoundTrip(successOutcome) : undefined;
+  const recheckTrip = recheckRoundTrip(reportOwner);
   const checkAgain = recheckTrip && canCheckAgain(
     checkStale, recheckTrip.source === "draft" ? draftSession?.body ?? "" : draft,
   ) ? () => run("check", recheckTrip.source) : undefined;
@@ -557,9 +561,9 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
             <div
               role="dialog"
               aria-label={dialogLabel}
-              style={showCheckRevision ? CHECK_COMPARE_PANEL : showRefined || showDraft || replacement ? TEMPLATE_PANEL : status === "checked" ? CHECK_PANEL : showMenu ? MENU_PANEL : PANEL}
+              style={showCheckRevision ? CHECK_COMPARE_PANEL : showRefined || showDraft || replacement ? TEMPLATE_PANEL : showCheckReport ? CHECK_PANEL : showMenu ? MENU_PANEL : PANEL}
             >
-              <span style={status === "checked" ? { ...PANEL_HEADER, flexShrink: 0 } : PANEL_HEADER}>
+              <span style={showCheckReport ? { ...PANEL_HEADER, flexShrink: 0 } : PANEL_HEADER}>
                 <strong>{showCheckRevision ? t("ai.checkRevised") : status === "error" && trip?.source === "draft" ? t(failedTripKey) : t(showDraft ? "ai.draft.title" : showCheck ? "ai.check" : showRefined ? "ai.refine" : "ai.button")}</strong>
                 <button type="button" style={PANEL_BUTTON} disabled={!waiting && busyKey !== null} onClick={waiting ? requests.cancel : close}>
                   {t(waiting ? "ai.cancelRequest" : "ai.close")}
@@ -606,11 +610,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                     { kind: "draft", composer: draftSession.composer }, draft, { kind: "submit", text: draftSession.body },
                   ))}
                   onCheck={() => run("check", "draft")}
-                  onViewCheck={() => {
-                    // 查看起草报告也要恢复起草来源，否则上一次增强的 trip 会让报告不渲染。
-                    setTrip({ source: "draft", operation: "check" });
-                    setStatus("checked");
-                  }}
+                  onViewCheck={openDraftCheck}
                   onEnhance={() => run("template", "draft")}
                   onCopy={() => copy(draftSession.body)}
                   copyLabel={copyLabel("result")}
@@ -650,7 +650,7 @@ export function AIPolishButton({ t, useInput, inputActions }: AIPolishButtonProp
                   actions={{ kind: "composer", selected: reportedCheck.selected, error: errorKey,
                     onSelect: (index, selected) => editCheck({ type: "select", index, selected }), onGenerate: generateCheckRevision }} />
               )}
-              {status === "checked" && draftSession && draftCheck && (
+              {draftSession && draftCheck && (
                 <PromptCheckReport t={t} report={draftCheck.report} stale={checkStale} onCheckAgain={checkAgain}
                   onBack={backToDraft} onCopy={copySuggestion} copyLabel={copyLabel}
                   actions={{ kind: "draft", canUseSuggestion: (finding) => draftSuggestionFeedback(draftSession, finding) !== undefined,
