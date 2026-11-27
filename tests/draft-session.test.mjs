@@ -36,6 +36,18 @@ async function firstDraft() {
   return respond(start(), "generate", context, draft);
 }
 
+test("场景示例只填入空白想法，不覆盖已有输入或改动补充资料", () => {
+  const value = "把会议记录整理成周报";
+  const edit = { type: "fillExample", value };
+  const empty = withFields(createDraftSession(""), { idea: "  ", executor: context.executor, references: context.references });
+  const filled = editDraftSession(empty, edit);
+  assert.deepEqual(filled, { ...empty, idea: value });
+  const existing = createDraftSession("用户已经写好的想法");
+  assert.strictEqual(editDraftSession(existing, edit), existing);
+  const questions = { ...empty, step: "questions" };
+  assert.strictEqual(editDraftSession(questions, edit), questions);
+});
+
 test("跳过澄清发送空回答，拒绝再追问；失败、取消与重试保留原输入", async () => {
   const questions = await respond(start(), "generate", context, clarify);
   const edited = editDraftSession(questions, { type: "answer", index: 0, value: "英文" });

@@ -29,6 +29,7 @@ interface DraftHandoff {
 
 export type DraftEdit =
   | { type: "field"; field: "idea" | "executor" | "references" | "query" | "body" | "feedback"; value: string }
+  | { type: "fillExample"; value: string }
   | { type: "answer"; index: number; value: string }
   | { type: "searched"; search: PromptDraftSearchResult }
   | { type: "checked"; snapshot: DraftHandoff; report: PromptCheckResult }
@@ -39,6 +40,10 @@ export function createDraftSession(composer: string): DraftSession {
   return { composer, idea: composer.trim() ? composer : "", questions: [], answers: [], body: "", assumptions: [], feedback: "", step: "idea" };
 }
 
+export function canFillDraftExample({ step, idea }: DraftSession): boolean {
+  return step === "idea" && !idea.trim();
+}
+
 export function editDraftSession(session: DraftSession, edit: DraftEdit): DraftSession {
   switch (edit.type) {
     case "field": {
@@ -47,6 +52,9 @@ export function editDraftSession(session: DraftSession, edit: DraftEdit): DraftS
       if (field === "query") return { ...session, query: value, search: undefined };
       return { ...session, [field]: value };
     }
+    case "fillExample": return canFillDraftExample(session)
+      ? editDraftSession(session, { type: "field", field: "idea", value: edit.value })
+      : session;
     case "answer": return { ...session, answers: session.answers.map((answer, index) => index === edit.index ? edit.value : answer) };
     case "searched": return { ...session, search: edit.search };
     case "checked": return { ...session, checked: { snapshot: edit.snapshot, report: edit.report } };
@@ -120,6 +128,6 @@ export function draftSuggestionFeedback(session: DraftSession, finding: PromptCh
   if (!session.checked?.report.findings.includes(finding) || draftCheckIsStale(session)) return;
   const { suggestion } = finding;
   const previous = session.feedback.trim();
-  const feedback = previous ? previous + "\n\n" + suggestion : suggestion;
+  const feedback = previous ? `${previous}\n\n${suggestion}` : suggestion;
   return feedback.length <= DRAFT_FEEDBACK_MAX_LENGTH ? feedback : undefined;
 }
