@@ -140,6 +140,7 @@ SQLite 主库位于 `$DSH_HOME/prompt-enhancer/db/prompts.db`（[paths.ts](../sr
 | D39 | **AI 请求生命周期**：每个入口只有一个同步占用，AI 与存库（含写回重试）互斥。只有当前 AI 请求可更新界面或释放占用；取消先失效再中止，由各流程返回原位置。卸载中止 AI 但不导航，不中止存库（D38）。计时按每次请求起点计算；浮层让位不使请求失效，Composer 所属变化只使普通检查失效。 | `ai-request-lifecycle.ts`、`AIPolishButton.tsx` |
 | D40 | **应用判定共享，覆盖策略不共享**：应用模块按来源处理试填和覆盖，组件负责呈现结果。直接润色、增强按各自的原文快照阻止覆盖；起草及其增强沿用 D34；只有普通检查走 D35 的修订号复核与宿主写入保护。试填取消不应用，提交时才核对 Composer。 | `composer-application.ts`、`AIPolishButton.tsx` |
 | D41 | **请求来源与报告归属分开**：检查与模板增强在发起时认定来源（Composer 或起草稿），据此交付结果并决定取消、失败后的去向。当前报告的归属决定报告动作及「检查新版」的请求来源。重开起草报告不改写最近一次请求的来源；失败重试保留原操作与来源。失效请求不能更新视图。 | `ai-round-trip.ts`、`AIPolishButton.tsx`、`ai-round-trip.test.mjs` |
+| D42 | 非空查询时，`#` 候选和 Composer 词库选择器在截断前优先排列完整标题匹配；同档保留列表来序。管理面板共用匹配范围，仍按用户选择的排序方式列出结果。 | [`search-match.ts`](../src/search-match.ts)、[`hash-token.ts`](../src/client/utils/hash-token.ts) |
 
 ---
 

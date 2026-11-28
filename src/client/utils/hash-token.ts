@@ -54,7 +54,7 @@ export function hashTailEdit(draft: string, body: string, editableFrom: number):
 }
 
 /**
- * 候选过滤：标题命中优先，其次标签，最后正文；同分保持原顺序。
+ * 候选按共享命中档位排序，同分保持原顺序。
  *
  * 字段集与命中档位**只有一处定义**：`src/search-match.ts`（`matchRank` / `normalizeQuery`）。
  * 宿主 `store.listPrompts` 的 `q` 过滤与这里是同一份口径，「两处给出一致成员集」由

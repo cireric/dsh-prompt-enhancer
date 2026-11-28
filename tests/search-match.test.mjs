@@ -13,15 +13,16 @@ const { matchRank, normalizeQuery } = await import("../src/search-match.ts");
 
 const p = (over = {}) => ({ title: "无关标题", body: "无关正文", tags: [], ...over });
 
-test("matchRank：档位 = 标题 3 > 标签 2 > 正文 1 > 不命中 0", () => {
-  assert.equal(matchRank(p({ title: "周报生成" }), normalizeQuery("周报")), 3, "标题命中 = 3");
+test("matchRank：档位 = 完整标题 4 > 标题子串 3 > 标签 2 > 正文 1 > 不命中 0", () => {
+  assert.equal(matchRank(p({ title: "  Weekly  " }), normalizeQuery("  WEEKLY ")), 4, "完整标题比较忽略大小写和首尾空白");
+  assert.equal(matchRank(p({ title: "周报生成" }), normalizeQuery("周报")), 3, "标题子串命中 = 3");
   assert.equal(matchRank(p({ tags: ["周报"] }), normalizeQuery("周报")), 2, "标签命中 = 2");
   assert.equal(matchRank(p({ body: "写周报" }), normalizeQuery("周报")), 1, "正文命中 = 1");
   assert.equal(matchRank(p({}), normalizeQuery("周报")), 0, "都不含 = 0");
 });
 
 test("matchRank：先命中先算——标题命中时不再看标签与正文", () => {
-  assert.equal(matchRank(p({ title: "周报", tags: ["周报"], body: "周报" }), normalizeQuery("周报")), 3);
+  assert.equal(matchRank(p({ title: "周报", tags: ["周报"], body: "周报" }), normalizeQuery("周报")), 4);
   assert.equal(matchRank(p({ tags: ["周报"], body: "周报" }), normalizeQuery("周报")), 2, "无标题命中时标签优先于正文");
 });
 
@@ -44,6 +45,6 @@ test("normalizeQuery：trim + 小写；空查询归一为 \"\"（= 不过滤，�
   assert.equal(normalizeQuery("  AB  "), "ab");
   assert.equal(normalizeQuery(undefined), "");
   assert.equal(normalizeQuery("   "), "");
-  assert.equal(matchRank(p({ title: "ab" }), normalizeQuery("AB")), 3, "大小写不敏感");
+  assert.equal(matchRank(p({ title: "abc" }), normalizeQuery("AB")), 3, "标题子串匹配也不区分大小写");
   assert.equal(matchRank(p({ title: "ab" }), ""), 0, "空查询本身不是命中——「不过滤」是调用方的策略");
 });

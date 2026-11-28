@@ -335,8 +335,7 @@ export function PromptLibraryButton({
   /**
    * 本次面板要渲染的候选：过滤 + 渲染上限。
    *
-   * 过滤语义**复用 `#` 浮层的同一份纯函数**（标题 3 > 标签 2 > 正文 1；summary 不参与，口径
-   * 说明见 `hash-token.ts#filterPrompts`），故这里不引入第二种匹配规则。
+   * 过滤和排名复用 `#` 浮层的 `hash-token.ts#filterPrompts`。
    *
    * 上限在这里 `slice`，而不是把 `QUICK_LIST_LIMIT` 塞给 `filterPrompts`：那个函数的
    * limit 语义有自己的用例（`tests/hash-token.test.mjs`），而这里需要「先拿到全部命中数、

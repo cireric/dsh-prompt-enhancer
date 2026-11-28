@@ -498,3 +498,21 @@ test("搜索口径一致性：filterPrompts 与 listPrompts 对同一查询词�
   }
   assert.equal(store.listPrompts({ q: "b c" }).length, 0, "跨标签边界的查询词两处都不得命中");
 });
+
+test("# 查询完整标题：较新的五个标题变体不能挤掉目标条目", async (t) => {
+  const { filterPrompts, readHashToken } = await import("../src/client/utils/hash-token.ts");
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now++);
+  const title = "验收周报";
+  const target = store.createPrompt({ title, body: "整理{{周期}}的周报。" });
+  const newer = Array.from({ length: 5 }, (_, i) =>
+    store.createPrompt({ title: `${title}-${i + 1}`, body: "周报变体" }).id,
+  ).reverse();
+  const { query } = readHashToken(`前文 #${title}`);
+  const ids = (rows) => rows.map((row) => row.id);
+  assert.deepEqual(ids(store.listPrompts({ q: query })), [...newer, target.id], "管理器的匹配成员和原始排序不变");
+
+  const matched = filterPrompts(store.listPrompts(), query, Number.MAX_SAFE_INTEGER);
+  assert.equal(matched.length, 6);
+  assert.deepEqual(ids(matched.slice(0, 5)), [target.id, ...newer.slice(0, 4)], "截断前必须提升完整标题，子串同档仍按来序");
+});
